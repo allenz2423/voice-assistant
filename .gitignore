@@ -38,6 +38,9 @@ assets/voices/**/*.onnx
 assets/voices/**/*.onnx.json
 assets/voices/**/*.bin
 assets/voices/kokoro/
+assets/voices/cosyvoice/*.onnx
+assets/voices/cosyvoice/*.bin
+!assets/voices/cosyvoice/*.wav
 ~/.local/state/shin/
 /tmp/shin/
 
