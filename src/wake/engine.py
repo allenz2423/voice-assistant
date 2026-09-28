@@ -83,11 +83,26 @@ class WakeWordDetector:
                 names.add(a_clean)
 
         patterns = []
+        punct_sep = r"[\s,，、—–\.\-\'\’\"]*"
+
         for n in sorted(names, key=len, reverse=True):
-            if any(ord(c) > 127 for c in n):
+            parts = re.findall(r"[\u4e00-\u9fff]|[\u3040-\u30ff]+|[a-zA-Z0-9]+", n)
+            if not parts:
                 patterns.append(re.escape(n))
+                continue
+
+            escaped_parts = []
+            for p in parts:
+                if any(ord(c) > 127 for c in p):
+                    escaped_parts.append(re.escape(p))
+                else:
+                    escaped_parts.append(rf"\b{re.escape(p)}\b" if len(parts) == 1 else re.escape(p))
+
+            inner = punct_sep.join(escaped_parts)
+            if not any(ord(c) > 127 for c in n):
+                patterns.append(rf"\b{inner}\b")
             else:
-                patterns.append(rf"\b{re.escape(n)}\b")
+                patterns.append(inner)
 
         return re.compile("|".join(patterns), re.IGNORECASE)
 
