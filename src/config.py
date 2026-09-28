@@ -15,6 +15,7 @@ class AudioConfig(BaseModel):
 
 class WakeConfig(BaseModel):
     wake_word: str = "hey jarvis"
+    aliases: list[str] = Field(default_factory=list)
     threshold: float = 0.50
     followup_window_seconds: float = 7.0
 

@@ -9,7 +9,8 @@ audio:
   vad_silence_duration: 1.25  # seconds of sustained silence to finalize utterance (allows natural pauses)
 
 wake:
-  wake_word: "hey adam"  # openWakeWord default; customizable to "hey shin"
+  wake_word: "hey adam"  # Custom phrase (e.g. "hey adam", "hey computer", "hey assistant") or ONNX model ("hey jarvis")
+  aliases: []            # Optional list of phonetic spelling variants/aliases (e.g. ["atom", "edam"])
   threshold: 0.50
   followup_window_seconds: 7.0  # continuous conversation window after speaking
 

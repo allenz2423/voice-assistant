@@ -7,10 +7,11 @@ class WakeWordDetector:
     """Always-on wake word engine supporting openWakeWord ONNX models and custom phrase VAD spotting."""
     INTERRUPT_KEYWORDS = re.compile(r"\b(stop|cancel|shut up|wait|pause|quiet)\b", re.IGNORECASE)
 
-    def __init__(self, wake_word="hey_jarvis", threshold=0.50):
+    def __init__(self, wake_word="hey_jarvis", threshold=0.50, aliases=None):
         self.raw_wake_word = wake_word.strip()
         self.wake_word = self.raw_wake_word.replace(" ", "_").lower()
         self.threshold = threshold
+        self.aliases = aliases or []
         self.model = None
         self.model_key = None
         self.is_custom_mode = False
@@ -37,12 +38,12 @@ class WakeWordDetector:
                 print(f"[Wake] openWakeWord ONNX model loaded for key: '{self.model_key}' (0% CPU background listening).")
             else:
                 self.is_custom_mode = True
-                self.custom_regex = self._build_wake_regex(self.raw_wake_word)
+                self.custom_regex = self._build_wake_regex(self.raw_wake_word, self.aliases)
                 print(f"[Wake] Custom wake word '{self.raw_wake_word}' activated using VAD + Whisper keyphrase spotting.")
         except Exception as e:
             print(f"[Wake] Notice: Using custom phrase spotting for '{self.raw_wake_word}' ({e}).")
             self.is_custom_mode = True
-            self.custom_regex = self._build_wake_regex(self.raw_wake_word)
+            self.custom_regex = self._build_wake_regex(self.raw_wake_word, self.aliases)
 
     FILLERS = {"uh", "um", "er", "ah", "so", "okay", "ok", "well", "all", "right", "alright", "あの", "ええと", "えーと"}
     GREETINGS = {"hey", "hi", "hello", "yo", "ヘイ", "ねえ", "ねぇ"}
@@ -55,7 +56,7 @@ class WakeWordDetector:
     TRAILING_PUNCT = re.compile(rf"[\"'\‘\’\“\”\`]+$")
 
     @classmethod
-    def _build_wake_regex(cls, raw_wake_word: str) -> re.Pattern:
+    def _build_wake_regex(cls, raw_wake_word: str, aliases: list[str] = None) -> re.Pattern:
         raw_lower = raw_wake_word.lower().strip()
         if raw_lower.startswith("hey "):
             base_name = raw_lower[4:].strip()
@@ -64,6 +65,22 @@ class WakeWordDetector:
 
         names = set()
         names.add(base_name)
+        if raw_lower != base_name:
+            names.add(raw_lower)
+
+        # Automatic phonetic sound-alike rules for words with alternate spellings (e.g. f <-> ph)
+        if "f" in base_name:
+            names.add(base_name.replace("f", "ph"))
+        if "ph" in base_name:
+            names.add(base_name.replace("ph", "f"))
+
+        # User-configured custom aliases (e.g. from config.yaml wake.aliases)
+        if aliases:
+            for a in aliases:
+                a_clean = str(a).lower().strip()
+                if a_clean.startswith("hey "):
+                    names.add(a_clean[4:].strip())
+                names.add(a_clean)
 
         # Multilingual / Japanese / phonetic transliterations & common STT misrecognitions
         if base_name in ["adam", "hey adam"]:

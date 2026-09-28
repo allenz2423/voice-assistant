@@ -133,7 +133,8 @@ class ShinDaemon:
         print("[Init] Initializing openWakeWord Detector...")
         self.wake = WakeWordDetector(
             wake_word=self.config.wake.wake_word,
-            threshold=self.config.wake.threshold
+            threshold=self.config.wake.threshold,
+            aliases=getattr(self.config.wake, "aliases", [])
         )
 
         print("[Init] Initializing AudioStreamManager...")
