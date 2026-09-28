@@ -6,7 +6,7 @@ from pathlib import Path
 
 class HardenedJobSupervisor:
     """Spawns jobs in Bubblewrap sandboxes with full GPU access, path bindings, and bwrap parent death-signals."""
-    def __init__(self, log_dir="~/.local/state/shin/jobs", workspace="~/workspace", downloads="~/Downloads"):
+    def __init__(self, log_dir="~/.local/state/adam/jobs", workspace="~/workspace", downloads="~/Downloads"):
         self.log_dir = Path(log_dir).expanduser()
         self.workspace = Path(workspace).expanduser()
         self.downloads = Path(downloads).expanduser()
@@ -50,7 +50,7 @@ class HardenedJobSupervisor:
             "--ro-bind", str(self.downloads), str(self.downloads),  # Access downloads
             "--bind", str(self.workspace), str(self.workspace),      # Output directory
             "--chdir", str(self.workspace),
-            "--die-with-parent",                                    # Kills sandbox if Shin exits
+            "--die-with-parent",                                    # Kills sandbox if Adam exits
         ] + self._get_gpu_device_args() + ["--"] + raw_cmd
 
         proc = await asyncio.create_subprocess_exec(

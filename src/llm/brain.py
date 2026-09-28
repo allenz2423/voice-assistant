@@ -6,7 +6,7 @@ import asyncio
 import re
 from pathlib import Path
 from src.llm.provider import UniversalLLMClient
-from src.llm.tools import SHIN_TOOLS
+from src.llm.tools import ADAM_TOOLS
 from src.tools.weather import get_weather_report
 from src.tools.desktop import (
     list_applications,
@@ -56,101 +56,25 @@ from src.tools.dev_sys import (
 from src.skills import SkillManager
 from src.tools.custom import CustomToolManager
 
-SYSTEM_PROMPT = """You are Shin, an autonomous local voice-activated personal assistant on Linux.
-You have full access to the user's system to launch apps, manage windows, control media and volume, check system status, monitor processes, check weather, search the web, manage timers and persistent reminders/calendar entries, and interact via natural voice.
+TEXT_FALLBACK_READ_ONLY_TOOLS = {
+    "find_files", "get_current_time", "get_weather", "list_applications",
+    "list_windows", "get_system_status", "list_processes", "list_audio_devices",
+    "get_now_playing", "web_search", "list_timers", "list_reminders",
+    "get_financial_quote", "calculate_math", "list_skills", "get_skill_context",
+    "fetch_webpage",
+}
 
-RULES:
-1. PLAIN TEXT ONLY - ABSOLUTELY NO MARKDOWN:
-   - Output purely plain conversational text.
-   - NEVER use ANY markdown formatting whatsoever: no asterisks (* or **), no bold, no italics, no bullet points (- or *), no numbered lists (1.), no headers or hashtags (#), no backticks (` or ```), no code fences, no markdown links, no tables, and no emojis.
-   - All responses must sound fluid and natural when read aloud by a text-to-speech engine. Format answers in standard, clean conversational sentences rather than lists or code snippets.
-2. Never output simulated XML or pseudotags like <tool_response>, <tool_call>, or code blocks.
-3. ULTRA-CONCISE RESPONSES (NO YAPPING):
-   - For operational action commands (such as focusing a window, moving a window, switching workspaces, launching or closing an app, pausing/playing media, changing volume, copying to clipboard): respond with ONLY 'Done.'
-   - Never repeat the user's command or add conversational filler like 'I have moved Spotify to Workspace 1 for you' or 'Sure, focusing Edge now'.
-   - For observational remarks, side comments, or acknowledgments where no action or information is requested: respond with at most 1–3 words (e.g. 'Got it.' or 'Understood.') or remain silent. NEVER output conversational filler like 'Okay, I see. Let me know if you need anything else moved or managed' or 'How can I help you today?'.
-4. Real-Time Weather:
-   - When asked about weather (locally or for any city/location), ALWAYS use the `get_weather` tool. Never claim that you lack real-time weather information.
-5. Applications & Desktop Management:
-   - To search something in the browser or open a website/URL (e.g. 'search for X in my browser', 'use my browser to search X', 'open youtube in browser'): ALWAYS use `open_in_browser(query_or_url='...')`. Do not just focus the browser window.
-   - To close the current browser tab (e.g. 'close this tab', 'close browser tab', 'close the tab in Edge'): ALWAYS use `close_browser_tab(target='...')`. This focuses the browser and triggers Ctrl+W.
-   - To launch apps or games (e.g. Discord, Firefox, Spotify, Steam, terminal, Zed, games): Use `launch_application`.
-   - To list installed apps: Use `list_applications`.
-   - To list or manage open windows: Use `list_windows`, `focus_window`, or `close_application`.
-   - To switch workspaces or move windows to workspaces:
-     - Switch workspace: `workspace_control(action='switch', workspace='<id>')` (or `workspace='back'` / `'previous'`)
-     - Move window to workspace: `workspace_control(action='move', workspace='<id>', target='<app or window>')`
-     - Move to current workspace: `workspace_control(action='move', workspace='current', target='<app or window>')`
-     - Move window back / undo: `workspace_control(action='move', workspace='back', target='<app or window>')`
-   - To read or write clipboard: Use `manage_clipboard`.
-6. Media & Audio:
-   - To identify current song/podcast: Use `get_now_playing`.
-   - To control playback: Use `media_control`.
-   - To adjust volume or mute: Use `volume_control`.
-   - To list audio devices: Use `list_audio_devices`.
-7. Hardware & System Health:
-   - To check CPU, RAM, disk, and GPU status: Use `get_system_status`.
-   - To check or kill processes: Use `list_processes` or `kill_process`.
-8. Web Search & Information:
-   - When asked facts, news, definitions, or general questions: Use `web_search`.
-   - To fetch and read the content of a specific webpage, article, or URL: Use `fetch_webpage(url='...')`.
-9. Timers & Time:
-   - To set, list, or cancel timers: Use `set_timer`, `list_timers`, and `cancel_timer`.
-   - For Google Calendar questions, use the config-defined `google_calendar_agenda` tool; add events with `google_calendar_quick_add`.
-   - `show_calendar` is specifically the legacy Remind month-grid. Use it only when the user explicitly asks for the Remind calendar. For Shin reminders, use `create_reminder`, `list_reminders`, and `cancel_reminder`.
-   - For an event or reminder that should appear in Noctalia, use `create_noctalia_event`; manage these with `list_noctalia_events` and `cancel_noctalia_event`. Use `open_noctalia_calendar` to show the calendar.
-   - Reminders use local system time. If the date or time is ambiguous, clarify before creating the reminder.
-   - When asked for the time or date: Use `get_current_time`.
-   - For desktop sticky notes (Waynote):
-     - To create a note with text, a task, or a checklist: Use `create_waynote(content='...', title='...', color='...')`. Colors: yellow, green, pink, purple, blue, orange, gray.
-     - To append to an existing note: Use `append_waynote(content='...', target='...')`.
-     - To list or read notes: Use `list_waynotes()`.
-     - To toggle, show, or hide notes: Use `manage_waynote(action='show-all' | 'hide-all' | 'toggle' | 'new')`.
-10. File Management:
-    - Search files recursively with `find_files`. Organize media and series with `organize_files`.
-11. Shell & Background Execution:
-    - Run quick shell inspection with `run_bash_command`.
-    - For heavy background processing (like compiling or transcoding), use `start_background_job` or `transcode_video`.
-12. Financial & Math:
-    - To check crypto (Bitcoin, Ethereum, etc.) or stock prices (NVDA, AAPL, etc.): Use `get_financial_quote`.
-    - To perform calculations, arithmetic, or unit conversions: Use `calculate_math`.
-13. Development & System Services:
-    - To check pending OS/package updates: Use `check_system_updates`.
-    - To check or restart systemd services: Use `manage_service`.
-    - To check git repositories: Use `git_repo_status`.
-    - To check Docker containers: Use `docker_container_status`.
-14. Destructive Tasks & Confirmations:
-    - For destructive actions (file deletion, killing processes, terminating apps, rebooting, mass file modifications), call `ask_user_confirmation`.
-    - Spoken questions MUST be ULTRA-CONCISE (under 10 words, e.g. 'Kill 5 Alacritty processes?' or 'Delete delilah files?').
-    - NEVER read aloud hex addresses (0x...), window addresses, process IDs (PIDs), file paths, or technical dumps in the spoken question.
-    - Put any technical details, addresses, PIDs, or file lists into `details` so they are flashed on screen as a desktop notification instead of spoken.
-    - To display technical information, updates, or alerts visually without speaking aloud, use `show_desktop_notification`.
-15. Spoken Output:
-    - Return concise natural plain text without any markdown formatting, or use the `speak` tool.
-16. Modular Desktop Skills:
-    - You have modular skills detailing capabilities and CLI dispatchers for various desktop environments and window managers (Hyprland, Sway, i3, KDE Plasma, GNOME, COSMIC).
-    - When executing desktop commands, use the exact CLI syntax and dispatchers detailed in the active desktop environment skill.
-    - You can inspect or search other desktop skills using `list_skills` and `get_skill_context`.
-17. Pronoun & Context Resolution:
-    - When the user refers to 'it', 'that', 'the app', or 'the window' (e.g., 'move it back', 'close it', 'focus on it'), 'it' refers to the application or window acted on or mentioned in the immediate previous turn.
-    - To reorder two tiled windows on the current workspace, use `swap_windows` with both app/window names when supported by the active compositor. This swaps their positions; it does not move them between workspaces.
-    - To trigger desktop actions or compositor macros (such as overview, show desktop, grid, toggle floating, fullscreen, night mode, or lock), use `desktop_macro` with the macro name.
-18. Real-Time Injected Desktop State:
-    - You are continuously provided with [Current Desktop State] containing the active workspace, currently focused window, and every open window with its workspace ID, application class, and address.
-    - When asked what apps or windows are open, answer immediately using this injected state without needing to call `list_windows`.
-    - When asked to close or focus an app, use the [Current Desktop State] to know whether it is open, which workspace it is on, and its exact class or address.
-    - If the user says 'close it' or 'close this', close the currently focused window shown in [Current Desktop State]. If an app the user wants to close is not open, state that it is not open.
-    - Distinguish app control from app inspection. If the user asks what is in a chat, what a message says, what is happening in an app, or asks you to read/summarize visible content, that is an inspection request—not a request merely to focus the window. Focus the named app if needed, then inspect a screenshot and answer what you can actually see. Never answer only 'Done.' for an inspection request.
-19. Sequential Multi-Step Tool Execution:
-    - You can and should execute tools in sequence across multiple hops!
-    - If a task requires information you do not have (e.g. finding a specific server, IP address, file path, process ID, or web URL before acting on it):
-      1. First call an informational tool (`web_search`, `find_files`, `list_processes`, or `run_bash_command` with `curl`/`dig`) to find the required target or data.
-      2. In the next turn, you will receive the tool result in the conversation history.
-      3. Then immediately call the subsequent operational tool (e.g. `run_bash_command` with `ping`, `kill_process`, `manage_service`, etc.) using the exact target found!
-      4. Never guess fake local IPs (like 127.0.0.1, 192.168.1.1, or 8.8.8.8) when asked for specific external entities; look them up first.
-20. Visual Desktop Inspection:
-    - When the user asks what is visible on screen or asks you to inspect the current UI, call `capture_screenshot` and base your answer on the attached image. For app-specific inspection, focus that app first if needed, then capture the screenshot. The screenshot is sent to the configured local vision model.
-"""
+SYSTEM_PROMPT = """You are Adam, a voice-first Linux assistant with desktop, system, web, and productivity tools.
+
+Speak naturally and briefly in plain text, without markdown or filler. After an action, say "Done." Never invent results.
+
+Use tools when needed: weather and time require their tools; use web search for current facts and fetch_webpage for a specific URL. Use desktop tools for apps, windows, workspaces, browser tabs, clipboard, media, volume, and screenshots. Inspect visible content with a screenshot. Use injected desktop state for windows and resolve "it" from the previous turn. Retrieve desktop skill details with get_skill_context when needed.
+
+Use tools for reminders, timers, calendars, notes, files, math, finance, system status, services, processes, and background jobs. Clarify ambiguous reminder times. Use Noctalia tools for Noctalia events and Remind tools only when asked for the Remind calendar. Gather unknown targets before acting; never guess.
+
+Confirm destructive actions, including deleting files, killing processes, terminating apps, rebooting, or mass edits. Keep spoken confirmations under 10 words; put paths, IDs, addresses, and technical details in notification details, never in speech.
+
+Use open_in_browser to search or open URLs and close_browser_tab to close a tab. Change silent mode only on explicit requests. For visual inspection, report what the screenshot shows rather than saying only "Done."""
 
 
 def _is_visual_inspection_request(text: str) -> bool:
@@ -185,7 +109,7 @@ def _format_visual_spoken_answer(text: str) -> str:
         text = " ".join(words[:24]).rstrip(" ,;:-") + "."
     return text
 
-class ShinBrain:
+class AdamBrain:
     """The central ReAct autonomous agent loop driving tool execution and conversation."""
     def __init__(self, config, supervisor, probe, confirmation_mgr, tts_engine, arbiter=None, speculative_router=None):
         self.config = config
@@ -210,15 +134,29 @@ class ShinBrain:
 
     def get_tools(self) -> list:
         """Returns canonical built-in tools (filtered by active desktop capabilities) plus user-defined custom tools."""
-        supported_tools = [tool for tool in SHIN_TOOLS if is_tool_enabled(tool.name)]
+        supported_tools = [tool for tool in ADAM_TOOLS if is_tool_enabled(tool.name)]
         return supported_tools + self.custom_tool_mgr.get_canonical_tools()
 
     def _build_system_prompt(self) -> str:
-        """Injects active desktop environment skill context into the core system prompt."""
-        active_skill_context = self.skill_manager.get_active_de_context()
-        if active_skill_context:
-            return f"{SYSTEM_PROMPT}\n\n{active_skill_context}"
+        """Keep desktop skill details on demand instead of in every request."""
         return SYSTEM_PROMPT
+
+    def _compact_history_for_new_turn(self):
+        """Keep a few short dialogue turns; discard old tool payloads and desktop snapshots."""
+        recent = []
+        for message in self.messages[1:]:
+            role = message.get("role")
+            if role not in {"user", "assistant"} or message.get("tool_calls") or message.get("images"):
+                continue
+            content = str(message.get("content") or "").strip()
+            if role == "user":
+                content = re.sub(r"^\[Current Desktop State\].*?\[Local Time:[^\]]+\]\s*\n", "", content, flags=re.S)
+            if not content:
+                continue
+            if len(content) > 500:
+                content = content[:497].rstrip() + "..."
+            recent.append({"role": role, "content": content})
+        self.messages = [{"role": "system", "content": self.system_prompt}, *recent[-6:]]
 
     async def warmup(self):
         """Warms up the underlying LLM client."""
@@ -226,19 +164,18 @@ class ShinBrain:
 
     async def process_user_utterance(self, user_text: str):
         """Processes a transcribed user prompt through the autonomous ReAct cycle."""
-        print(f"\n[Shin] User said: \"{user_text}\"")
+        print(f"\n[Adam] User said: \"{user_text}\"")
         import datetime
         now_local = datetime.datetime.now().astimezone()
         now_str = now_local.strftime("%I:%M %p %Z (UTC%z) on %A, %B %d, %Y")
+
+        # Remove old tool payloads and desktop snapshots before adding fresh state.
+        self._compact_history_for_new_turn()
 
         # Real-time desktop state prompt injection
         desktop_state = get_open_windows_prompt_context()
         user_prompt_content = f"[Current Desktop State]\n{desktop_state}\n\n[Local Time: {now_str}]\n{user_text}"
         self.messages.append({"role": "user", "content": user_prompt_content})
-
-        # Bound context history (expanded to 100 messages to match 16k context window)
-        if len(self.messages) > 100:
-            self.messages = [self.messages[0]] + self.messages[-99:]
 
         # Run ReAct iteration loop (up to 4 tool hops)
         executed_calls = set()
@@ -269,7 +206,7 @@ class ShinBrain:
                     concise_response = await self.llm_client.chat(concise_messages, tools=[])
                     concise_content = concise_response.get("content", "")
                     content = _format_visual_spoken_answer(concise_content or content)
-                print(f"[Shin] Response: {content}")
+                print(f"[Adam] Response: {content}")
                 await self.tts.speak_async(content)
                 turn_completed_with_speech = True
 
@@ -288,7 +225,13 @@ class ShinBrain:
                         "type": "function",
                         "function": {
                             "name": fn_name,
-                            "arguments": fn_args
+                            "arguments": (
+                                json.dumps(fn_args)
+                                if tc.get("_origin") == "text_fallback"
+                                and self.llm_client.provider not in {"local", "ollama"}
+                                and isinstance(fn_args, dict)
+                                else fn_args
+                            )
                         }
                     })
                 assistant_msg["tool_calls"] = formatted_calls
@@ -327,10 +270,18 @@ class ShinBrain:
                     except Exception:
                         args = {}
 
-                print(f"[Shin] Tool call: {name}({args})")
-                tool_output = await self._execute_tool(name, args)
+                origin = tc.get("_origin", "native")
+                print(f"[Adam] Tool call ({origin}): {name}({args})")
+                if tc.get("_origin") == "text_fallback" and name not in TEXT_FALLBACK_READ_ONLY_TOOLS:
+                    tool_output = (
+                        f"Rejected text-form tool call '{name}': fallback tool calls are limited "
+                        "to read-only tools. Please retry using the provider's structured tool-call format."
+                    )
+                    print(f"[Adam] {tool_output}")
+                else:
+                    tool_output = await self._execute_tool(name, args)
                 last_tool_output = str(tool_output)
-                print(f"[Shin] Tool result: {tool_output}")
+                print(f"[Adam] Tool result: {tool_output}")
                 # For an inspection question, focusing a window is only setup.
                 # Capture it immediately so the next model turn can answer from
                 # pixels instead of incorrectly treating focus as completion.
@@ -342,7 +293,7 @@ class ShinBrain:
                     try:
                         self._pending_screenshot = await asyncio.to_thread(capture_screenshot)
                     except Exception as e:
-                        print(f"[Shin] Screenshot after focusing window failed: {e}")
+                        print(f"[Adam] Screenshot after focusing window failed: {e}")
                 if name in ["speak", "ask_user_confirmation"]:
                     return
 
@@ -393,7 +344,9 @@ class ShinBrain:
                 out_lower = act_output.lower()
                 failure_keywords = [
                     "error", "failed", "could not", "not found",
-                    "please specify", "not supported", "not available", "unknown"
+                    "please specify", "not supported", "not available", "unknown",
+                    "not installed", "unavailable", "rejected", "refused",
+                    "permission denied", "timed out",
                 ]
                 if any(k in out_lower for k in failure_keywords):
                     return False
@@ -414,9 +367,22 @@ class ShinBrain:
             ):
                 is_user_ja = any('\u3040' <= c <= '\u30ff' or '\u4e00' <= c <= '\u9fff' for c in user_text)
                 fast_response = "完了しました。" if is_user_ja else "Done."
-                print(f"[Shin] Response: {fast_response}")
+                print(f"[Adam] Response: {fast_response}")
                 self.messages.append({"role": "assistant", "content": fast_response})
                 await self.tts.speak_async(fast_response)
+                turn_completed_with_speech = True
+                break
+            elif all_are_actions and not _is_visual_inspection_request(user_text):
+                failure_names = ", ".join(
+                    n for n, a, o in executed_hop_results
+                    if not _is_successful_action(n, a, o)
+                )
+                response = "I couldn't complete that action."
+                if failure_names:
+                    response = f"I couldn't complete {failure_names.replace('_', ' ')}."
+                print(f"[Adam] Response: {response}")
+                self.messages.append({"role": "assistant", "content": response})
+                await self.tts.speak_async(response)
                 turn_completed_with_speech = True
                 break
 
@@ -445,7 +411,7 @@ class ShinBrain:
                     else "I couldn't generate a response just now."
                 )
 
-            print(f"[Shin] Response: {final_content}")
+            print(f"[Adam] Response: {final_content}")
             self.messages.append({"role": "assistant", "content": final_content})
             await self.tts.speak_async(final_content)
 
@@ -789,7 +755,7 @@ class ShinBrain:
             return "Confirmation requested from user. Execution is paused waiting for user's verbal confirmation."
 
         elif name == "show_desktop_notification":
-            title = args.get("title", "Shin")
+            title = args.get("title", "Adam")
             message = args.get("message", "")
             urgency = args.get("urgency", "normal")
             return await asyncio.to_thread(show_desktop_notification, str(title), str(message), urgency)
@@ -798,6 +764,19 @@ class ShinBrain:
             msg = args.get("message", "")
             await self.tts.speak_async(msg)
             return "Message spoken."
+
+        elif name == "enable_silent_mode":
+            self.tts.engine = "silent"
+            print("[TTS] Silent mode enabled by voice command.", flush=True)
+            return "Silent mode enabled. Future responses will appear as desktop notifications."
+
+        elif name == "disable_silent_mode":
+            configured_engine = getattr(getattr(self.config, "tts", None), "engine", "silent")
+            if str(configured_engine).lower() == "silent":
+                return "Silent mode is the configured default, so it cannot be disabled by voice command."
+            self.tts.engine = configured_engine
+            print(f"[TTS] Silent mode disabled; restored configured engine '{configured_engine}'.", flush=True)
+            return "Silent mode disabled. Spoken responses are restored."
 
         elif name == "get_current_time":
             loc = args.get("location", "local") if args else "local"

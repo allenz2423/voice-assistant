@@ -9,7 +9,7 @@ class SkillManager:
 
     def __init__(self, custom_skills_dir: Optional[Path] = None):
         self.builtin_skills_dir = Path(__file__).resolve().parent.parent.parent / "skills"
-        self.user_skills_dir = custom_skills_dir or (Path.home() / ".config" / "shin" / "skills")
+        self.user_skills_dir = custom_skills_dir or (Path.home() / ".config" / "adam" / "skills")
 
     def get_skill_paths(self) -> List[Path]:
         """Returns all search directories for skills in order of priority (user custom first)."""

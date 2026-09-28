@@ -41,8 +41,8 @@ assets/voices/kokoro/
 assets/voices/cosyvoice/*.onnx
 assets/voices/cosyvoice/*.bin
 !assets/voices/cosyvoice/*.wav
-~/.local/state/shin/
-/tmp/shin/
+~/.local/state/adam/
+/tmp/adam/
 
 # IDE
 .idea/

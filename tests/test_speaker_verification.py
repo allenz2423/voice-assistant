@@ -43,12 +43,12 @@ def test_short_audio_fails_closed(tmp_path):
 
 
 def test_daemon_speaker_gate_blocks_nonmatching_audio_without_profile_setup():
-    from src.main import ShinDaemon
+    from src.main import AdamDaemon
 
     class RejectingVerifier:
         def verify(self, audio):
             return False, 0.1
 
-    daemon = ShinDaemon.__new__(ShinDaemon)
+    daemon = AdamDaemon.__new__(AdamDaemon)
     daemon.speaker_verifier = RejectingVerifier()
     assert asyncio.run(daemon._speaker_allowed(np.ones(16000, dtype=np.float32))) is False

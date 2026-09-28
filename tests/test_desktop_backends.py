@@ -235,7 +235,7 @@ def test_gnome_and_cosmic_swap_disabled(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_brain_omits_unsupported_tools_on_kde(monkeypatch):
-    from src.llm.brain import ShinBrain
+    from src.llm.brain import AdamBrain
 
     monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE", raising=False)
     monkeypatch.delenv("SWAYSOCK", raising=False)
@@ -254,7 +254,7 @@ async def test_brain_omits_unsupported_tools_on_kde(monkeypatch):
         ),
         execution=SimpleNamespace(downloads_dir="~/Downloads", workspace_dir="~/workspace")
     )
-    brain = ShinBrain(config=config, supervisor=None, probe=None, confirmation_mgr=None, tts_engine=MagicMock())
+    brain = AdamBrain(config=config, supervisor=None, probe=None, confirmation_mgr=None, tts_engine=MagicMock())
 
     tools = brain.get_tools()
     tool_names = [getattr(t, "name", None) or t.get("name") for t in tools]
@@ -269,7 +269,7 @@ async def test_brain_omits_unsupported_tools_on_kde(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_brain_includes_swap_windows_on_hyprland(monkeypatch):
-    from src.llm.brain import ShinBrain
+    from src.llm.brain import AdamBrain
 
     monkeypatch.setenv("HYPRLAND_INSTANCE_SIGNATURE", "sig_123")
     monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-1")
@@ -288,7 +288,7 @@ async def test_brain_includes_swap_windows_on_hyprland(monkeypatch):
         execution=SimpleNamespace(downloads_dir="~/Downloads", workspace_dir="~/workspace")
     )
     with patch("shutil.which", return_value="/usr/bin/hyprctl"):
-        brain = ShinBrain(config=config, supervisor=None, probe=None, confirmation_mgr=None, tts_engine=MagicMock())
+        brain = AdamBrain(config=config, supervisor=None, probe=None, confirmation_mgr=None, tts_engine=MagicMock())
         tools = brain.get_tools()
         tool_names = [getattr(t, "name", None) or t.get("name") for t in tools]
 

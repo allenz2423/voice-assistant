@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Comprehensive interactive setup wizard for Shin / Adam Voice Assistant.
+"""Comprehensive interactive setup wizard for Adam / Adam Voice Assistant.
 
 Configures:
 - Audio hardware (Microphone inputs, playback outputs)
@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import subprocess
+import getpass
 from pathlib import Path
 
 # Ensure repo root is on sys.path
@@ -36,7 +37,7 @@ CLR_RED = "\033[1;31m"
 def print_banner():
     print(f"""
 {CLR_CYAN}{CLR_BOLD}================================================================
-          🎙️   Shin / Adam Voice Assistant Setup
+          🎙️   Adam / Adam Voice Assistant Setup
 ================================================================{CLR_RESET}
 """)
 
@@ -87,7 +88,17 @@ def prompt_text(prompt: str, default_val: str = "") -> str:
         return default_val
 
 
-def update_config_value(key: str, value: str):
+def prompt_secret(prompt: str, current_value: str = "") -> str:
+    """Prompts for a secret without echoing it or showing its saved value."""
+    hint = " [saved key available; Enter keeps it]" if current_value else ""
+    try:
+        value = getpass.getpass(f"{CLR_BOLD}{prompt}{hint}: {CLR_RESET}").strip()
+        return value if value else current_value
+    except (EOFError, KeyboardInterrupt):
+        return current_value
+
+
+def update_config_value(key: str, value: str, section: str | None = None):
     """Safely updates a key: value pair in config.yaml while preserving comments."""
     config_path = PROJECT_DIR / "config.yaml"
     if not config_path.exists():
@@ -101,6 +112,21 @@ def update_config_value(key: str, value: str):
     content = config_path.read_text(encoding="utf-8")
     pattern = rf'(^[ \t]*{re.escape(key)}:\s*)(["\']?)(.*?)(["\']?)(\s*(?:#.*)?$)'
     replacement = rf'\g<1>"{value}"\g<5>'
+
+    if section:
+        section_match = re.search(rf"^{re.escape(section)}:\s*(?:#.*)?$", content, flags=re.MULTILINE)
+        if not section_match:
+            return
+        next_section = re.search(r"^[^\s#][^:\n]*:\s*(?:#.*)?$", content[section_match.end():], flags=re.MULTILINE)
+        section_end = section_match.end() + next_section.start() if next_section else len(content)
+        section_text = content[section_match.end():section_end]
+        updated_section, count = re.subn(pattern, replacement, section_text, flags=re.MULTILINE)
+        if count > 0:
+            config_path.write_text(content[:section_match.end()] + updated_section + content[section_end:], encoding="utf-8")
+            return
+        new_content = content[:section_match.end()] + f'\n  {key}: "{value}"' + content[section_match.end():]
+        config_path.write_text(new_content, encoding="utf-8")
+        return
 
     new_content, count = re.subn(pattern, replacement, content, flags=re.MULTILINE)
     if count > 0:
@@ -119,7 +145,7 @@ def update_config_value(key: str, value: str):
         pass
 
 
-def get_current_config_value(key: str, default: str = "") -> str:
+def get_current_config_value(key: str, default: str = "", section: str | None = None) -> str:
     """Reads a current configuration string value from config.yaml or config.yaml.example."""
     config_path = PROJECT_DIR / "config.yaml"
     if not config_path.exists():
@@ -127,6 +153,13 @@ def get_current_config_value(key: str, default: str = "") -> str:
     if not config_path.exists():
         return default
     content = config_path.read_text(encoding="utf-8")
+    if section:
+        section_match = re.search(rf"^{re.escape(section)}:\s*(?:#.*)?$", content, flags=re.MULTILINE)
+        if not section_match:
+            return default
+        next_section = re.search(r"^[^\s#][^:\n]*:\s*(?:#.*)?$", content[section_match.end():], flags=re.MULTILINE)
+        section_end = section_match.end() + next_section.start() if next_section else len(content)
+        content = content[section_match.end():section_end]
     match = re.search(rf'^[ \t]*{re.escape(key)}:\s*["\']?(.*?)["\']?\s*(?:#.*)?$', content, flags=re.MULTILINE)
     return match.group(1).strip() if match else default
 
@@ -243,14 +276,18 @@ def configure_persona():
 # ------------------------------------------------------------------------------
 def configure_stt():
     print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 3: Speech-to-Text (STT) Engine & Hardware ---{CLR_RESET}")
-    current_model = get_current_config_value("model_size", "qwen3-asr-1.7b")
-    current_dev = get_current_config_value("device", "Vulkan0")
+    current_provider = get_current_config_value("provider", "local", section="stt")
+    current_model = get_current_config_value("model_size", "qwen3-asr-1.7b", section="stt")
+    current_dev = get_current_config_value("device", "Vulkan0", section="stt")
 
     stt_options = [
         "Qwen3-ASR-1.7B on GPU / Vulkan (Recommended: fast, high accuracy, low latency)",
         "Faster-Whisper (distil-large-v3) on NVIDIA CUDA (Pascal/Ampere/Ada)",
         "Faster-Whisper (base.en) on CPU (Universal: low resource, no GPU needed)",
         "Custom STT model & device",
+        "OpenAI Cloud transcription (audio is sent to OpenAI)",
+        "OpenRouter Cloud transcription (choose any available STT model)",
+        "Custom cloud transcription endpoint + model (OpenAI-compatible)",
     ]
 
     default_idx = 0
@@ -258,30 +295,100 @@ def configure_stt():
         default_idx = 1
     elif "base" in current_model.lower() or current_dev == "cpu":
         default_idx = 2
+    if current_provider == "openai":
+        default_idx = 4
+    elif current_provider == "openrouter":
+        default_idx = 5
+    elif current_provider == "custom":
+        default_idx = 6
 
     choice = prompt_choice("Select STT engine configuration", stt_options, default_idx)
 
     if choice == 0:
-        update_config_value("model_size", "qwen3-asr-1.7b")
-        update_config_value("device", "Vulkan0")
-        update_config_value("compute_type", "int8_float32")
+        update_config_value("provider", "local", section="stt")
+        update_config_value("model_size", "qwen3-asr-1.7b", section="stt")
+        update_config_value("device", "Vulkan0", section="stt")
+        update_config_value("compute_type", "int8_float32", section="stt")
         print(f"{CLR_GREEN}Configured Qwen3-ASR on Vulkan0.{CLR_RESET}")
     elif choice == 1:
-        update_config_value("model_size", "distil-large-v3")
-        update_config_value("device", "cuda")
-        update_config_value("compute_type", "int8_float32")
+        update_config_value("provider", "local", section="stt")
+        update_config_value("model_size", "distil-large-v3", section="stt")
+        update_config_value("device", "cuda", section="stt")
+        update_config_value("compute_type", "int8_float32", section="stt")
         print(f"{CLR_GREEN}Configured faster-whisper distil-large-v3 on CUDA.{CLR_RESET}")
     elif choice == 2:
-        update_config_value("model_size", "base.en")
-        update_config_value("device", "cpu")
-        update_config_value("compute_type", "int8")
+        update_config_value("provider", "local", section="stt")
+        update_config_value("model_size", "base.en", section="stt")
+        update_config_value("device", "cpu", section="stt")
+        update_config_value("compute_type", "int8", section="stt")
         print(f"{CLR_GREEN}Configured faster-whisper base.en on CPU.{CLR_RESET}")
-    else:
+    elif choice == 3:
         custom_model = prompt_text("Enter STT model name (e.g. 'qwen3-asr-1.7b', 'small.en', 'medium.en')", current_model)
         custom_dev = prompt_text("Enter compute device ('cuda', 'Vulkan0', 'cpu')", current_dev)
-        update_config_value("model_size", custom_model)
-        update_config_value("device", custom_dev)
+        update_config_value("provider", "local", section="stt")
+        update_config_value("model_size", custom_model, section="stt")
+        update_config_value("device", custom_dev, section="stt")
         print(f"{CLR_GREEN}Configured custom STT:{CLR_RESET} model={custom_model}, device={custom_dev}")
+    else:
+        is_openrouter = choice == 5
+        is_custom = choice == 6
+        cloud_provider = "custom" if is_custom else "openrouter" if is_openrouter else "openai"
+        update_config_value("provider", cloud_provider, section="stt")
+        if is_custom:
+            default_url = get_current_config_value("cloud_url", "", section="stt")
+            cloud_url = prompt_text(
+                "Cloud transcription URL (OpenAI-compatible; e.g. https://api.example.com/v1/audio/transcriptions)",
+                default_url,
+            )
+            update_config_value("cloud_url", cloud_url, section="stt")
+        elif is_openrouter:
+            update_config_value("cloud_url", "https://openrouter.ai/api/v1/audio/transcriptions", section="stt")
+        else:
+            update_config_value("cloud_url", "https://api.openai.com/v1/audio/transcriptions", section="stt")
+
+        default_model = get_current_config_value("cloud_model", "gpt-transcribe", section="stt")
+        if is_openrouter and current_provider != "openrouter":
+            default_model = "openai/whisper-large-v3-turbo"
+        elif not is_openrouter and not is_custom and current_provider != "openai":
+            default_model = "gpt-transcribe"
+        model = prompt_text("Cloud transcription model name", default_model)
+        update_config_value("cloud_model", model, section="stt")
+        saved_key = get_current_config_value("api_key", "", section="stt")
+        llm_provider = get_current_config_value("provider", "local", section="llm")
+        llm_endpoint = get_current_config_value("api_base", "", section="llm").lower()
+        shared_key = ""
+        if is_openrouter:
+            shared_key = get_current_config_value("api_key", "", section="llm") if "openrouter.ai" in llm_endpoint else ""
+            saved_key = saved_key or os.environ.get("OPENROUTER_API_KEY", "") or shared_key
+            key_prompt = "OpenRouter API key"
+        elif is_custom:
+            shared_key = get_current_config_value("api_key", "", section="llm") if llm_provider in ("custom", "openai_compatible") else ""
+            saved_key = saved_key or shared_key
+            key_prompt = "Cloud API key / Bearer token"
+        else:
+            saved_key = saved_key or os.environ.get("OPENAI_API_KEY", "")
+            key_prompt = "OpenAI API key"
+        api_key = prompt_secret(key_prompt, saved_key)
+        if api_key and api_key != shared_key:
+            update_config_value("api_key", api_key, section="stt")
+
+        fallback_model = prompt_text(
+            "Faster-Whisper fallback model",
+            get_current_config_value("fallback_model", "base.en", section="stt"),
+        )
+        fallback_device = prompt_text(
+            "Faster-Whisper fallback device (cpu or cuda)",
+            get_current_config_value("fallback_device", "cpu", section="stt"),
+        )
+        update_config_value("fallback_model", fallback_model, section="stt")
+        update_config_value("fallback_device", fallback_device, section="stt")
+        update_config_value(
+            "fallback_compute_type",
+            "int8_float32" if fallback_device.lower() == "cuda" else "int8",
+            section="stt",
+        )
+        provider_label = "custom cloud" if is_custom else "OpenRouter cloud" if is_openrouter else "OpenAI cloud"
+        print(f"{CLR_GREEN}Configured {provider_label} transcription ({model}) with Faster-Whisper fallback ({fallback_model} on {fallback_device}).{CLR_RESET}")
 
 
 # ------------------------------------------------------------------------------
@@ -294,13 +401,14 @@ def configure_tts():
 
     engines = [
         "Kokoro-82M Neural TTS (High fidelity, natural phrasing)",
-        "Piper TTS (Ultra-lightweight fast CPU synthesis)",
+        "OpenAI Cloud TTS (audio is sent to OpenAI)",
+        "Silent (show responses as desktop notification alerts)",
     ]
-    engine_idx = 0 if current_engine == "kokoro" else 1
+    engine_idx = {"openai": 1, "silent": 2}.get(current_engine, 0)
     chosen_engine_idx = prompt_choice("Select TTS engine", engines, engine_idx)
 
     if chosen_engine_idx == 0:
-        update_config_value("engine", "kokoro")
+        update_config_value("engine", "kokoro", section="tts")
         voices = [
             "am_adam   - Studio natural male voice",
             "am_michael - Authoritative assistant tone",
@@ -319,26 +427,25 @@ def configure_tts():
         v_choice = prompt_choice("Select voice personality", voices, voice_default)
         voice_map = {0: "am_adam", 1: "am_michael", 2: "af_bella", 3: "af_nicole"}
         if v_choice in voice_map:
-            update_config_value("voice", voice_map[v_choice])
+            update_config_value("voice", voice_map[v_choice], section="tts")
             print(f"{CLR_GREEN}Configured voice:{CLR_RESET} {voice_map[v_choice]}")
         else:
             custom_v = prompt_text("Enter voice code (e.g. 'af_sarah', 'am_fenrir')", current_voice)
-            update_config_value("voice", custom_v)
+            update_config_value("voice", custom_v, section="tts")
             print(f"{CLR_GREEN}Configured custom voice:{CLR_RESET} {custom_v}")
+    elif chosen_engine_idx == 1:
+        update_config_value("engine", "openai", section="tts")
+        model = prompt_text("OpenAI speech model", get_current_config_value("cloud_model", "gpt-4o-mini-tts", section="tts"))
+        update_config_value("cloud_model", model, section="tts")
+        voice = prompt_text("OpenAI voice (for example marin, cedar, coral, alloy)", get_current_config_value("cloud_voice", "marin", section="tts"))
+        update_config_value("cloud_voice", voice, section="tts")
+        api_key = prompt_text("OpenAI API key", get_current_config_value("api_key", "", section="tts") or os.environ.get("OPENAI_API_KEY", ""))
+        if api_key:
+            update_config_value("api_key", api_key, section="tts")
+        print(f"{CLR_GREEN}Configured OpenAI cloud speech ({model}, voice {voice}).{CLR_RESET}")
     else:
-        update_config_value("engine", "piper")
-        current_model = get_current_config_value("model_path", "")
-        if "kokoro" in current_model.lower():
-            current_model = ""
-        piper_model = prompt_text(
-            "Path to a Piper voice model (.onnx; its matching .onnx.json must also exist)",
-            current_model,
-        )
-        if piper_model:
-            update_config_value("model_path", piper_model)
-            print(f"{CLR_GREEN}Configured Piper model:{CLR_RESET} {piper_model}")
-        else:
-            print(f"{CLR_YELLOW}Piper selected without a model path. Set tts.model_path before speech can work.{CLR_RESET}")
+        update_config_value("engine", "silent", section="tts")
+        print(f"{CLR_GREEN}Configured silent mode; responses will appear as desktop notification alerts.{CLR_RESET}")
 
 
 # ------------------------------------------------------------------------------
@@ -346,14 +453,14 @@ def configure_tts():
 # ------------------------------------------------------------------------------
 def configure_llm():
     print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 5: LLM Brain Sourcing & Model Configuration ---{CLR_RESET}")
-    current_provider = get_current_config_value("provider", "local")
+    current_provider = get_current_config_value("provider", "local", section="llm")
 
     source_options = [
         "Local LLM (Run locally on your machine / home server via Ollama or OpenAI-compatible server)",
         "Cloud LLM API (Ultra-fast cloud inference: Groq, Gemini, Anthropic Claude, OpenAI)",
     ]
     default_source = 0 if current_provider in ("local", "custom", "openai_compatible", "vllm") else 1
-    source_choice = prompt_choice("Where should Shin source the LLM brain?", source_options, default_source)
+    source_choice = prompt_choice("Where should Adam source the LLM brain?", source_options, default_source)
 
     if source_choice == 0:
         # Local Setup
@@ -361,26 +468,26 @@ def configure_llm():
             "Ollama (Default: http://localhost:11434)",
             "Custom / Remote OpenAI-compatible endpoint (vLLM, llama.cpp server, LM Studio, LocalAI, or remote Ollama)",
         ]
-        curr_endpoint = get_current_config_value("ollama_host", "http://localhost:11434")
+        curr_endpoint = get_current_config_value("ollama_host", "http://localhost:11434", section="llm")
         default_backend = 0 if "11434" in curr_endpoint and current_provider == "local" else 1
 
         b_choice = prompt_choice("Select local runtime backend", local_backends, default_backend)
 
         if b_choice == 0:
-            update_config_value("provider", "local")
-            update_config_value("ollama_host", "http://localhost:11434")
+            update_config_value("provider", "local", section="llm")
+            update_config_value("ollama_host", "http://localhost:11434", section="llm")
             endpoint = "http://localhost:11434"
         else:
-            update_config_value("provider", "openai_compatible")
+            update_config_value("provider", "openai_compatible", section="llm")
             endpoint = prompt_text("Enter local/remote server endpoint URL", curr_endpoint if curr_endpoint else "http://localhost:8000/v1")
-            update_config_value("ollama_host", endpoint)
-            update_config_value("api_base", endpoint)
+            update_config_value("ollama_host", endpoint, section="llm")
+            update_config_value("api_base", endpoint, section="llm")
             api_key = prompt_text("Optional API key / Bearer token (leave blank if none)", "")
             if api_key:
-                update_config_value("api_key", api_key)
+                update_config_value("api_key", api_key, section="llm")
 
         # Select model
-        curr_model = get_current_config_value("local_model", "qwen3.5:4b")
+        curr_model = get_current_config_value("local_model", "qwen3.5:4b", section="llm")
         models = [
             "qwen3.5:4b   - (Recommended) Fast 4B parameter model with 16k context (~2.5GB VRAM)",
             "qwen2.5:7b   - Powerful reasoning & structured JSON calling (~4.5GB VRAM)",
@@ -402,7 +509,7 @@ def configure_llm():
         else:
             target_model = prompt_text("Enter model name (e.g. 'mistral', 'deepseek-r1:8b')", curr_model)
 
-        update_config_value("local_model", target_model)
+        update_config_value("local_model", target_model, section="llm")
         print(f"{CLR_GREEN}Local model configured:{CLR_RESET} {target_model} at {endpoint}")
 
         # If standard local Ollama is available, offer to pull
@@ -422,24 +529,24 @@ def configure_llm():
         ]
         p_choice = prompt_choice("Select cloud provider", cloud_providers, 0)
         if p_choice == 4:
-            update_config_value("provider", "custom")
-            current_base = get_current_config_value("api_base", "")
+            update_config_value("provider", "custom", section="llm")
+            current_base = get_current_config_value("api_base", "", section="llm")
             api_base = prompt_text("Enter API base URL (for example https://api.example.com/v1)", current_base)
-            update_config_value("api_base", api_base)
+            update_config_value("api_base", api_base, section="llm")
 
-            current_model = get_current_config_value("cloud_model", "") or get_current_config_value("local_model", "")
+            current_model = get_current_config_value("cloud_model", "", section="llm") or get_current_config_value("local_model", "", section="llm")
             model = prompt_text("Enter provider model name", current_model)
-            update_config_value("cloud_model", model)
+            update_config_value("cloud_model", model, section="llm")
 
-            api_key = prompt_text("Enter API key / Bearer token (leave blank if none)", get_current_config_value("api_key", ""))
+            api_key = prompt_text("Enter API key / Bearer token (leave blank if none)", get_current_config_value("api_key", "", section="llm"))
             if api_key:
-                update_config_value("api_key", api_key)
+                update_config_value("api_key", api_key, section="llm")
             print(f"{CLR_GREEN}Custom OpenAI-compatible provider configured for model:{CLR_RESET} {model}")
             return
 
         p_keys = {0: "groq", 1: "gemini", 2: "anthropic", 3: "openai"}
         provider_name = p_keys[p_choice]
-        update_config_value("provider", provider_name)
+        update_config_value("provider", provider_name, section="llm")
 
         model_defaults = {
             "groq": "llama-3.3-70b-versatile",
@@ -448,7 +555,7 @@ def configure_llm():
             "openai": "gpt-4o-mini"
         }
         chosen_cloud_model = prompt_text(f"Enter {provider_name.capitalize()} model name", model_defaults[provider_name])
-        update_config_value("cloud_model", chosen_cloud_model)
+        update_config_value("cloud_model", chosen_cloud_model, section="llm")
 
         key_env_var = {
             "groq": "GROQ_API_KEY",
@@ -457,10 +564,10 @@ def configure_llm():
             "openai": "OPENAI_API_KEY"
         }[provider_name]
 
-        existing_key = os.environ.get(key_env_var, get_current_config_value("api_key", ""))
+        existing_key = os.environ.get(key_env_var, get_current_config_value("api_key", "", section="llm"))
         api_key = prompt_text(f"Enter {key_env_var}", existing_key)
         if api_key:
-            update_config_value("api_key", api_key)
+            update_config_value("api_key", api_key, section="llm")
             print(f"{CLR_GREEN}API key configured for {provider_name}.{CLR_RESET}")
 
 
@@ -515,7 +622,7 @@ def configure_browser():
 # ------------------------------------------------------------------------------
 def configure_speaker_verification():
     print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 7: Speaker Verification (Voice Profile) ---{CLR_RESET}")
-    profile_path = Path.home() / ".local" / "state" / "shin" / "speaker-profile.npz"
+    profile_path = Path.home() / ".local" / "state" / "adam" / "speaker-profile.npz"
 
     if profile_path.exists():
         print(f"{CLR_GREEN}Existing voice profile detected at:{CLR_RESET} {profile_path}")
@@ -541,13 +648,13 @@ def configure_speaker_verification():
 # ------------------------------------------------------------------------------
 def configure_systemd():
     print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 8: Systemd User Service ---{CLR_RESET}")
-    if prompt_yes_no("Enable and start Shin as an automatic background service (shin.service)?", default_yes=True):
-        print(f"{CLR_CYAN}Enabling and starting shin.service...{CLR_RESET}")
+    if prompt_yes_no("Enable and start Adam as an automatic background service (adam.service)?", default_yes=True):
+        print(f"{CLR_CYAN}Enabling and starting adam.service...{CLR_RESET}")
         subprocess.run(["systemctl", "--user", "daemon-reload"])
-        subprocess.run(["systemctl", "--user", "enable", "--now", "shin.service"])
-        print(f"{CLR_GREEN}shin.service is active!{CLR_RESET}")
+        subprocess.run(["systemctl", "--user", "enable", "--now", "adam.service"])
+        print(f"{CLR_GREEN}adam.service is active!{CLR_RESET}")
     else:
-        print(f"{CLR_YELLOW}You can start the daemon manually anytime with:{CLR_RESET} systemctl --user start shin.service")
+        print(f"{CLR_YELLOW}You can start the daemon manually anytime with:{CLR_RESET} systemctl --user start adam.service")
 
 
 # ------------------------------------------------------------------------------
@@ -566,9 +673,9 @@ def main():
         configure_systemd()
 
         print(f"\n{CLR_GREEN}{CLR_BOLD}================================================================{CLR_RESET}")
-        print(f"{CLR_GREEN}{CLR_BOLD}          Setup Complete! Shin / Adam is Ready.                {CLR_RESET}")
+        print(f"{CLR_GREEN}{CLR_BOLD}          Setup Complete! Adam / Adam is Ready.                {CLR_RESET}")
         print(f"{CLR_GREEN}{CLR_BOLD}================================================================{CLR_RESET}")
-        print(f"  • View live logs:    {CLR_BOLD}journalctl --user -u shin.service -f{CLR_RESET}")
+        print(f"  • View live logs:    {CLR_BOLD}journalctl --user -u adam.service -f{CLR_RESET}")
         print(f"  • Re-enroll voice:   {CLR_BOLD}uv run python -m src.stt.enroll{CLR_RESET}")
         print(f"  • Test microphone:   {CLR_BOLD}uv run python tools/test_mic.py{CLR_RESET}")
         print(f"  • Edit config:       {CLR_BOLD}{PROJECT_DIR}/config.yaml{CLR_RESET}\n")

@@ -18,7 +18,7 @@ from src.arbiter.arbiter import PriorityAudioArbiter, SystemState
 from src.arbiter.confirmation import TriStateConfirmationManager
 from src.execution.probe import HardwareEncoderProbe
 from src.execution.supervisor import HardenedJobSupervisor
-from src.llm.brain import ShinBrain
+from src.llm.brain import AdamBrain
 from src.audio.endpoint import SemanticEndpointer
 from src.llm.speculative import SpeculativeRouter
 from src.tools.weather import get_weather_report
@@ -65,8 +65,8 @@ def merge_overlapping_transcripts(p: str, s: str) -> str:
 
     return f"{p} {s}"
 
-class ShinDaemon:
-    """Master orchestrator for the Shin Voice Terminal Agent."""
+class AdamDaemon:
+    """Master orchestrator for the Adam Voice Terminal Agent."""
     def __init__(self, config_path="config.yaml"):
         self.config = load_config(config_path)
         if hasattr(self.config, "desktop"):
@@ -82,7 +82,7 @@ class ShinDaemon:
                     getattr(self.config.desktop, "disabled_tools", None)
                 )
         print("=" * 60)
-        print(" SHIN: VOICE-ACTIVATED AUTONOMOUS TERMINAL AGENT")
+        print(" ADAM: VOICE-ACTIVATED AUTONOMOUS TERMINAL AGENT")
         print("=" * 60)
 
         # 1. Audio and Speech Infrastructure
@@ -100,6 +100,9 @@ class ShinDaemon:
             piper_bin=self.config.tts.piper_bin,
             target_sink=self.config.audio.target_sink,
             sample_rate=self.config.tts.sample_rate,
+            cloud_model=getattr(self.config.tts, "cloud_model", "gpt-4o-mini-tts"),
+            cloud_voice=getattr(self.config.tts, "cloud_voice", "marin"),
+            api_key=getattr(self.config.tts, "api_key", ""),
             cosyvoice_api_url=getattr(self.config.tts, "cosyvoice_api_url", "http://localhost:50000"),
             cosyvoice_model_dir=getattr(self.config.tts, "cosyvoice_model_dir", "pretrained_models/CosyVoice2-0.5B"),
         )
@@ -118,8 +121,9 @@ class ShinDaemon:
         )
 
         # 3. STT and Wake Word Engines
-        print(f"[Init] Initializing Speech-to-Text engine ({self.config.stt.model_size})...")
-        self.stt = create_transcriber(self.config.stt)
+        stt_label = self.config.stt.cloud_model if self.config.stt.provider == "openai" else self.config.stt.model_size
+        print(f"[Init] Initializing Speech-to-Text engine ({self.config.stt.provider}: {stt_label})...")
+        self.stt = create_transcriber(self.config.stt, shared_api_key=self.config.llm.api_key)
 
         speaker_cfg = self.config.speaker_verification
         profile_path = speaker_cfg.profile_path or None
@@ -163,8 +167,8 @@ class ShinDaemon:
         })
 
         # 5. Agent Brain
-        print("[Init] Initializing ShinBrain ReAct Agent...")
-        self.brain = ShinBrain(
+        print("[Init] Initializing AdamBrain ReAct Agent...")
+        self.brain = AdamBrain(
             self.config,
             self.supervisor,
             self.probe,
@@ -203,6 +207,10 @@ class ShinDaemon:
         """Returns a non-blocking callback invoked on streaming partial audio chunks.
         Performs semantic endpoint analysis to dynamically scale VAD silence duration
         and dispatches speculative pre-flight tool execution while speech is ongoing."""
+        if getattr(self.config.stt, "provider", "local").lower() in ("openai", "openrouter", "custom"):
+            # Avoid a cloud transcription request for every partial audio prefix.
+            return lambda _audio_chunk: None
+
         def on_partial(audio_chunk) -> float | None:
             if len(audio_chunk) < int(0.5 * self.stream.sample_rate):
                 return None
@@ -248,7 +256,7 @@ class ShinDaemon:
         ensure_gui_environment()
         self.stream.start()
         self.earcon.play("done")
-        print(f"\n[Shin] System is online and listening. (Say '{self.config.wake.wake_word}' or issue commands)\n")
+        print(f"\n[Adam] System is online and listening. (Say '{self.config.wake.wake_word}' or issue commands)\n")
 
         while self.running:
             state = self.arbiter.current_state
@@ -671,7 +679,7 @@ class ShinDaemon:
         if self._is_shutting_down:
             return
         self._is_shutting_down = True
-        print("\n[Shin] Shutting down cleanly...")
+        print("\n[Adam] Shutting down cleanly...")
         self.running = False
         try:
             self.stream.stop()
@@ -680,7 +688,7 @@ class ShinDaemon:
             pass
 
 def main():
-    daemon = ShinDaemon()
+    daemon = AdamDaemon()
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 

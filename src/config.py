@@ -5,8 +5,8 @@ from typing import Union, Literal, Any
 from pydantic import BaseModel, Field
 
 class AudioConfig(BaseModel):
-    target_sink: str = "Shin_Playback_Sink"
-    target_source: str = "Shin_Clean_Mic"
+    target_sink: str = "Adam_Playback_Sink"
+    target_source: str = "Adam_Clean_Mic"
     sample_rate: int = 48000
     chunk_size: int = 1280
     vad_threshold_idle: float = 0.25
@@ -20,10 +20,17 @@ class WakeConfig(BaseModel):
     followup_window_seconds: float = 7.0
 
 class STTConfig(BaseModel):
+    provider: str = "local"
     model_size: str = "qwen3-asr-1.7b"
     device: str = "Vulkan0"
     device_index: int = 0
     compute_type: str = "int8_float32"
+    cloud_model: str = "gpt-transcribe"
+    cloud_url: str = "https://api.openai.com/v1/audio/transcriptions"
+    api_key: str = ""
+    fallback_model: str = "base.en"
+    fallback_device: str = "cpu"
+    fallback_compute_type: str = "int8"
 
 class SpeakerVerificationConfig(BaseModel):
     enabled: bool = True
@@ -31,7 +38,7 @@ class SpeakerVerificationConfig(BaseModel):
     threshold: float = 0.25
 
 class TTSConfig(BaseModel):
-    engine: str = "kokoro" # "kokoro" | "cosyvoice" | "piper"
+    engine: str = "kokoro" # "kokoro" | "openai" | "cosyvoice" | "silent"
     model_path: str = "assets/voices/kokoro/kokoro-v1.0.onnx"
     voices_path: str = "assets/voices/kokoro/voices-v1.0.bin"
     voice: str = "af_nicole"
@@ -40,6 +47,9 @@ class TTSConfig(BaseModel):
     piper_bin: str = "piper"
     config_path: str = "assets/voices/en_US-ryan-high.onnx.json"
     sample_rate: int = 24000
+    cloud_model: str = "gpt-4o-mini-tts"
+    cloud_voice: str = "marin"
+    api_key: str = ""
     cosyvoice_api_url: str = "http://localhost:50000"
     cosyvoice_model_dir: str = "pretrained_models/CosyVoice2-0.5B"
 
@@ -53,12 +63,12 @@ class LLMConfig(BaseModel):
     api_key: str = ""
     num_ctx: int = 16384
     temperature: float = 0.1
-    think: Union[bool, str] = "low"
+    think: Union[bool, str] = False
 
 class ExecutionConfig(BaseModel):
     workspace_dir: str = "~/workspace"
     downloads_dir: str = "~/Downloads"
-    jobs_log_dir: str = "~/.local/state/shin/jobs"
+    jobs_log_dir: str = "~/.local/state/adam/jobs"
     max_log_mb: int = 50
     preferred_video_codec: str = "av1"
 

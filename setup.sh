@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Shin / Adam Voice Assistant - Universal Linux Setup Script
+# Adam / Adam Voice Assistant - Universal Linux Setup Script
 # Supports: Gentoo, openSUSE/SLES, Debian/Ubuntu, RHEL/Fedora/CentOS, Arch/CachyOS
 # ==============================================================================
 
@@ -34,7 +34,7 @@ print_usage() {
     cat <<EOF
 Usage: ./setup.sh [OPTIONS]
 
-Interactive setup wizard for the Shin / Adam Voice Assistant.
+Interactive setup wizard for the Adam / Adam Voice Assistant.
 Detects Linux distribution, installs dependencies, sets up Python virtualenv,
 downloads neural models, and interactively configures audio, wake word, and service.
 
@@ -397,8 +397,8 @@ download_models() {
 generate_systemd_template() {
     local user_systemd_dir="$HOME/.config/systemd/user"
     mkdir -p "$user_systemd_dir"
-    local service_dest="${user_systemd_dir}/shin.service"
-    local template_file="${SCRIPT_DIR}/systemd/shin.service.template"
+    local service_dest="${user_systemd_dir}/adam.service"
+    local template_file="${SCRIPT_DIR}/systemd/adam.service.template"
 
     if [[ -f "$template_file" ]]; then
         sed \
@@ -408,7 +408,7 @@ generate_systemd_template() {
     else
         cat <<EOF > "$service_dest"
 [Unit]
-Description=Shin: Voice-Activated Autonomous Terminal Agent
+Description=Adam: Voice-Activated Autonomous Terminal Agent
 After=pipewire.service wireplumber.service pipewire-pulse.service
 Wants=pipewire.service wireplumber.service
 
@@ -441,8 +441,8 @@ run_unattended_setup() {
     log_info "Running in automated non-interactive mode..."
     generate_systemd_template
     if [[ "$SKIP_SERVICE" != true ]]; then
-        systemctl --user enable --now shin.service
-        log_success "shin.service enabled and started."
+        systemctl --user enable --now adam.service
+        log_success "adam.service enabled and started."
     fi
 }
 
@@ -451,7 +451,7 @@ run_unattended_setup() {
 # ------------------------------------------------------------------------------
 main() {
     echo -e "${CLR_CYAN}${CLR_BOLD}================================================================${CLR_RESET}"
-    echo -e "${CLR_CYAN}${CLR_BOLD}          🎙️   Shin / Adam Voice Assistant Setup               ${CLR_RESET}"
+    echo -e "${CLR_CYAN}${CLR_BOLD}          🎙️   Adam / Adam Voice Assistant Setup               ${CLR_RESET}"
     echo -e "${CLR_CYAN}${CLR_BOLD}================================================================${CLR_RESET}"
 
     # Base dependencies

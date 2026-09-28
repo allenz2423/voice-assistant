@@ -33,8 +33,8 @@ class CanonicalTool(BaseModel):
             "input_schema": self.parameters
         }
 
-# Define the standard Shin tools
-SHIN_TOOLS: list[CanonicalTool] = [
+# Define the standard Adam tools
+ADAM_TOOLS: list[CanonicalTool] = [
     CanonicalTool(
         name="capture_screenshot",
         description="Captures the current desktop and attaches the screenshot so you can inspect visible applications, text, and UI. Use when the user asks what is on screen or asks you to inspect a screenshot.",
@@ -143,6 +143,16 @@ SHIN_TOOLS: list[CanonicalTool] = [
             },
             "required": ["message"]
         }
+    ),
+    CanonicalTool(
+        name="enable_silent_mode",
+        description="Switches Adam's spoken responses to desktop notifications. Call only when the user explicitly asks for 'silent mode' or 'notification mode'; do not call for 'shut up', 'quiet', or other requests to stop the current speech.",
+        parameters={"type": "object", "properties": {}}
+    ),
+    CanonicalTool(
+        name="disable_silent_mode",
+        description="Restores Adam's configured text-to-speech mode after silent mode. Call only when the user explicitly asks to disable or leave silent mode, and only when the configured TTS default is not silent.",
+        parameters={"type": "object", "properties": {}}
     ),
     CanonicalTool(
         name="get_current_time",
@@ -485,7 +495,7 @@ SHIN_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="cancel_reminder",
-        description="Cancels a Shin-created reminder using its ID. Reminders entered manually in Remind config files are left untouched.",
+        description="Cancels a Adam-created reminder using its ID. Reminders entered manually in Remind config files are left untouched.",
         parameters={
             "type": "object",
             "properties": {"reminder_id": {"type": "string", "description": "Reminder ID returned when it was created"}},
@@ -507,7 +517,7 @@ SHIN_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="create_noctalia_event",
-        description="Creates a timed event in the Shin local calendar shown by Noctalia. Noctalia handles its event alarm.",
+        description="Creates a timed event in the Adam local calendar shown by Noctalia. Noctalia handles its event alarm.",
         parameters={
             "type": "object",
             "properties": {
@@ -522,12 +532,12 @@ SHIN_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="list_noctalia_events",
-        description="Lists upcoming Shin-created events in the Noctalia calendar.",
+        description="Lists upcoming Adam-created events in the Noctalia calendar.",
         parameters={"type": "object", "properties": {}}
     ),
     CanonicalTool(
         name="cancel_noctalia_event",
-        description="Removes a Shin-created event from the Noctalia calendar by event ID.",
+        description="Removes a Adam-created event from the Noctalia calendar by event ID.",
         parameters={
             "type": "object",
             "properties": {"event_id": {"type": "string", "description": "Event ID returned when it was created"}},
@@ -572,13 +582,13 @@ SHIN_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="manage_service",
-        description="Checks the status or controls (restart, start, stop) a systemd user or system service (e.g. 'shin', 'pipewire', 'docker', 'sunshine').",
+        description="Checks the status or controls (restart, start, stop) a systemd user or system service (e.g. 'adam', 'pipewire', 'docker', 'sunadame').",
         parameters={
             "type": "object",
             "properties": {
                 "service_name": {
                     "type": "string",
-                    "description": "Name of the service (e.g. 'shin', 'pipewire', 'docker')"
+                    "description": "Name of the service (e.g. 'adam', 'pipewire', 'docker')"
                 },
                 "action": {
                     "type": "string",
@@ -738,4 +748,3 @@ SHIN_TOOLS: list[CanonicalTool] = [
         }
     )
 ]
-

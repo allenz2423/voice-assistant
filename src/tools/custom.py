@@ -22,9 +22,9 @@ def tool(
     waiting_message: Optional[str] = None,
     success_message: Optional[str] = None
 ):
-    """Decorator to mark a Python function as a user-defined tool for Shin."""
+    """Decorator to mark a Python function as a user-defined tool for Adam."""
     def decorator(fn: Callable):
-        fn.__shin_tool__ = {
+        fn.__adam_tool__ = {
             "name": name or fn.__name__,
             "description": description or (inspect.getdoc(fn) or f"Executes {fn.__name__}").split("\n")[0].strip(),
             "confirm": confirm,
@@ -201,7 +201,7 @@ class CustomToolManager:
     def __init__(self, config_path: str = "config.yaml", custom_dirs: Optional[list[str]] = None):
         self.config_path = config_path
         self.custom_dirs = custom_dirs or [
-            "~/.config/shin/tools",
+            "~/.config/adam/tools",
             "custom_tools"
         ]
         self.tools: dict[str, Union[CustomToolDefinition, CustomPythonToolDefinition]] = {}
@@ -252,15 +252,15 @@ class CustomToolManager:
             # Load Python tools (*.py)
             for py_path in p.glob("*.py"):
                 try:
-                    mod_name = f"shin_custom_tool_{py_path.stem}"
+                    mod_name = f"adam_custom_tool_{py_path.stem}"
                     spec = importlib.util.spec_from_file_location(mod_name, str(py_path))
                     if spec and spec.loader:
                         mod = importlib.util.module_from_spec(spec)
                         spec.loader.exec_module(mod)
                         for attr_name in dir(mod):
                             obj = getattr(mod, attr_name)
-                            if callable(obj) and hasattr(obj, "__shin_tool__"):
-                                meta = obj.__shin_tool__
+                            if callable(obj) and hasattr(obj, "__adam_tool__"):
+                                meta = obj.__adam_tool__
                                 self.tools[meta["name"]] = CustomPythonToolDefinition(
                                     name=meta["name"],
                                     description=meta["description"],

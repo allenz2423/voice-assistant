@@ -1,5 +1,5 @@
 [Unit]
-Description=Shin: Voice-Activated Autonomous Terminal Agent
+Description=Adam: Voice-Activated Autonomous Terminal Agent
 After=pipewire.service wireplumber.service pipewire-pulse.service
 Wants=pipewire.service wireplumber.service
 

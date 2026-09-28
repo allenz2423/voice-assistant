@@ -99,9 +99,9 @@ def test_check_system_updates():
 
 def test_manage_service():
     from src.tools.dev_sys import manage_service
-    res = manage_service("status", "shin")
+    res = manage_service("status", "adam")
     assert isinstance(res, str)
-    assert "service" in res.lower() or "shin" in res.lower()
+    assert "service" in res.lower() or "adam" in res.lower()
 
 def test_git_repo_status():
     from src.tools.dev_sys import git_repo_status

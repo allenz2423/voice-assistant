@@ -10,7 +10,7 @@ def future_local_time():
 
 
 def test_create_list_cancel_vdir_event(tmp_path):
-    manager = NoctaliaCalendar(tmp_path / "calendars" / "shin")
+    manager = NoctaliaCalendar(tmp_path / "calendars" / "adam")
     result = manager.create_event(
         "Pick up groceries, please",
         future_local_time().isoformat(timespec="minutes"),
@@ -26,11 +26,11 @@ def test_create_list_cancel_vdir_event(tmp_path):
 
     assert "Removed event" in manager.cancel_event(event_id)
     assert not event_file.exists()
-    assert "no upcoming shin events" in manager.list_events().lower()
+    assert "no upcoming adam events" in manager.list_events().lower()
 
 
 def test_recurring_event_and_at_start_alarm(tmp_path):
-    manager = NoctaliaCalendar(tmp_path / "shin")
+    manager = NoctaliaCalendar(tmp_path / "adam")
     result = manager.create_event(
         "Weekly check-in",
         future_local_time().isoformat(timespec="minutes"),

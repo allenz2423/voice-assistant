@@ -1,9 +1,10 @@
 import os
 import json
 import re
+import html
 import asyncio
 import ollama
-from src.llm.tools import SHIN_TOOLS, CanonicalTool
+from src.llm.tools import ADAM_TOOLS, CanonicalTool
 
 class UniversalLLMClient:
     """Unified LLM client supporting local Ollama models and cloud providers with a single switch."""
@@ -39,7 +40,7 @@ class UniversalLLMClient:
         else:
             print(f"[LLM] Provider '{self.provider}' configured (no local GPU warmup required).", flush=True)
 
-    async def chat(self, messages: list[dict], tools: list[CanonicalTool] = SHIN_TOOLS) -> dict:
+    async def chat(self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS) -> dict:
         """Dispatches chat completion to the configured provider (local vs cloud)."""
         if self.provider == "local":
             return await self._chat_ollama(messages, tools)
@@ -52,7 +53,7 @@ class UniversalLLMClient:
         else:
             return await self._chat_ollama(messages, tools)
 
-    async def _chat_ollama(self, messages: list[dict], tools: list[CanonicalTool] = SHIN_TOOLS) -> dict:
+    async def _chat_ollama(self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS) -> dict:
         """Executes tool calling via local Ollama daemon."""
         openai_tools = [t.to_openai() for t in tools] if tools else None
         try:
@@ -75,10 +76,9 @@ class UniversalLLMClient:
             if content:
                 content = re.sub(r"<think>[\s\S]*?</think>", "", content, flags=re.IGNORECASE).strip()
                 content = re.sub(r"<thought>[\s\S]*?</thought>", "", content, flags=re.IGNORECASE).strip()
-                cleaned_content, extracted_tools = self._extract_embedded_tool_calls(content)
-                if extracted_tools:
-                    tool_calls = tool_calls or extracted_tools
-                    content = cleaned_content
+                cleaned_content, extracted_tools = self._extract_embedded_tool_calls(content, tools)
+                tool_calls = tool_calls or extracted_tools
+                content = cleaned_content
 
             return {
                 "role": "assistant",
@@ -90,7 +90,7 @@ class UniversalLLMClient:
             # Emergency offline rule-based fallback if Ollama is not running
             return self._emergency_rule_fallback(messages[-1].get("content", ""))
 
-    async def _chat_openai_compatible(self, messages: list[dict], tools: list[CanonicalTool] = SHIN_TOOLS) -> dict:
+    async def _chat_openai_compatible(self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS) -> dict:
         """Calls any OpenAI-compatible endpoint (Groq, OpenAI, vLLM, llama.cpp, LocalAI, LM Studio)."""
         import aiohttp
 
@@ -139,8 +139,7 @@ class UniversalLLMClient:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as session:
                 async with session.post(url, headers=headers, json=payload) as resp:
                     if resp.status != 200:
-                        err = await resp.text()
-                        print(f"[LLM] OpenAI-compatible call error ({resp.status}): {err}")
+                        print(f"[LLM] OpenAI-compatible call failed ({resp.status}).")
                         return self._emergency_rule_fallback(messages[-1].get("content", ""))
                     data = await resp.json()
                     choice = data.get("choices", [{}])[0].get("message", {})
@@ -150,10 +149,9 @@ class UniversalLLMClient:
                     if content:
                         content = re.sub(r"<think>[\s\S]*?</think>", "", content, flags=re.IGNORECASE).strip()
                         content = re.sub(r"<thought>[\s\S]*?</thought>", "", content, flags=re.IGNORECASE).strip()
-                        cleaned_content, extracted = self._extract_embedded_tool_calls(content)
-                        if extracted:
-                            tool_calls = tool_calls or extracted
-                            content = cleaned_content
+                        cleaned_content, extracted = self._extract_embedded_tool_calls(content, tools)
+                        tool_calls = tool_calls or extracted
+                        content = cleaned_content
 
                     return {
                         "role": "assistant",
@@ -161,10 +159,10 @@ class UniversalLLMClient:
                         "tool_calls": tool_calls
                     }
         except Exception as e:
-            print(f"[LLM] OpenAI-compatible request failed: {e}")
+            print(f"[LLM] OpenAI-compatible request failed ({type(e).__name__}).")
             return self._emergency_rule_fallback(messages[-1].get("content", ""))
 
-    async def _chat_anthropic(self, messages: list[dict], tools: list[CanonicalTool] = SHIN_TOOLS) -> dict:
+    async def _chat_anthropic(self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS) -> dict:
         import aiohttp
         key = self.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         if not key:
@@ -201,7 +199,7 @@ class UniversalLLMClient:
                         return self._emergency_rule_fallback(messages[-1].get("content", ""))
                     data = await resp.json()
                     content = "".join([b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"])
-                    cleaned_content, extracted = self._extract_embedded_tool_calls(content)
+                    cleaned_content, extracted = self._extract_embedded_tool_calls(content, tools)
                     return {
                         "role": "assistant",
                         "content": cleaned_content,
@@ -211,7 +209,7 @@ class UniversalLLMClient:
             print(f"[LLM] Anthropic request failed: {e}")
             return self._emergency_rule_fallback(messages[-1].get("content", ""))
 
-    async def _chat_gemini(self, messages: list[dict], tools: list[CanonicalTool] = SHIN_TOOLS) -> dict:
+    async def _chat_gemini(self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS) -> dict:
         import aiohttp
         key = self.api_key or os.environ.get("GEMINI_API_KEY", "")
         if not key:
@@ -239,7 +237,7 @@ class UniversalLLMClient:
                     data = await resp.json()
                     parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])
                     content = "".join([p.get("text", "") for p in parts if "text" in p])
-                    cleaned_content, extracted = self._extract_embedded_tool_calls(content)
+                    cleaned_content, extracted = self._extract_embedded_tool_calls(content, tools)
                     return {
                         "role": "assistant",
                         "content": cleaned_content,
@@ -249,7 +247,93 @@ class UniversalLLMClient:
             print(f"[LLM] Gemini request failed: {e}")
             return self._emergency_rule_fallback(messages[-1].get("content", ""))
 
-    def _extract_embedded_tool_calls(self, text: str) -> tuple[str, list[dict]]:
+    def _extract_embedded_tool_calls(
+        self, text: str, available_tools: list[CanonicalTool] | None = None
+    ) -> tuple[str, list[dict]]:
+        """Normalize textual tool-call formats emitted by models into existing calls.
+
+        Structured provider tool calls remain the preferred protocol. This parser
+        handles common Qwen/Dots XML fallbacks, but only for tools offered in this
+        request. The caller marks these as text fallbacks for dispatch policy.
+        """
+        if available_tools is None:
+            allowed_names = {tool.name for tool in ADAM_TOOLS}
+        else:
+            allowed_names = {
+                tool.name if hasattr(tool, "name") else str((tool.get("function") or {}).get("name", ""))
+                for tool in available_tools
+            }
+
+        parsed_calls: list[dict] = []
+        cleaned_text = text
+
+        # Qwen commonly emits <tool_call><function=name>... and Dots emits
+        # <dots_function_call><invoke name="...">...</invoke>.
+        wrapper_re = re.compile(
+            r"<(dots_function_call|tool_call)\b[^>]*>(.*?)</\1>", re.IGNORECASE | re.DOTALL
+        )
+        wrappers = list(wrapper_re.finditer(text))
+
+        def parse_value(value: str):
+            value = html.unescape(value.strip())
+            try:
+                return json.loads(value)
+            except (json.JSONDecodeError, TypeError):
+                return value
+
+        for wrapper in wrappers:
+            body = wrapper.group(2)
+            invokes = list(re.finditer(
+                r"<invoke\s+name\s*=\s*(['\"])([A-Za-z0-9_]+)\1\s*>(.*?)</invoke>",
+                body, re.IGNORECASE | re.DOTALL,
+            ))
+            functions = list(re.finditer(
+                r"<function\s*=\s*([A-Za-z0-9_]+)\s*>(.*?)</function>",
+                body, re.IGNORECASE | re.DOTALL,
+            ))
+            entries = [(m.group(2), m.group(3)) for m in invokes]
+            entries.extend((m.group(1), m.group(2)) for m in functions)
+
+            for name, fn_body in entries:
+                if name not in allowed_names:
+                    continue
+                arguments = {}
+                for param in re.finditer(
+                    r"<parameter(?:\s+name\s*=\s*(['\"])([A-Za-z0-9_]+)\1|\s*=\s*([A-Za-z0-9_]+))\s*>(.*?)</parameter>",
+                    fn_body, re.IGNORECASE | re.DOTALL,
+                ):
+                    parameter_name = param.group(2) or param.group(3)
+                    arguments[parameter_name] = parse_value(param.group(4))
+                parsed_calls.append({
+                    "function": {"name": name, "arguments": arguments},
+                    "_origin": "text_fallback",
+                })
+
+            if not entries:
+                _, wrapped_json_calls = self._extract_json_embedded_tool_calls(body)
+                for call in wrapped_json_calls:
+                    fn = call.get("function", {})
+                    if fn.get("name") in allowed_names:
+                        call["_origin"] = "text_fallback"
+                        parsed_calls.append(call)
+
+        # Remove recognized wrapper blocks even when their function wasn't
+        # offered, so unsupported pseudo-calls are never spoken back verbatim.
+        for wrapper in reversed(wrappers):
+            cleaned_text = cleaned_text[:wrapper.start()] + cleaned_text[wrapper.end():]
+
+        # Keep the existing JSON/markdown/inline compatibility parser for other
+        # providers, then filter its results against the current offered tools.
+        cleaned_json, json_calls = self._extract_json_embedded_tool_calls(cleaned_text)
+        for call in json_calls:
+            fn = call.get("function", {})
+            if fn.get("name") in allowed_names:
+                call["_origin"] = "text_fallback"
+                parsed_calls.append(call)
+
+        return cleaned_json.strip(), parsed_calls
+
+    def _extract_json_embedded_tool_calls(self, text: str) -> tuple[str, list[dict]]:
         """Recovers tool calls from raw JSON, markdown code blocks, or embedded objects with arbitrary nesting."""
         decoder = json.JSONDecoder()
         tool_calls = []
@@ -314,6 +398,11 @@ class UniversalLLMClient:
 
     def _emergency_rule_fallback(self, user_text: str) -> dict:
         """Rule-based emergency fallback for common commands when no LLM is running."""
+        # Brain requests include desktop and time context before the spoken command.
+        # Never treat or repeat that injected context as user text.
+        command_match = re.search(r"\[Local Time:[^\]]+\]\s*\n(.*)$", user_text, re.DOTALL)
+        if command_match:
+            user_text = command_match.group(1).strip()
         text = user_text.lower().strip()
         if "transcode" in text or "av1" in text:
             pattern = "*slime*" if "slime" in text else "*.mkv"
@@ -351,7 +440,7 @@ class UniversalLLMClient:
             }
         return {
             "role": "assistant",
-            "content": f"Understood: '{user_text}'. (LLM daemon offline; fallback response).",
+            "content": "I couldn't reach the language model. Please try again shortly.",
             "tool_calls": []
         }
 

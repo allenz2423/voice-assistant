@@ -40,7 +40,7 @@ def manage_service(action: str, service_name: str) -> str:
     act = (action or "status").strip().lower()
     svc = (service_name or "").strip()
     if not svc:
-        return "Please specify a service name (e.g., 'shin', 'pipewire', 'docker', 'sunshine')."
+        return "Please specify a service name (e.g., 'adam', 'pipewire', 'docker', 'sunadame')."
 
     if not shutil.which("systemctl"):
         return "systemctl is not available on this system."

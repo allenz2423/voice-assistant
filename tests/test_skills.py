@@ -113,7 +113,7 @@ def test_active_de_context_format(skill_mgr):
 
 @pytest.mark.asyncio
 async def test_brain_tool_execution_for_skills():
-    from src.llm.brain import ShinBrain
+    from src.llm.brain import AdamBrain
     from types import SimpleNamespace
 
     config = SimpleNamespace(
@@ -127,7 +127,7 @@ async def test_brain_tool_execution_for_skills():
         ),
         execution=SimpleNamespace(downloads_dir="~/Downloads", workspace_dir="~/workspace")
     )
-    brain = ShinBrain(
+    brain = AdamBrain(
         config=config,
         supervisor=MagicMock(),
         probe=MagicMock(),
@@ -327,7 +327,7 @@ def test_sway_targeted_window_move(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_brain_fast_path_action_tools():
-    from src.llm.brain import ShinBrain
+    from src.llm.brain import AdamBrain
 
     class DummyClient:
         def __init__(self):
@@ -365,7 +365,7 @@ async def test_brain_fast_path_action_tools():
             num_ctx=8192
         )
     )
-    brain = ShinBrain(config=dummy_config, supervisor=None, probe=None, confirmation_mgr=None, tts_engine=DummyTTS())
+    brain = AdamBrain(config=dummy_config, supervisor=None, probe=None, confirmation_mgr=None, tts_engine=DummyTTS())
     brain.llm_client = DummyClient()
 
     with patch("src.llm.brain.workspace_control", return_value="Moved 'Spotify Premium' to workspace 1."):
@@ -378,7 +378,7 @@ async def test_brain_fast_path_action_tools():
 
 @pytest.mark.asyncio
 async def test_brain_reprompts_for_summary_instead_of_speaking_raw_tool_result():
-    from src.llm.brain import ShinBrain
+    from src.llm.brain import AdamBrain
 
     class DummyClient:
         def __init__(self):
@@ -413,7 +413,7 @@ async def test_brain_reprompts_for_summary_instead_of_speaking_raw_tool_result()
         temperature=0.3, num_ctx=4096,
     ))
     tts = DummyTTS()
-    brain = ShinBrain(config, None, None, None, tts)
+    brain = AdamBrain(config, None, None, None, tts)
     brain.llm_client = DummyClient()
 
     async def fake_execute_tool(name, args):
@@ -431,7 +431,7 @@ async def test_brain_reprompts_for_summary_instead_of_speaking_raw_tool_result()
 
 @pytest.mark.asyncio
 async def test_brain_uses_generic_fallback_if_summary_retry_is_empty():
-    from src.llm.brain import ShinBrain
+    from src.llm.brain import AdamBrain
 
     class DummyClient:
         def __init__(self):
@@ -461,7 +461,7 @@ async def test_brain_uses_generic_fallback_if_summary_retry_is_empty():
         temperature=0.3, num_ctx=4096,
     ))
     tts = DummyTTS()
-    brain = ShinBrain(config, None, None, None, tts)
+    brain = AdamBrain(config, None, None, None, tts)
     brain.llm_client = DummyClient()
     brain._execute_tool = lambda name, args: None
 

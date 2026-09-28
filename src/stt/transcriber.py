@@ -2,6 +2,10 @@ import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 import glob
 import ctypes
+import asyncio
+import io
+import wave
+import threading
 import numpy as np
 
 # Auto-preload NVIDIA CUDA 12 libraries from venv if present
@@ -32,21 +36,24 @@ class WhisperTranscriber:
 
     def _load_model(self):
         try:
-            print(f"[STT] Loading faster-whisper '{self.model_size}' on {self.device}:{self.device_index} ({self.compute_type})...")
+            device_label = f"{self.device}:{self.device_index}" if self.device != "cpu" else "cpu"
+            print(f"[STT] Loading faster-whisper '{self.model_size}' on {device_label} ({self.compute_type})...")
             self.model = WhisperModel(
                 self.model_size,
                 device=self.device,
                 device_index=self.device_index,
                 compute_type=self.compute_type
             )
-            print("[STT] faster-whisper loaded successfully on CUDA!")
+            print(f"[STT] faster-whisper loaded successfully on {self.device}.")
         except Exception as e:
-            print(f"[STT] CUDA initialization failed ({e}), falling back to CPU int8...")
+            print(f"[STT] Could not load faster-whisper on {self.device} ({e}); falling back to CPU int8...")
             self.model = WhisperModel(
                 self.model_size,
                 device="cpu",
                 compute_type="int8"
             )
+            self.device = "cpu"
+            print("[STT] faster-whisper loaded successfully on CPU (int8).")
 
     def transcribe(self, audio_data: np.ndarray) -> str:
         """Transcribes 16kHz float32 mono audio array to text."""
@@ -112,8 +119,106 @@ class Qwen3Transcriber:
             print(f"[STT] Qwen3-ASR transcription error: {e}")
             return ""
 
-def create_transcriber(config):
+
+class OpenAITranscriber:
+    """OpenAI-style cloud transcription with a lazy Faster-Whisper fallback."""
+    def __init__(
+        self,
+        model="gpt-transcribe",
+        api_key="",
+        endpoint="https://api.openai.com/v1/audio/transcriptions",
+        fallback_model="base.en",
+        fallback_device="cpu",
+        fallback_compute_type="int8",
+        fallback_device_index=0,
+        shared_api_key="",
+    ):
+        self.model = model
+        self.api_key = api_key or shared_api_key
+        self.endpoint = endpoint or "https://api.openai.com/v1/audio/transcriptions"
+        self.fallback_model = fallback_model
+        self.fallback_device = fallback_device
+        self.fallback_compute_type = fallback_compute_type
+        self.fallback_device_index = fallback_device_index
+        self._fallback = None
+        self._fallback_lock = threading.Lock()
+
+    def _transcribe_fallback(self, audio_data: np.ndarray, reason: str) -> str:
+        try:
+            with self._fallback_lock:
+                if self._fallback is None:
+                    print(f"[STT] Cloud transcription unavailable ({reason}); loading Faster-Whisper fallback.", flush=True)
+                    self._fallback = WhisperTranscriber(
+                        model_size=self.fallback_model,
+                        device=self.fallback_device,
+                        device_index=self.fallback_device_index,
+                        compute_type=self.fallback_compute_type,
+                    )
+            return self._fallback.transcribe(audio_data)
+        except Exception as e:
+            print(f"[STT] Faster-Whisper fallback failed: {e}", flush=True)
+            return ""
+
+    def transcribe(self, audio_data: np.ndarray) -> str:
+        if audio_data is None or len(audio_data) < 1600:
+            return ""
+        if not self.api_key:
+            return self._transcribe_fallback(audio_data, "no API key configured")
+
+        pcm = np.clip(audio_data, -1.0, 1.0)
+        pcm = (pcm * 32767).astype(np.int16)
+        wav_io = io.BytesIO()
+        with wave.open(wav_io, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(2)
+            wav_file.setframerate(16000)
+            wav_file.writeframes(pcm.tobytes())
+
+        async def _request():
+            import aiohttp
+            form = aiohttp.FormData()
+            form.add_field("model", self.model)
+            form.add_field("file", wav_io.getvalue(), filename="utterance.wav", content_type="audio/wav")
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    self.endpoint,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    data=form,
+                ) as response:
+                    payload = await response.json(content_type=None)
+                    if response.status != 200:
+                        raise RuntimeError(f"OpenAI transcription failed ({response.status}): {payload}")
+                    return str(payload.get("text", "")).strip()
+
+        try:
+            transcript = asyncio.run(_request())
+            if transcript:
+                return transcript
+            return self._transcribe_fallback(audio_data, "cloud response contained no transcript")
+        except Exception as e:
+            return self._transcribe_fallback(audio_data, str(e))
+
+def create_transcriber(config, shared_api_key=""):
     """Factory creating either Qwen3Transcriber or WhisperTranscriber based on config."""
+    provider = getattr(config, "provider", "local").lower()
+    if provider in ("openai", "openrouter", "custom"):
+        if provider == "openai":
+            env_key = os.environ.get("OPENAI_API_KEY", "")
+        elif provider == "openrouter":
+            env_key = os.environ.get("OPENROUTER_API_KEY", "")
+        else:
+            env_key = os.environ.get("CLOUD_STT_API_KEY", "")
+        return OpenAITranscriber(
+            model=getattr(config, "cloud_model", "gpt-transcribe"),
+            api_key=getattr(config, "api_key", "") or env_key,
+            endpoint=getattr(config, "cloud_url", "https://api.openai.com/v1/audio/transcriptions"),
+            fallback_model=getattr(config, "fallback_model", "base.en"),
+            fallback_device=getattr(config, "fallback_device", "cpu"),
+            fallback_compute_type=getattr(config, "fallback_compute_type", "int8"),
+            fallback_device_index=getattr(config, "device_index", 0),
+            shared_api_key=shared_api_key if provider in ("openrouter", "custom") else "",
+        )
     model_name = getattr(config, "model_size", "distil-large-v3").lower()
     if "qwen" in model_name:
         device = getattr(config, "device", "Vulkan0")

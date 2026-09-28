@@ -6,7 +6,7 @@ import numpy as np
 
 def setup_audio_routing(target_sink: str = ""):
     """Injects routing variables for both ALSA PipeWire-plugin and PulseAudio layers if explicitly set."""
-    if target_sink and target_sink not in ("Shin_Playback_Sink", "default"):
+    if target_sink and target_sink not in ("Adam_Playback_Sink", "default"):
         os.environ["PIPEWIRE_NODE"] = target_sink
         os.environ["PULSE_SINK"] = target_sink
 
@@ -22,7 +22,7 @@ def resolve_pulse_device_index() -> int | None:
 
 class RobustEarconEngine:
     """Hardened non-blocking earcon engine with PortAudio recovery and epoch barriers."""
-    def __init__(self, target_sink="Shin_Playback_Sink", sample_rate=48000):
+    def __init__(self, target_sink="Adam_Playback_Sink", sample_rate=48000):
         setup_audio_routing(target_sink)
         self.sample_rate = sample_rate
         self.pulse_idx = resolve_pulse_device_index()

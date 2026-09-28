@@ -49,4 +49,4 @@ def test_invalid_reminder_does_not_write(tmp_path):
     manager = ReminderManager(tmp_path)
     result = manager.create_reminder("", "not a date")
     assert "message" in result.lower()
-    assert not manager.shin_file.exists()
+    assert not manager.adam_file.exists()

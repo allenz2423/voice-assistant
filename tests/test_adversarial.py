@@ -11,7 +11,7 @@ from pathlib import Path
 from src.arbiter.arbiter import PriorityAudioArbiter, SystemState
 from src.arbiter.confirmation import TriStateConfirmationManager
 from src.execution.supervisor import HardenedJobSupervisor
-from src.llm.brain import ShinBrain
+from src.llm.brain import AdamBrain
 from src.config import load_config
 from src.tts.streaming import clean_speech_text, StreamingVoiceSynthesizer
 from src.audio.stream import AudioStreamManager
@@ -235,7 +235,7 @@ async def test_run_bash_unbounded_stream_memory_exhaustion():
     unbounded stream commands (like 'yes') without OOM or infinite loops.
     """
     cfg = load_config()
-    brain = ShinBrain(cfg, None, None, None, None)
+    brain = AdamBrain(cfg, None, None, None, None)
     res = await brain._execute_tool("run_bash_command", {"command": "yes"})
 
     assert len(res) <= 13000
@@ -308,7 +308,7 @@ async def test_organize_files_collision_with_existing_destination_file_fails_sil
 async def test_organize_files_group_name_collides_with_existing_file_crashes_category():
     """
     VERIFIED: If an existing file shares the name of a category folder (e.g. 'Videos'),
-    ShinBrain._handle_organize_files appends '_folder' to prevent FileExistsError.
+    AdamBrain._handle_organize_files appends '_folder' to prevent FileExistsError.
     """
     with tempfile.TemporaryDirectory() as tmpdir:
         tmp_path = Path(tmpdir)
@@ -320,7 +320,7 @@ async def test_organize_files_group_name_collides_with_existing_file_crashes_cat
         earcon = MockEarcon()
         arbiter = PriorityAudioArbiter(tts, earcon)
         mgr = TriStateConfirmationManager(tts, arbiter)
-        brain = ShinBrain(cfg, None, None, mgr, tts)
+        brain = AdamBrain(cfg, None, None, mgr, tts)
 
         await brain._handle_organize_files({"directory": str(tmp_path), "group_by": "type"})
         plan = mgr.pending_action.get("plan", {})
@@ -395,11 +395,11 @@ async def test_supervisor_job_id_path_traversal_arbitrary_file_write():
 @pytest.mark.asyncio
 async def test_start_background_job_naive_split_corrupts_quoted_arguments():
     """
-    VERIFIED: ShinBrain uses shlex.split to parse background job commands,
+    VERIFIED: AdamBrain uses shlex.split to parse background job commands,
     preserving quotes and arguments containing spaces.
     """
     cfg = load_config()
-    brain = ShinBrain(cfg, None, None, None, None)
+    brain = AdamBrain(cfg, None, None, None, None)
 
     class MockSupervisor:
         def __init__(self):

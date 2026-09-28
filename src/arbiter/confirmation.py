@@ -90,7 +90,7 @@ class TriStateConfirmationManager:
 
         # Sanitize prompt for TTS so speech is ultra-concise and never reads hex addresses or technical dumps
         spoken_prompt = sanitize_confirmation_speech(prompt_text, summary=action_payload.get("summary", ""))
-        print(f"[Shin] Response: {spoken_prompt}", flush=True)
+        print(f"[Adam] Response: {spoken_prompt}", flush=True)
         await self.tts.speak_async(spoken_prompt)
 
         if self.watchdog_task and not self.watchdog_task.done():
@@ -140,7 +140,7 @@ class TriStateConfirmationManager:
             self.watchdog_task = asyncio.create_task(self._expiry_watchdog(self.timeout_seconds))
             
             explanation = f"I am waiting to execute: {self.pending_action.get('summary', 'this command')}. Should I proceed?"
-            print(f"[Shin] Response: {explanation}", flush=True)
+            print(f"[Adam] Response: {explanation}", flush=True)
             await self.tts.speak_async(explanation)
             return "CLARIFY", None
 
@@ -155,12 +155,12 @@ class TriStateConfirmationManager:
             return "NEW_COMMAND", text
 
         # 5. Unrecognized short utterance -> ask for clarification
-        print("[Shin] Response: Please answer yes or no.", flush=True)
+        print("[Adam] Response: Please answer yes or no.", flush=True)
         await self.tts.speak_async("Please answer yes or no.")
         return "CLARIFY", None
 
     async def _cancel_confirmation(self, message: str):
         self.pending_action = None
-        print(f"[Shin] Response: {message}", flush=True)
+        print(f"[Adam] Response: {message}", flush=True)
         await self.tts.speak_async(message)
         await self.arbiter.set_state("IDLE_LISTENING")

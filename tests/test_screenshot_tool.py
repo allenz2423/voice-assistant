@@ -23,7 +23,7 @@ def test_capture_screenshot_returns_png_bytes():
 
 @pytest.mark.asyncio
 async def test_screenshot_tool_attaches_image_to_followup_turn():
-    from src.llm.brain import ShinBrain
+    from src.llm.brain import AdamBrain
 
     class DummyClient:
         def __init__(self):
@@ -69,7 +69,7 @@ async def test_screenshot_tool_attaches_image_to_followup_turn():
             think="low",
         )
     )
-    brain = ShinBrain(
+    brain = AdamBrain(
         config=config,
         supervisor=None,
         probe=None,
@@ -93,7 +93,7 @@ async def test_screenshot_tool_attaches_image_to_followup_turn():
 
 @pytest.mark.asyncio
 async def test_chat_inspection_does_not_stop_after_focusing_window():
-    from src.llm.brain import ShinBrain
+    from src.llm.brain import AdamBrain
 
     class DummyClient:
         def __init__(self):
@@ -125,7 +125,7 @@ async def test_chat_inspection_does_not_stop_after_focusing_window():
         ollama_host="http://localhost:11434", temperature=0.3, num_ctx=16384, think="low",
     ))
     tts = DummyTTS()
-    brain = ShinBrain(config, None, None, None, tts)
+    brain = AdamBrain(config, None, None, None, tts)
     brain.llm_client = DummyClient()
 
     with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Discord window"), patch(

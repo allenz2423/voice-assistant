@@ -30,7 +30,7 @@ from src.stt.transcriber import WhisperTranscriber
 stt = WhisperTranscriber(model_size="base.en", device="cuda", device_index=0, compute_type="int8_float32")
 
 # Wake word matcher
-wake_regex = re.compile(r"\b(hey\b[,.\s]*)?(adam|shin)\b[,.:!?\s]*", re.IGNORECASE)
+wake_regex = re.compile(r"\b(hey\b[,.\s]*)?(adam|adam)\b[,.:!?\s]*", re.IGNORECASE)
 
 print("\n" + "=" * 60)
 print(" BARE-BONES MICROPHONE & WHISPER TRANSCRIPTION TEST")
@@ -76,7 +76,7 @@ if text:
         cmd = text.strip()[match.end():].strip()
         print(f"[Wake Word] SUCCESS! Matched wake word! Trailing command: \"{cmd}\"")
     else:
-        print(f"[Wake Word] Speech heard, but did not match 'Hey Adam' or 'Hey Shin'.")
+        print(f"[Wake Word] Speech heard, but did not match 'Hey Adam' or 'Hey Adam'.")
 else:
     print("[Whisper] No speech detected in the recording.")
 

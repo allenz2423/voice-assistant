@@ -1,4 +1,4 @@
-"""Semantic Endpoint Analyzer for Shin Voice Assistant.
+"""Semantic Endpoint Analyzer for Adam Voice Assistant.
 
 Determines whether a streaming speech utterance represents a complete linguistic command,
 a dangling / hesitant thought, or a neutral state, dynamically adjusting silence cutoff

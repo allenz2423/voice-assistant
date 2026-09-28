@@ -7,6 +7,34 @@ import time
 from pathlib import Path
 from typing import Optional, Any, Dict, List, Set
 
+_HYPRLAND_LUA_DISPATCH: Optional[bool] = None
+
+
+def _lua_string(value: str) -> str:
+    """Quote a Python string as a Lua string literal."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n").replace("\r", "\\r")
+    return f'"{escaped}"'
+
+
+def _hyprland_dispatch(legacy_dispatch: str, legacy_args: str = "", *, lua_expression: str) -> subprocess.CompletedProcess:
+    """Run a dispatcher on both legacy hyprlang and Lua-config Hyprland versions."""
+    global _HYPRLAND_LUA_DISPATCH
+    if _HYPRLAND_LUA_DISPATCH is None:
+        try:
+            version = subprocess.run(["hyprctl", "version"], capture_output=True, text=True, timeout=2).stdout
+            match = re.search(r"Hyprland\s+(\d+)\.(\d+)", version)
+            _HYPRLAND_LUA_DISPATCH = bool(match and tuple(map(int, match.groups())) >= (0, 55))
+        except Exception:
+            _HYPRLAND_LUA_DISPATCH = False
+
+    if _HYPRLAND_LUA_DISPATCH:
+        command = ["hyprctl", "dispatch", lua_expression]
+    else:
+        command = ["hyprctl", "dispatch", legacy_dispatch]
+        if legacy_args:
+            command.append(legacy_args)
+    return subprocess.run(command, capture_output=True, text=True, timeout=3)
+
 def ensure_gui_environment():
     """Dynamically acquires GUI display variables (WAYLAND_DISPLAY, DISPLAY, HYPRLAND_INSTANCE_SIGNATURE,
     SWAYSOCK, I3SOCK, NIRI_SOCKET, KDE_SESSION_VERSION) from systemd user environment or active compositor
@@ -606,15 +634,18 @@ class HyprlandBackend(BaseDesktopBackend):
                 addr = match.get("address", "")
                 ws = match.get("workspace", {}).get("id", "?")
                 title = match.get("title") or match.get("class", "Window")
-                res = subprocess.run(["hyprctl", "dispatch", "focuswindow", f"address:{addr}"], capture_output=True, text=True)
+                selector = f"address:{addr}"
+                res = _hyprland_dispatch("focuswindow", selector, lua_expression=f"hl.dsp.focus({{ window = {_lua_string(selector)} }})")
                 if "ok" in res.stdout.lower() or res.returncode == 0:
                     return f"Focused '{title[:40]}' on workspace {ws}."
-                res = subprocess.run(["hyprctl", "dispatch", "focuswindow", f"class:{match.get('class')}"], capture_output=True, text=True)
+                selector = f"class:{match.get('class')}"
+                res = _hyprland_dispatch("focuswindow", selector, lua_expression=f"hl.dsp.focus({{ window = {_lua_string(selector)} }})")
                 if "ok" in res.stdout.lower() or res.returncode == 0:
                     return f"Focused '{title[:40]}' on workspace {ws}."
                 return f"Failed to focus window: {res.stdout.strip() or res.stderr.strip()}"
             else:
-                res = subprocess.run(["hyprctl", "dispatch", "focuswindow", f"class:{t}"], capture_output=True, text=True)
+                selector = f"class:{t}"
+                res = _hyprland_dispatch("focuswindow", selector, lua_expression=f"hl.dsp.focus({{ window = {_lua_string(selector)} }})")
                 if "ok" in res.stdout.lower():
                     return f"Focused window matching '{t}'."
                 open_apps = list({c.get("class", "") for c in clients if c.get("class")})
@@ -656,7 +687,8 @@ class HyprlandBackend(BaseDesktopBackend):
                                 "previous_workspace": curr_ws
                             }
 
-                        res = subprocess.run(["hyprctl", "dispatch", "movetoworkspacesilent", f"{ws},address:{addr}"], capture_output=True, text=True)
+                        selector = f"address:{addr}"
+                        res = _hyprland_dispatch("movetoworkspacesilent", f"{ws},{selector}", lua_expression=f"hl.dsp.window.move({{ workspace = {_lua_string(ws)}, window = {_lua_string(selector)}, follow = false }})")
                         stdout_clean = res.stdout.strip().lower()
                         if "ok" in stdout_clean and "invalid" not in stdout_clean:
                             return f"Moved '{title[:40]}' to workspace {ws}."
@@ -666,13 +698,13 @@ class HyprlandBackend(BaseDesktopBackend):
                 except Exception as e:
                     return f"Error moving window in Hyprland: {e}"
             else:
-                res = subprocess.run(["hyprctl", "dispatch", "movetoworkspace", ws], capture_output=True, text=True)
+                res = _hyprland_dispatch("movetoworkspace", ws, lua_expression=f"hl.dsp.window.move({{ workspace = {_lua_string(ws)} }})")
                 stdout_clean = res.stdout.strip().lower()
                 if "ok" in stdout_clean and "invalid" not in stdout_clean:
                     return f"Moved active window to workspace {ws}."
                 return f"Failed to move active window: {res.stdout.strip() or res.stderr.strip()}"
         else:
-            res = subprocess.run(["hyprctl", "dispatch", "workspace", ws], capture_output=True, text=True)
+            res = _hyprland_dispatch("workspace", ws, lua_expression=f"hl.dsp.focus({{ workspace = {_lua_string(ws)} }})")
             stdout_clean = res.stdout.strip().lower()
             if "ok" in stdout_clean and "invalid" not in stdout_clean:
                 return f"Switched to workspace {ws}."
@@ -691,10 +723,11 @@ class HyprlandBackend(BaseDesktopBackend):
                 addr = act.get("address", "")
                 title = act.get("title") or act.get("class", "Active Window")
                 if addr:
-                    res = subprocess.run(["hyprctl", "dispatch", "closewindow", f"address:{addr}"], capture_output=True, text=True, timeout=1)
+                    selector = f"address:{addr}"
+                    res = _hyprland_dispatch("closewindow", selector, lua_expression=f"hl.dsp.window.close({{ window = {_lua_string(selector)} }})")
                     if "ok" in res.stdout.lower() or res.returncode == 0:
                         return f"Closed active window for {title[:40]}."
-                res = subprocess.run(["hyprctl", "dispatch", "killactive"], capture_output=True, text=True, timeout=1)
+                res = _hyprland_dispatch("killactive", lua_expression="hl.dsp.window.close()")
                 if "ok" in res.stdout.lower() or res.returncode == 0:
                     return "Closed active window."
 
@@ -704,7 +737,8 @@ class HyprlandBackend(BaseDesktopBackend):
             if match:
                 addr = match.get("address", "")
                 title = match.get("title") or match.get("class", "Window")
-                res = subprocess.run(["hyprctl", "dispatch", "closewindow", f"address:{addr}"], capture_output=True, text=True, timeout=1)
+                selector = f"address:{addr}"
+                res = _hyprland_dispatch("closewindow", selector, lua_expression=f"hl.dsp.window.close({{ window = {_lua_string(selector)} }})")
                 if "ok" in res.stdout.lower() or res.returncode == 0:
                     return f"Closed window for {title[:40]}."
         except Exception:
@@ -792,16 +826,18 @@ class HyprlandBackend(BaseDesktopBackend):
             if first.get("workspace", {}).get("id") != second.get("workspace", {}).get("id"):
                 return "Both windows need to be on the same workspace before I can reorder them."
 
-            focus = subprocess.run(
-                ["hyprctl", "dispatch", "focuswindow", f"address:{first_address}"],
-                capture_output=True, text=True, timeout=2,
+            first_selector = f"address:{first_address}"
+            focus = _hyprland_dispatch(
+                "focuswindow", first_selector,
+                lua_expression=f"hl.dsp.focus({{ window = {_lua_string(first_selector)} }})",
             )
             if focus.returncode != 0 or "ok" not in focus.stdout.lower():
                 return f"Could not focus the first window: {focus.stdout.strip() or focus.stderr.strip()}"
 
-            swap = subprocess.run(
-                ["hyprctl", "dispatch", "swapwindow", f"address:{second_address}"],
-                capture_output=True, text=True, timeout=2,
+            second_selector = f"address:{second_address}"
+            swap = _hyprland_dispatch(
+                "swapwindow", second_selector,
+                lua_expression=f"hl.dsp.window.swap({{ target = {_lua_string(second_selector)} }})",
             )
             result = f"{swap.stdout} {swap.stderr}".strip()
             if swap.returncode != 0 or "ok" not in swap.stdout.lower() or any(
@@ -1991,7 +2027,10 @@ def launch_application(app_name: str, args: Optional[str] = "") -> str:
     try:
         # 1. Hyprland
         if os.environ.get("WAYLAND_DISPLAY") and shutil.which("hyprctl"):
-            res = subprocess.run(["hyprctl", "dispatch", "exec", exec_cmd], capture_output=True, text=True)
+            res = _hyprland_dispatch(
+                "exec", exec_cmd,
+                lua_expression=f"hl.dsp.exec_cmd({_lua_string(exec_cmd)})",
+            )
             if res.returncode == 0:
                 return f"Launched {display_name} via Hyprland."
         # 2. Sway
@@ -2246,7 +2285,19 @@ def execute_desktop_macro(macro_name: str) -> str:
 
     for cmd in commands:
         try:
-            res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10, env=os.environ)
+            if isinstance(backend, HyprlandBackend) and name in default_macros and name != "lock":
+                lua_macros = {
+                    "toggle_floating": "hl.dsp.window.float()",
+                    "fullscreen": 'hl.dsp.window.fullscreen({ mode = "maximized" })',
+                    "pin": "hl.dsp.window.pin()",
+                    "split": 'hl.dsp.layout("togglesplit")',
+                }
+                legacy = shlex.split(cmd)
+                dispatcher = legacy[2] if len(legacy) > 2 else ""
+                argument = " ".join(legacy[3:])
+                res = _hyprland_dispatch(dispatcher, argument, lua_expression=lua_macros[name])
+            else:
+                res = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=10, env=os.environ)
             if res.returncode != 0:
                 err = res.stderr.strip() or res.stdout.strip()
                 return f"Macro '{macro_name}' failed at step '{cmd}': {err}"
@@ -2283,7 +2334,7 @@ def show_desktop_notification(
     urgency_val = urgency if urgency in ["low", "normal", "critical"] else "normal"
     cmd = [
         "notify-send",
-        "-a", "Shin",
+        "-a", "Adam",
         "-u", urgency_val,
         "-t", str(timeout_ms),
         str(title),
@@ -2296,4 +2347,3 @@ def show_desktop_notification(
         return f"notify-send returned code {res.returncode}: {res.stderr.strip()}"
     except Exception as e:
         return f"Failed to show notification: {e}"
-

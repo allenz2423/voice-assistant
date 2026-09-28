@@ -1,4 +1,4 @@
-"""Interactively enroll or replace Shin's local speaker-verification profile."""
+"""Interactively enroll or replace Adam's local speaker-verification profile."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from src.stt.speaker import SAMPLE_RATE, SpeakerVerifier
 
 
 PROMPTS = (
-    "I use Shin to help me with things on my computer.",
+    "I use Adam to help me with things on my computer.",
     "Please check what is on my screen and tell me what you see.",
     "This is my voice profile, recorded locally for speaker verification.",
 )
@@ -42,7 +42,7 @@ def record_sample(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", default="config.yaml", help="Shin configuration file")
+    parser.add_argument("--config", default="config.yaml", help="Adam configuration file")
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -90,7 +90,7 @@ def main() -> None:
         gc.collect()
 
     print(f"Speaker profile enrolled locally at {verifier.profile_path}.")
-    print("Restart Shin to enable speaker checks. To remove the profile, delete that file.")
+    print("Restart Adam to enable speaker checks. To remove the profile, delete that file.")
 
 
 if __name__ == "__main__":

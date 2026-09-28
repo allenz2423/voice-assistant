@@ -8,7 +8,7 @@ import shutil
 from src.main import merge_overlapping_transcripts
 from src.arbiter.confirmation import TriStateConfirmationManager, sanitize_confirmation_speech
 from src.arbiter.arbiter import PriorityAudioArbiter, SystemState
-from src.llm.brain import ShinBrain
+from src.llm.brain import AdamBrain
 from src.tts.streaming import StreamingVoiceSynthesizer
 from src.config import load_config
 from src.tools.desktop import show_desktop_notification
@@ -171,28 +171,28 @@ async def test_show_desktop_notification_tool():
 
 def test_resolve_time_local():
     cfg = load_config()
-    brain = ShinBrain(cfg, None, None, None, None)
+    brain = AdamBrain(cfg, None, None, None, None)
     res = brain._resolve_time("local")
     assert "Current local time:" in res
     assert "UTC" in res
 
 def test_resolve_time_japan():
     cfg = load_config()
-    brain = ShinBrain(cfg, None, None, None, None)
+    brain = AdamBrain(cfg, None, None, None, None)
     res = brain._resolve_time("Japan")
     assert "Asia/Tokyo" in res
     assert "JST" in res
 
 def test_resolve_time_world_locations():
     cfg = load_config()
-    brain = ShinBrain(cfg, None, None, None, None)
+    brain = AdamBrain(cfg, None, None, None, None)
     for loc, tz in [("London", "Europe/London"), ("Paris", "Europe/Paris"), ("California", "America/Los_Angeles"), ("UTC", "UTC")]:
         res = brain._resolve_time(loc)
         assert tz in res, f"Expected {tz} for location {loc}, got {res}"
 
 def test_resolve_time_unknown_fallback():
     cfg = load_config()
-    brain = ShinBrain(cfg, None, None, None, None)
+    brain = AdamBrain(cfg, None, None, None, None)
     res = brain._resolve_time("Atlantis City")
     assert "Could not find timezone" in res or "Local time" in res
 
@@ -223,7 +223,7 @@ async def test_organize_files_logic_in_tempdir():
         tts = MockTTS()
         arbiter = PriorityAudioArbiter(tts, None)
         confirmation = TriStateConfirmationManager(tts, arbiter)
-        brain = ShinBrain(cfg, None, None, confirmation, tts)
+        brain = AdamBrain(cfg, None, None, confirmation, tts)
 
         # 1. Test dry-run
         res_dry = await brain._handle_organize_files({
@@ -266,7 +266,7 @@ async def test_organize_files_logic_in_tempdir():
 @pytest.mark.asyncio
 async def test_ping_target_validation():
     cfg = load_config()
-    brain = ShinBrain(cfg, None, None, None, None)
+    brain = AdamBrain(cfg, None, None, None, None)
 
     # Invalid conversational phrases should be rejected
     invalid_res = await brain._execute_tool("run_bash_command", {"command": "ping German Wicket PD"})
@@ -359,7 +359,7 @@ async def test_organize_files_with_unicode_and_colons():
 
         cfg = load_config()
         tts = MockTTS()
-        brain = ShinBrain(cfg, None, None, None, tts)
+        brain = AdamBrain(cfg, None, None, None, tts)
 
         res = await brain._handle_organize_files({
             "directory": str(tmp_path),
@@ -528,7 +528,7 @@ def test_custom_wake_word_anchoring_and_speaker_rejection():
     # A self-correction may restart the request with a later wake phrase;
     # only the command after that final address should be sent to the agent.
     corrected, corrected_cmd = detector.match_custom_wake_word(
-        "Hey, Shin. What's on my Google? Hey, Adam. What's on my Google Calendar?"
+        "Hey, Adam. What's on my Google? Hey, Adam. What's on my Google Calendar?"
     )
     assert corrected is True
     assert corrected_cmd == "What's on my Google Calendar?"
@@ -577,7 +577,7 @@ def test_custom_wake_word_anchoring_and_speaker_rejection():
     m8, _ = detector.match_custom_wake_word("A big dam was constructed on the river.")
     assert m8 is False
 
-    m9, _ = detector.match_custom_wake_word("He was kicked in the shin during the match.")
+    m9, _ = detector.match_custom_wake_word("He was kicked in the adam during the match.")
     assert m9 is False
 
 

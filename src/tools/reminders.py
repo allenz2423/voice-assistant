@@ -10,11 +10,11 @@ from pathlib import Path
 
 
 class ReminderManager:
-    """Manage Shin-owned entries while leaving Remind files user-editable."""
+    """Manage Adam-owned entries while leaving Remind files user-editable."""
 
     def __init__(self, config_dir: str | Path | None = None, executable: str = "remind"):
         self.config_dir = Path(config_dir or Path.home() / ".config" / "remind").expanduser()
-        self.shin_file = self.config_dir / "shin.rem"
+        self.adam_file = self.config_dir / "adam.rem"
         self.executable = executable
 
     def _available(self) -> bool:
@@ -69,8 +69,8 @@ class ReminderManager:
 
         reminder_id = uuid.uuid4().hex[:8]
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        with self.shin_file.open("a", encoding="utf-8") as file:
-            file.write(f"# SHIN-ID:{reminder_id}\n{rem_line}\n")
+        with self.adam_file.open("a", encoding="utf-8") as file:
+            file.write(f"# ADAM-ID:{reminder_id}\n{rem_line}\n")
         return f"Reminder set for {moment.strftime('%A, %B %-d at %-I:%M %p')} (ID {reminder_id})."
 
     def list_reminders(self) -> str:
@@ -99,14 +99,14 @@ class ReminderManager:
         target = (reminder_id or "").strip().lower()
         if not target:
             return "Please specify a reminder ID."
-        if not self.shin_file.exists():
-            return f"No Shin reminder found with ID {target}."
-        lines = self.shin_file.read_text(encoding="utf-8").splitlines()
+        if not self.adam_file.exists():
+            return f"No Adam reminder found with ID {target}."
+        lines = self.adam_file.read_text(encoding="utf-8").splitlines()
         kept: list[str] = []
         removed = False
         skip_entry = False
         for line in lines:
-            if line.startswith("# SHIN-ID:"):
+            if line.startswith("# ADAM-ID:"):
                 if line.partition(":")[2].strip().lower() == target:
                     removed = True
                     skip_entry = True
@@ -117,7 +117,7 @@ class ReminderManager:
                 continue
             kept.append(line)
         if not removed:
-            return f"No Shin reminder found with ID {target}."
+            return f"No Adam reminder found with ID {target}."
         content = "\n".join(kept).rstrip()
-        self.shin_file.write_text(content + ("\n" if content else ""), encoding="utf-8")
+        self.adam_file.write_text(content + ("\n" if content else ""), encoding="utf-8")
         return f"Cancelled reminder {target}."

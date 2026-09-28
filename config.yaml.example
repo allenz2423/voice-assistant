@@ -1,4 +1,4 @@
-# Shin Configuration
+# Adam Configuration
 audio:
   target_sink: "default"        # "default", or specific PipeWire node/ALSA sink
   target_source: "default"      # "default", or specific PipeWire source/ALSA mic
@@ -15,23 +15,33 @@ wake:
   followup_window_seconds: 7.0  # continuous conversation window after speaking
 
 stt:
+  provider: "local"        # "local" | "openai" | "openrouter" | "custom"
   model_size: "qwen3-asr-1.7b" # "qwen3-asr-1.7b", "distil-large-v3", or "base.en"
   device: "Vulkan0"         # Dedicated GPU 0 (GTX 1080 Ti) via Vulkan / CUDA
   device_index: 0
   compute_type: "int8_float32" # Pascal CC 6.1 optimized
+  cloud_model: "gpt-transcribe"
+  cloud_url: "https://api.openai.com/v1/audio/transcriptions"
+  api_key: ""
+  fallback_model: "base.en"
+  fallback_device: "cpu"
+  fallback_compute_type: "int8"
 
 speaker_verification:
   enabled: true # Activates only after a local voice profile is enrolled
   threshold: 0.25
 
 tts:
-  engine: "kokoro"             # "kokoro" (natural neural voice) | "piper"
+  engine: "kokoro"             # "kokoro" | "openai" (cloud speech) | "silent" (desktop notifications)
   model_path: "assets/voices/kokoro/kokoro-v1.0.onnx"
   voices_path: "assets/voices/kokoro/voices-v1.0.bin"
   voice: "af_nicole"             # Natural studio-quality voice matching wake word 'Hey Adam'
   device_id: 0                 # Dedicated GPU 0 (GTX 1080 Ti via CUDA)
   speed: 1.1
   sample_rate: 24000
+  cloud_model: "gpt-4o-mini-tts"
+  cloud_voice: "marin"
+  api_key: ""
 
 llm:
   provider: "local"         # "local" | "groq" | "gemini" | "anthropic" | "openai" | "custom"
@@ -42,12 +52,12 @@ llm:
   api_key: ""               # Optional API key for cloud/custom providers
   num_ctx: 16384             # 4x expanded context window (16,384 tokens)
   temperature: 0.3
-  think: "low"               # Sets thinking level to low (options: "low", "medium", "high", false, true)
+  think: false                # Disable model thinking
 
 execution:
   workspace_dir: "~/workspace"
   downloads_dir: "~/Downloads"
-  jobs_log_dir: "~/.local/state/shin/jobs"
+  jobs_log_dir: "~/.local/state/adam/jobs"
   max_log_mb: 50
   preferred_video_codec: "av1"
 
@@ -110,7 +120,7 @@ desktop:
     cs2: ["cs2", "counterstrike"]
 
   # User-defined macros or compositor actions (DE-agnostic)
-  # Shin includes defaults for detected DEs (e.g. KDE: overview, show_desktop, grid, night_mode, lock;
+  # Adam includes defaults for detected DEs (e.g. KDE: overview, show_desktop, grid, night_mode, lock;
   # Hyprland: toggle_floating, fullscreen, pin, split, lock; Sway: toggle_floating, fullscreen, lock; Niri: toggle_floating, center).
   # You can define custom macros or override defaults here:
   macros:
@@ -126,7 +136,7 @@ desktop:
   #   - swap_windows
 
 # User-defined custom tools (YAML declarative command sequences)
-# Can also be placed as standalone .yaml files in ~/.config/shin/tools/*.yaml
+# Can also be placed as standalone .yaml files in ~/.config/adam/tools/*.yaml
 custom_tools:
   - name: "start_coding_session"
     description: "Switches to workspace 2 and launches editor and dev terminal for a project"

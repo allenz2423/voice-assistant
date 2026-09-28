@@ -1,4 +1,4 @@
-"""Speculative Pre-flight Execution Router for Shin Voice Assistant.
+"""Speculative Pre-flight Execution Router for Adam Voice Assistant.
 
 Analyzes volatile streaming transcripts while the user is still speaking.
 Prefetches and caches idempotent, read-only tools (web search, weather, time, telemetry)

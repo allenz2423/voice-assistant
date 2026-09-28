@@ -127,7 +127,7 @@ def web_search(query: str) -> str:
         clean_q = re.sub(r"^(who is|who was|what is|what are|tell me about|define)\s+", "", q, flags=re.IGNORECASE).strip("? ")
         encoded = urllib.parse.quote(clean_q.replace(" ", "_"))
         url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}"
-        req = urllib.request.Request(url, headers={"User-Agent": "ShinAssistant/1.0 (https://github.com/shin/voice-assistant)"})
+        req = urllib.request.Request(url, headers={"User-Agent": "AdamAssistant/1.0 (https://github.com/adam/voice-assistant)"})
         with urllib.request.urlopen(req, timeout=3) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
             extract = data.get("extract")

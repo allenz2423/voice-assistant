@@ -8,7 +8,7 @@ from src.audio.vad import SileroVAD
 from src.audio.earcon import resolve_pulse_device_index
 
 def setup_mic_routing(target_source=""):
-    if target_source and target_source not in ("Shin_Clean_Mic", "default"):
+    if target_source and target_source not in ("Adam_Clean_Mic", "default"):
         os.environ["PULSE_SOURCE"] = target_source
 
 class ReferenceAudioMonitor:
@@ -131,7 +131,7 @@ class ReferenceAudioMonitor:
 
 class AudioStreamManager:
     """Continuous audio capture from default mic at 16kHz mono with dynamic VAD and speaker reference monitor."""
-    def __init__(self, target_source="Shin_Clean_Mic", sample_rate=16000, chunk_size=512):
+    def __init__(self, target_source="Adam_Clean_Mic", sample_rate=16000, chunk_size=512):
         setup_mic_routing(target_source)
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size  # 512 samples = 32ms at 16kHz

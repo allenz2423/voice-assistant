@@ -123,7 +123,7 @@ async def test_background_execution_announcement(tmp_path):
   parameters:
     project:
       type: string
-      default: "shin"
+      default: "adam"
   commands:
     - "sleep 0.3"
 """)

@@ -1,21 +1,21 @@
-# Shin: Voice-Activated Autonomous Terminal Agent
+# Adam: Voice-Activated Autonomous Terminal Agent
 ## Hardened Production Architecture & Implementation Plan
 
-Shin is a 100% non-blocking, interruptible, hybrid voice terminal agent engineered for Linux (Arch/PipeWire/Dual NVIDIA GPUs). It combines autonomous terminal execution, background job supervision, acoustic echo cancellation, and low-latency audio feedback.
+Adam is a 100% non-blocking, interruptible, hybrid voice terminal agent engineered for Linux (Arch/PipeWire/Dual NVIDIA GPUs). It combines autonomous terminal execution, background job supervision, acoustic echo cancellation, and low-latency audio feedback.
 
 ---
 
 ## 1. System Specifications & Core Directives
 
 1. **Non-Blocking & Full Barge-In (Interruptibility)**:
-   - Full-duplex audio stream via PipeWire WebRTC AEC (`Shin_Clean_Mic`).
+   - Full-duplex audio stream via PipeWire WebRTC AEC (`Adam_Clean_Mic`).
    - Microphone pipeline free-runs across **all** states, including `ASSISTANT_SPEAKING`.
    - Atomic **Generation Epoch Barriers** eliminate race conditions during speech barge-in.
    - PortAudio lifecycle recovery prevents thread crashes after stream aborts.
 2. **Background Job Supervision & Proactive Wake-Up**:
    - Long-running commands (transcoding, builds, downloads) run inside isolated **Bubblewrap (`bwrap`)** containers with private PID namespaces (`--unshare-pid`) and merged-/usr relative symlinks.
    - GPU device nodes (`/dev/dri`, `/dev/nvidia*`) and POSIX shared memory (`/dev/shm`) are explicitly mounted.
-   - Output logs stream to persistent NVMe disk storage (`~/.local/state/shin/jobs/`), completely protecting `/tmp` `tmpfs` RAM-disk from exhaustion.
+   - Output logs stream to persistent NVMe disk storage (`~/.local/state/adam/jobs/`), completely protecting `/tmp` `tmpfs` RAM-disk from exhaustion.
    - Background tasks report to a **Priority Audio Arbiter** that queues alerts and speaks **only** during `IDLE_LISTENING`, preventing context poisoning during user speech or confirmations.
 3. **Flip-of-a-Switch Local vs. Cloud LLM**:
    - A single configuration switch (`provider: "local" | "cloud"`) toggles between local Ollama (`qwen2.5-coder:7b` / `gemma4:e4b`) and cloud providers (Groq, Gemini, Anthropic).
@@ -43,7 +43,7 @@ Shin is a 100% non-blocking, interruptible, hybrid voice terminal agent engineer
 * **Audio Subsystem**:
   - *Playback Sink:* System default or configured audio sink (`@DEFAULT_AUDIO_SINK@`).
   - *Capture Source:* System default or configured microphone (`@DEFAULT_AUDIO_SOURCE@`).
-  - *Virtual Routing:* Both `PIPEWIRE_NODE` and `PULSE_SINK` environment variables are set to `Shin_Playback_Sink`, and PortAudio binds to the `pulse` ALSA bridge device index.
+  - *Virtual Routing:* Both `PIPEWIRE_NODE` and `PULSE_SINK` environment variables are set to `Adam_Playback_Sink`, and PortAudio binds to the `pulse` ALSA bridge device index.
   - *Physical Volume Knob Policy:* Set analog potentiometer to a fixed unity gain position (~50% line-out). All listening volume adjustments are handled digitally (via `wpctl set-volume @DEFAULT_AUDIO_SINK@ ...`) so digital reference attenuation matches acoustic playback exactly.
 
 ---
@@ -52,11 +52,11 @@ Shin is a 100% non-blocking, interruptible, hybrid voice terminal agent engineer
 
 ### 3.1. Audio & AEC Failures: The PortAudio Routing Trap & Thread Death
 * **The Vulnerability**:
-  1. Virtual PipeWire sinks do NOT appear in PortAudio's ALSA device enumeration. Querying `Shin_Playback_Sink` returns `None`, causing playback to default to physical ALSA output, completely bypassing WebRTC AEC and re-triggering the self-interruption loop.
-  2. Calling `stream.abort()` during barge-in sets the PortAudio stream to `stopped`. The next `stream.write()` raises `PortAudioError: Stream is stopped [-9983]`, crashing the earcon worker thread permanently.
+  1. Virtual PipeWire sinks do NOT appear in PortAudio's ALSA device enumeration. Querying `Adam_Playback_Sink` returns `None`, causing playback to default to physical ALSA output, completely bypassing WebRTC AEC and re-triggering the self-interruption loop.
+  2. Calling `stream.abort()` during barge-in sets the PortAudio stream to `stopped`. The next `stream.write()` raises `PortAudioError: Stream is stopped [-9983]`, craadamg the earcon worker thread permanently.
   3. PipeWire 1.6.9 ignores legacy PulseAudio keys; WebRTC parameters require the `webrtc.` prefix.
 * **The Fix**:
-  - Target PortAudio's `pulse` device index directly and inject both `PIPEWIRE_NODE="Shin_Playback_Sink"` and `PULSE_SINK="Shin_Playback_Sink"`.
+  - Target PortAudio's `pulse` device index directly and inject both `PIPEWIRE_NODE="Adam_Playback_Sink"` and `PULSE_SINK="Adam_Playback_Sink"`.
   - In the earcon worker thread, protect stream operations with `_stream_lock` and call `if stream.stopped: stream.start()` before `stream.write()`.
   - Configure PipeWire AEC with verified `webrtc.*` keys.
 
@@ -64,7 +64,7 @@ Shin is a 100% non-blocking, interruptible, hybrid voice terminal agent engineer
 
 ### 3.2. Microsecond Race Conditions & Generation Epoch Barriers
 * **The Vulnerability**:
-  If the user says *"Stop!"* in the exact microsecond between the LLM finishing its generation and the audio worker thread popping the first TTS PCM chunk:
+  If the user says *"Stop!"* in the exact microsecond between the LLM finiadamg its generation and the audio worker thread popping the first TTS PCM chunk:
   - The state machine cancels the LLM task (which already completed).
   - The decoupled audio worker thread plays the old sentence anyway while the user is trying to speak.
 * **The Fix**:
@@ -117,7 +117,7 @@ import threading
 import sounddevice as sd
 import numpy as np
 
-def setup_audio_routing(target_sink="Shin_Playback_Sink"):
+def setup_audio_routing(target_sink="Adam_Playback_Sink"):
     """Injects routing variables for both ALSA PipeWire-plugin and PulseAudio layers."""
     os.environ["PIPEWIRE_NODE"] = target_sink
     os.environ["PULSE_SINK"] = target_sink
@@ -134,7 +134,7 @@ def resolve_pulse_device_index() -> int | None:
 
 class RobustEarconEngine:
     """Hardened non-blocking earcon engine with PortAudio recovery and epoch barriers."""
-    def __init__(self, target_sink="Shin_Playback_Sink", sample_rate=48000):
+    def __init__(self, target_sink="Adam_Playback_Sink", sample_rate=48000):
         setup_audio_routing(target_sink)
         self.sample_rate = sample_rate
         self.pulse_idx = resolve_pulse_device_index()
@@ -235,7 +235,7 @@ from pathlib import Path
 
 class HardenedJobSupervisor:
     """Spawns jobs in Bubblewrap sandboxes with full GPU access, path bindings, and bwrap parent death-signals."""
-    def __init__(self, log_dir="~/.local/state/shin/jobs", workspace="~/workspace"):
+    def __init__(self, log_dir="~/.local/state/adam/jobs", workspace="~/workspace"):
         self.log_dir = Path(log_dir).expanduser()
         self.workspace = Path(workspace).expanduser()
         self.downloads = Path("~/Downloads").expanduser()
@@ -273,7 +273,7 @@ class HardenedJobSupervisor:
             "--ro-bind", str(self.downloads), str(self.downloads),  # Access downloads
             "--bind", str(self.workspace), str(self.workspace),      # Output directory
             "--chdir", str(self.workspace),
-            "--die-with-parent",                                    # Kills sandbox if Shin exits
+            "--die-with-parent",                                    # Kills sandbox if Adam exits
         ] + self._get_gpu_device_args() + ["--"] + raw_cmd
 
         proc = await asyncio.create_subprocess_exec(
@@ -454,7 +454,7 @@ class TriStateConfirmationManager:
 
 ## 5. PipeWire 1.6.9 AEC Configuration
 
-Deploy to `~/.config/pipewire/pipewire.conf.d/50-shin-aec.conf`:
+Deploy to `~/.config/pipewire/pipewire.conf.d/50-adam-aec.conf`:
 
 ```spa
 context.modules = [
@@ -471,31 +471,31 @@ context.modules = [
           node.latency = 256/48000
           resample.quality = 4
           capture.props = {
-              node.name = "Shin_AEC_Capture"
-              node.description = "Shin Physical Mic In"
+              node.name = "Adam_AEC_Capture"
+              node.description = "Adam Physical Mic In"
               target.object = "alsa_input.pci-0000_2b_00.3.analog-stereo"
               stream.dont-remix = true
               node.passive = true
           }
           source.props = {
-              node.name = "Shin_Clean_Mic"
-              node.description = "Shin AEC Filtered Output"
+              node.name = "Adam_Clean_Mic"
+              node.description = "Adam AEC Filtered Output"
               media.class = "Audio/Source"
               audio.rate = 48000
               audio.channels = 1
               audio.position = [ MONO ]
           }
           sink.props = {
-              node.name = "Shin_Playback_Sink"
-              node.description = "Shin AEC Virtual Reference Sink"
+              node.name = "Adam_Playback_Sink"
+              node.description = "Adam AEC Virtual Reference Sink"
               media.class = "Audio/Sink"
               audio.rate = 48000
               audio.channels = 2
               audio.position = [ FL FR ]
           }
           playback.props = {
-              node.name = "Shin_AEC_Playback"
-              node.description = "Shin Audio Hardware Forwarder"
+              node.name = "Adam_AEC_Playback"
+              node.description = "Adam Audio Hardware Forwarder"
               target.object = "@DEFAULT_AUDIO_SINK@"
               node.passive = true
           }
@@ -510,19 +510,19 @@ context.modules = [
 
 ### Phase 1: Core Foundation & Sandboxed Audio
 - [ ] Initialize project with `uv` in repository root directory.
-- [ ] Deploy PipeWire `50-shin-aec.conf` with verified `webrtc.*` syntax.
+- [ ] Deploy PipeWire `50-adam-aec.conf` with verified `webrtc.*` syntax.
 - [ ] Implement `src/audio/earcon.py` binding to the `pulse` device index with `PIPEWIRE_NODE` + `PULSE_SINK` routing and PortAudio restart-on-abort recovery.
-- [ ] Set up Piper TTS with `PULSE_SINK=Shin_Playback_Sink` environment target.
+- [ ] Set up Piper TTS with `PULSE_SINK=Adam_Playback_Sink` environment target.
 
 ### Phase 2: Speech & Wake Word Loop
-- [ ] Set up continuous `Shin_Clean_Mic` audio consumer stream.
+- [ ] Set up continuous `Adam_Clean_Mic` audio consumer stream.
 - [ ] Integrate `openWakeWord` + `silero-vad` with dynamic thresholding (0.5 IDLE $\rightarrow$ 0.88 SPEAKING).
 - [ ] Deploy `faster-whisper` on GPU 0 with `compute_type="int8_float32"` using CUDA 12 PyPI wheels.
 - [ ] Verify interrupt spotter with instant generation epoch advance.
 
 ### Phase 3: Sandboxed Execution & Supervisor
 - [ ] Build `src/execution/supervisor.py` with Arch-canonical `bwrap` symlinks, `--unshare-pid`, `--tmpfs /dev/shm`, `--ro-bind /sys /sys`, and `--dev-bind-try` for GPU nodes.
-- [ ] Route all job logs to `~/.local/state/shin/jobs/` (protecting `/tmp` `tmpfs`).
+- [ ] Route all job logs to `~/.local/state/adam/jobs/` (protecting `/tmp` `tmpfs`).
 - [ ] Implement `PriorityAudioArbiter` and `TriStateConfirmationManager` with active watchdog timers.
 
 ### Phase 4: Tripartite LLM Provider Switch
@@ -531,6 +531,6 @@ context.modules = [
 - [ ] Cap local Ollama context to 4k tokens to protect Pascal VRAM.
 
 ### Phase 5: End-to-End Integration & Benchmark
-- [ ] Test barge-in: Interrupt Shin mid-sentence and verify PortAudio stream recovers cleanly on subsequent tones.
+- [ ] Test barge-in: Interrupt Adam mid-sentence and verify PortAudio stream recovers cleanly on subsequent tones.
 - [ ] Test security & isolation: Verify that attempts to touch `~/.ssh` or `/var/run/docker.sock` in sandboxed jobs fail.
 - [ ] Test Slime Tensei batch transcode: Execute CPU `libsvtav1` transcode on `~/Downloads` video files inside the sandbox and verify completion alert pops only after returning to `IDLE_LISTENING`.

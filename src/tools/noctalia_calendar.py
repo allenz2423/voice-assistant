@@ -1,4 +1,4 @@
-"""Write Shin-owned iCalendar events to a Noctalia-watched local vdir."""
+"""Write Adam-owned iCalendar events to a Noctalia-watched local vdir."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from pathlib import Path
 class NoctaliaCalendar:
     def __init__(self, collection: str | Path | None = None):
         self.collection = Path(
-            collection or Path.home() / ".local" / "share" / "noctalia-calendar" / "shin"
+            collection or Path.home() / ".local" / "share" / "noctalia-calendar" / "adam"
         ).expanduser()
         self.metadata = self.collection / "displayname"
 
@@ -44,7 +44,7 @@ class NoctaliaCalendar:
     def _ensure_collection(self) -> None:
         self.collection.mkdir(parents=True, exist_ok=True)
         if not self.metadata.exists():
-            self.metadata.write_text("Shin\n", encoding="utf-8")
+            self.metadata.write_text("Adam\n", encoding="utf-8")
 
     def create_event(
         self,
@@ -75,9 +75,9 @@ class NoctaliaCalendar:
         now_utc = datetime.now(timezone.utc)
         end = start + timedelta(minutes=duration_minutes)
         lines = [
-            "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Shin//Noctalia Calendar//EN",
-            "CALSCALE:GREGORIAN", "BEGIN:VEVENT", f"UID:{event_id}@shin.local",
-            f"X-SHIN-ID:{event_id}", f"DTSTAMP:{now_utc:%Y%m%dT%H%M%SZ}",
+            "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Adam//Noctalia Calendar//EN",
+            "CALSCALE:GREGORIAN", "BEGIN:VEVENT", f"UID:{event_id}@adam.local",
+            f"X-ADAM-ID:{event_id}", f"DTSTAMP:{now_utc:%Y%m%dT%H%M%SZ}",
             f"DTSTART:{start:%Y%m%dT%H%M%S}", f"DTEND:{end:%Y%m%dT%H%M%S}",
             f"SUMMARY:{self._escape_ical(title)}",
         ]
@@ -104,7 +104,7 @@ class NoctaliaCalendar:
 
     def list_events(self) -> str:
         if not self.collection.is_dir():
-            return "There are no Shin events in the Noctalia calendar."
+            return "There are no Adam events in the Noctalia calendar."
         events = []
         for path in sorted(self.collection.glob("*.ics")):
             try:
@@ -112,7 +112,7 @@ class NoctaliaCalendar:
             except OSError:
                 continue
             content = re.sub(r"\r?\n[ \t]", "", content)
-            event_id = re.search(r"(?m)^X-SHIN-ID:(.+)$", content)
+            event_id = re.search(r"(?m)^X-ADAM-ID:(.+)$", content)
             title = re.search(r"(?m)^SUMMARY:(.+)$", content)
             start = re.search(r"(?m)^DTSTART:(\d{8}T\d{6})$", content)
             if not (event_id and title and start):
@@ -128,7 +128,7 @@ class NoctaliaCalendar:
                                  .replace("\\;", ";").replace("\\\\", "\\"))
                 events.append((when, display_title, event_id.group(1)))
         if not events:
-            return "There are no upcoming Shin events in the Noctalia calendar."
+            return "There are no upcoming Adam events in the Noctalia calendar."
         events.sort()
         return "Upcoming Noctalia events: " + "; ".join(
             f"{when.strftime('%A, %B %-d at %-I:%M %p')}: {title} (ID {event_id})"
@@ -143,10 +143,10 @@ class NoctaliaCalendar:
         try:
             content = path.read_text(encoding="utf-8")
         except FileNotFoundError:
-            return f"No Shin calendar event found with ID {target}."
+            return f"No Adam calendar event found with ID {target}."
         except OSError as exc:
             return f"Could not read that calendar event: {exc}"
-        if f"X-SHIN-ID:{target}" not in content:
-            return "That file is not a Shin-created calendar event; it was left untouched."
+        if f"X-ADAM-ID:{target}" not in content:
+            return "That file is not a Adam-created calendar event; it was left untouched."
         path.unlink()
         return f"Removed event {target} from the Noctalia calendar."

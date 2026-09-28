@@ -1,4 +1,4 @@
-"""Local, opt-in speaker verification for the command audio captured by Shin.
+"""Local, opt-in speaker verification for the command audio captured by Adam.
 
 Only the averaged speaker embedding is persisted; enrollment audio stays in RAM.
 """
@@ -19,7 +19,7 @@ MIN_VERIFY_SECONDS = 0.5
 
 def default_profile_path() -> Path:
     state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    return state_home / "shin" / "speaker-profile.npz"
+    return state_home / "adam" / "speaker-profile.npz"
 
 
 class SpeakerVerifier:

@@ -3,6 +3,7 @@ import re
 import time
 import asyncio
 import difflib
+import threading
 from collections import deque
 import sounddevice as sd
 from src.audio.earcon import resolve_pulse_device_index, setup_audio_routing
@@ -141,8 +142,11 @@ class StreamingVoiceSynthesizer:
         device_id=0,
         speed=1.05,
         piper_bin="piper",
-        target_sink="Shin_Playback_Sink",
+        target_sink="Adam_Playback_Sink",
         sample_rate=24000,
+        cloud_model="gpt-4o-mini-tts",
+        cloud_voice="marin",
+        api_key="",
         cosyvoice_api_url="http://localhost:50000",
         cosyvoice_model_dir="pretrained_models/CosyVoice2-0.5B"
     ):
@@ -155,7 +159,10 @@ class StreamingVoiceSynthesizer:
         self.speed = speed
         self.piper_bin = piper_bin
         self.target_sink = target_sink
-        self.sample_rate = sample_rate
+        self.sample_rate = 24000 if engine == "openai" else sample_rate
+        self.cloud_model = cloud_model
+        self.cloud_voice = cloud_voice
+        self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.cosyvoice_api_url = cosyvoice_api_url
         self.cosyvoice_model_dir = cosyvoice_model_dir
         self.cosyvoice_model = None
@@ -182,6 +189,8 @@ class StreamingVoiceSynthesizer:
             self._init_kokoro()
         elif self.engine == "silent":
             print("[TTS] Silent mode — responses will appear as desktop notifications only.")
+        elif self.engine == "openai":
+            print(f"[TTS] OpenAI cloud speech enabled ({self.cloud_model}, voice {self.cloud_voice}).")
 
     def _init_cosyvoice(self):
         """Waits for the CosyVoice HTTP server to become ready (up to 60s)."""
@@ -236,8 +245,8 @@ class StreamingVoiceSynthesizer:
                 pass
             print(f"[TTS] Kokoro-82M initialized successfully with voice '{self.voice}'!")
         except Exception as e:
-            print(f"[TTS] Failed to initialize Kokoro: {e}. Falling back to Piper.")
-            self.engine = "piper"
+            print(f"[TTS] Failed to initialize Kokoro: {e}. Falling back to silent notification mode.")
+            self.engine = "silent"
 
     def set_audio_context(self, mic_stream, wake_detector, earcon, stt=None):
         """Wires mic, wake detector, earcon, and STT engine for natural barge-in abort."""
@@ -255,11 +264,32 @@ class StreamingVoiceSynthesizer:
                 self.active_piper_proc.terminate()
             except Exception:
                 pass
-        if self.stream and self.stream.active:
-            try:
-                self.stream.abort()
-            except Exception:
-                pass
+        stream = self.stream
+        if stream is not None:
+            # PortAudio abort may block while another thread is inside write().
+            # Never let an interrupt detector or the main event loop wait on it.
+            def abort_output():
+                try:
+                    if stream.active:
+                        stream.abort()
+                except Exception as e:
+                    print(f"[TTS] Could not abort output stream: {e}", flush=True)
+
+            threading.Thread(target=abort_output, name="adam-tts-abort", daemon=True).start()
+
+    async def _play_interruptibly(self, playback_fn, *args, epoch: int):
+        """Run blocking audio playback without pinning speech completion after barge-in."""
+        playback_task = asyncio.create_task(asyncio.to_thread(playback_fn, *args))
+        while not playback_task.done():
+            if epoch != self.current_epoch:
+                # The worker owns its stream and will observe the epoch change
+                # after its current blocking write returns.
+                playback_task.add_done_callback(
+                    lambda task: task.exception() if not task.cancelled() else None
+                )
+                return
+            await asyncio.wait({playback_task}, timeout=0.05)
+        await playback_task
 
     def speak_now(self, text: str):
         """Non-blocking fire-and-forget speech."""
@@ -365,7 +395,7 @@ class StreamingVoiceSynthesizer:
             if clean_text:
                 await asyncio.to_thread(
                     lambda: __import__("subprocess").run(
-                        ["notify-send", "-a", "Adam", "-t", "0", "Adam", clean_text],
+                        ["notify-send", "-a", "Adam", "-t", "5000", "Adam", clean_text],
                         capture_output=True
                     )
                 )
@@ -547,7 +577,7 @@ class StreamingVoiceSynthesizer:
             if clean_text:
                 await asyncio.to_thread(
                     lambda: __import__("subprocess").run(
-                        ["notify-send", "-a", "Adam", "-t", "0", "Adam", clean_text],
+                        ["notify-send", "-a", "Adam", "-t", "5000", "Adam", clean_text],
                         capture_output=True
                     )
                 )
@@ -614,9 +644,43 @@ class StreamingVoiceSynthesizer:
 
         return None, self.sample_rate
 
+    async def _synthesize_openai(self, clause: str) -> bytes | None:
+        """Requests raw 24 kHz PCM from OpenAI's speech endpoint."""
+        import aiohttp
+
+        if not self.api_key:
+            print("[TTS] OpenAI cloud speech needs an API key (tts.api_key or OPENAI_API_KEY).", flush=True)
+            return None
+        try:
+            timeout = aiohttp.ClientTimeout(total=45)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    "https://api.openai.com/v1/audio/speech",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    json={
+                        "model": self.cloud_model,
+                        "voice": self.cloud_voice,
+                        "input": clause,
+                        "response_format": "pcm",
+                    },
+                ) as response:
+                    if response.status != 200:
+                        detail = await response.text()
+                        raise RuntimeError(f"OpenAI speech failed ({response.status}): {detail}")
+                    return await response.read()
+        except Exception as e:
+            print(f"[TTS] OpenAI cloud speech error: {e}", flush=True)
+            return None
+
 
     async def _synthesize_and_play_clause(self, clause: str, epoch: int):
         if epoch != self.current_epoch:
+            return
+
+        if self.engine == "openai":
+            pcm = await self._synthesize_openai(clause)
+            if pcm and epoch == self.current_epoch:
+                await self._play_interruptibly(self._play_raw_pcm, pcm, epoch, epoch=epoch)
             return
 
         if self.engine == "cosyvoice":
@@ -624,7 +688,7 @@ class StreamingVoiceSynthesizer:
             if samples is not None and len(samples) > 0:
                 if epoch != self.current_epoch:
                     return
-                await asyncio.to_thread(self._play_float32_audio, samples, sr, epoch)
+                await self._play_interruptibly(self._play_float32_audio, samples, sr, epoch, epoch=epoch)
                 return
 
         if (self.engine == "kokoro" or self.engine == "cosyvoice") and self.kokoro:
@@ -646,7 +710,7 @@ class StreamingVoiceSynthesizer:
             if epoch != self.current_epoch or len(samples) == 0:
                 return
 
-            await asyncio.to_thread(self._play_float32_audio, samples, sr, epoch)
+            await self._play_interruptibly(self._play_float32_audio, samples, sr, epoch, epoch=epoch)
             return
 
         # Fallback to Piper
@@ -689,7 +753,7 @@ class StreamingVoiceSynthesizer:
             return
 
         # Play audio buffer through sounddevice
-        await asyncio.to_thread(self._play_raw_pcm, stdout_data, epoch)
+        await self._play_interruptibly(self._play_raw_pcm, stdout_data, epoch, epoch=epoch)
 
     def _play_float32_audio(self, audio_data, sample_rate: int, epoch: int):
         if epoch != self.current_epoch:

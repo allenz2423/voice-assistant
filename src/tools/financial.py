@@ -27,7 +27,7 @@ def get_financial_quote(symbol: str) -> str:
         coin_id = CRYPTO_MAP[sym]
         try:
             url = f"https://api.coingecko.com/api/v3/simple/price?ids={coin_id}&vs_currencies=usd&include_24hr_change=true"
-            req = urllib.request.Request(url, headers={"User-Agent": "ShinAssistant/1.0"})
+            req = urllib.request.Request(url, headers={"User-Agent": "AdamAssistant/1.0"})
             with urllib.request.urlopen(req, timeout=4) as resp:
                 data = json.loads(resp.read().decode())
             info = data.get(coin_id, {})
