@@ -24,6 +24,7 @@ from src.tools.desktop import (
     list_desktop_macros,
     open_in_browser,
     close_browser_tab,
+    show_desktop_notification,
 )
 from src.tools.system_telemetry import (
     get_system_status,
@@ -118,8 +119,12 @@ RULES:
     - To check or restart systemd services: Use `manage_service`.
     - To check git repositories: Use `git_repo_status`.
     - To check Docker containers: Use `docker_container_status`.
-14. Destructive Tasks:
-    - For destructive actions (file deletion, process termination), call `ask_user_confirmation`.
+14. Destructive Tasks & Confirmations:
+    - For destructive actions (file deletion, killing processes, terminating apps, rebooting, mass file modifications), call `ask_user_confirmation`.
+    - Spoken questions MUST be ULTRA-CONCISE (under 10 words, e.g. 'Kill 5 Alacritty processes?' or 'Delete delilah files?').
+    - NEVER read aloud hex addresses (0x...), window addresses, process IDs (PIDs), file paths, or technical dumps in the spoken question.
+    - Put any technical details, addresses, PIDs, or file lists into `details` so they are flashed on screen as a desktop notification instead of spoken.
+    - To display technical information, updates, or alerts visually without speaking aloud, use `show_desktop_notification`.
 15. Spoken Output:
     - Return concise natural plain text without any markdown formatting, or use the `speak` tool.
 16. Modular Desktop Skills:
@@ -773,13 +778,21 @@ class ShinBrain:
         elif name == "ask_user_confirmation":
             question = args.get("question", "Confirm action?")
             summary = args.get("summary", "")
+            details = args.get("details", "")
             cmd = args.get("command", "")
             await self.confirmation.request_confirmation({
                 "type": "command" if cmd else "general",
                 "summary": summary,
+                "details": details,
                 "command": cmd
             }, question)
             return "Confirmation requested from user. Execution is paused waiting for user's verbal confirmation."
+
+        elif name == "show_desktop_notification":
+            title = args.get("title", "Shin")
+            message = args.get("message", "")
+            urgency = args.get("urgency", "normal")
+            return await asyncio.to_thread(show_desktop_notification, str(title), str(message), urgency)
 
         elif name == "speak":
             msg = args.get("message", "")

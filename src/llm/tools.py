@@ -104,15 +104,33 @@ SHIN_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="ask_user_confirmation",
-        description="Stops execution and asks the user for explicit verbal confirmation before running heavy or destructive tasks (like file deletion). Optionally include the exact shell command to run automatically upon user confirmation.",
+        description="Stops execution and asks the user for explicit verbal confirmation before running heavy or destructive tasks (like file deletion or killing processes). Spoken question MUST be ultra-concise (under 10 words, no technical dumps or hex addresses). Technical details, process lists, or file paths are flashed on screen as a desktop notification instead of spoken.",
         parameters={
             "type": "object",
             "properties": {
-                "question": {"type": "string", "description": "The prompt to speak to the user"},
-                "summary": {"type": "string", "description": "Brief summary of the pending action"},
-                "command": {"type": "string", "description": "The exact shell command to run automatically once the user says yes (e.g. 'rm -f ~/Downloads/*delilah*')"}
+                "question": {"type": "string", "description": "Ultra-concise spoken verbal question under 10 words (e.g. 'Kill 5 Alacritty processes?'). NEVER include hex addresses (0x...), PIDs, or technical dumps in the spoken question."},
+                "summary": {"type": "string", "description": "Brief summary of the pending action (e.g. 'Kill all Alacritty terminal processes')"},
+                "details": {"type": "string", "description": "Optional technical details, hex addresses, process lists, or file paths to flash on screen as a desktop notification instead of speaking aloud"},
+                "command": {"type": "string", "description": "The exact shell command to run automatically once the user says yes (e.g. 'kill_process target=\"Alacritty\" force=true')"}
             },
             "required": ["question", "summary"]
+        }
+    ),
+    CanonicalTool(
+        name="show_desktop_notification",
+        description="Displays a visual desktop notification popup on the user's screen using notify-send. Use to flash alerts, technical details, status updates, or information on screen without speaking it out loud.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Notification title"},
+                "message": {"type": "string", "description": "Notification body text to flash on the screen"},
+                "urgency": {
+                    "type": "string",
+                    "enum": ["low", "normal", "critical"],
+                    "description": "Urgency level of the notification (default: 'normal')"
+                }
+            },
+            "required": ["title", "message"]
         }
     ),
     CanonicalTool(

@@ -24,11 +24,17 @@ def ensure_gui_environment():
                             "WAYLAND_DISPLAY", "DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE",
                             "XDG_CURRENT_DESKTOP", "XDG_BACKEND", "XDG_RUNTIME_DIR",
                             "SWAYSOCK", "I3SOCK", "NIRI_SOCKET", "KDE_SESSION_VERSION",
-                            "KDE_FULL_SESSION", "DESKTOP_SESSION", "XDG_SESSION_DESKTOP"
+                            "KDE_FULL_SESSION", "DESKTOP_SESSION", "XDG_SESSION_DESKTOP",
+                            "DBUS_SESSION_BUS_ADDRESS"
                         ] and v:
                             os.environ[k] = v
         except Exception:
             pass
+
+    if not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        bus_path = Path(f"/run/user/{os.getuid()}/bus")
+        if bus_path.exists():
+            os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
 
     # If still not found, check /run/user/<uid>/wayland-* socket
     runtime_dir = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
@@ -2264,3 +2270,30 @@ def list_desktop_macros() -> dict[str, str]:
         else:
             result[k] = str(v)
     return result
+
+
+def show_desktop_notification(
+    title: str,
+    message: str,
+    urgency: str = "normal",
+    timeout_ms: int = 6000,
+) -> str:
+    """Displays an on-screen desktop notification popup via notify-send without speaking aloud."""
+    ensure_gui_environment()
+    urgency_val = urgency if urgency in ["low", "normal", "critical"] else "normal"
+    cmd = [
+        "notify-send",
+        "-a", "Shin",
+        "-u", urgency_val,
+        "-t", str(timeout_ms),
+        str(title),
+        str(message)
+    ]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=5, env=os.environ)
+        if res.returncode == 0:
+            return f"Notification displayed: '{title}'"
+        return f"notify-send returned code {res.returncode}: {res.stderr.strip()}"
+    except Exception as e:
+        return f"Failed to show notification: {e}"
+

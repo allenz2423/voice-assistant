@@ -6,11 +6,12 @@ import tempfile
 import shutil
 
 from src.main import merge_overlapping_transcripts
-from src.arbiter.confirmation import TriStateConfirmationManager
+from src.arbiter.confirmation import TriStateConfirmationManager, sanitize_confirmation_speech
 from src.arbiter.arbiter import PriorityAudioArbiter, SystemState
 from src.llm.brain import ShinBrain
 from src.tts.streaming import StreamingVoiceSynthesizer
 from src.config import load_config
+from src.tools.desktop import show_desktop_notification
 
 # ==============================================================================
 # 1. TRANSCRIPT OVERLAP & DEDUPLICATION TESTS
@@ -94,6 +95,74 @@ async def test_confirmation_clarify_variations():
         mgr.pending_action = {"command": "echo test", "summary": "move files"}
         result, _ = await mgr.evaluate_response(phrase)
         assert result == "CLARIFY", f"Failed to trigger clarification with: '{phrase}'"
+
+
+def test_sanitize_confirmation_speech_strips_hex_and_yapping():
+    raw_prompt = (
+        "Are you sure you want to kill all Alacritty terminals? "
+        "This will terminate 5 terminal processes (address: 0x56358d1ce3a0, 0x56358d1e9860, "
+        "0x56358cc7b2a0, 0x56358e2f3750, 0x56358e2bdda0, 0x56358e2a4120)."
+    )
+    summary = "Kill all Alacritty terminal processes"
+    sanitized = sanitize_confirmation_speech(raw_prompt, summary)
+    assert "0x" not in sanitized
+    assert "address" not in sanitized.lower()
+    assert sanitized == "Are you sure you want to kill all Alacritty terminals?"
+
+
+def test_sanitize_confirmation_speech_fallback_summary():
+    verbose_dump = (
+        "Deleting files in /home/user/Downloads: /home/user/Downloads/a.mp4, "
+        "/home/user/Downloads/b.mp4, /home/user/Downloads/c.mp4, /home/user/Downloads/d.mp4, "
+        "/home/user/Downloads/e.mp4, /home/user/Downloads/f.mp4."
+    )
+    summary = "Delete 6 video files"
+    sanitized = sanitize_confirmation_speech(verbose_dump, summary)
+    assert sanitized == "Delete 6 video files?"
+
+
+@pytest.mark.asyncio
+async def test_confirmation_speaks_sanitized_and_notifies(monkeypatch):
+    tts = MockTTS()
+    arbiter = PriorityAudioArbiter(tts, None)
+    mgr = TriStateConfirmationManager(tts, arbiter)
+
+    notified = []
+
+    def mock_notify(title, message, urgency="normal", timeout_ms=5000):
+        notified.append((title, message))
+        return "Notification displayed"
+
+    monkeypatch.setattr("src.tools.desktop.show_desktop_notification", mock_notify)
+
+    raw_prompt = (
+        "Are you sure you want to kill all Alacritty terminals? "
+        "This will terminate 5 terminal processes (address: 0x56358d1ce3a0, 0x56358d1e9860)."
+    )
+    payload = {
+        "command": 'kill_process target="Alacritty" force=true',
+        "summary": "Kill all Alacritty terminal processes",
+        "details": "Addresses: 0x56358d1ce3a0, 0x56358d1e9860"
+    }
+
+    await mgr.request_confirmation(payload, raw_prompt)
+
+    # 1. Spoken TTS must be ultra-concise with zero hex addresses
+    assert len(tts.spoken) == 1
+    assert "0x" not in tts.spoken[0]
+    assert tts.spoken[0] == "Are you sure you want to kill all Alacritty terminals?"
+
+    # 2. Desktop notification captures full details
+    assert len(notified) == 1
+    assert notified[0][0] == "Kill all Alacritty terminal processes"
+    assert "0x56358d1ce3a0" in notified[0][1]
+
+
+@pytest.mark.asyncio
+async def test_show_desktop_notification_tool():
+    res = show_desktop_notification("Test Title", "Test Message")
+    assert isinstance(res, str)
+
 
 
 # ==============================================================================
