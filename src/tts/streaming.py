@@ -126,7 +126,9 @@ class StreamingVoiceSynthesizer:
         speed=1.05,
         piper_bin="piper",
         target_sink="Shin_Playback_Sink",
-        sample_rate=24000
+        sample_rate=24000,
+        cosyvoice_api_url="http://localhost:50000",
+        cosyvoice_model_dir="pretrained_models/CosyVoice2-0.5B"
     ):
         setup_audio_routing(target_sink)
         self.engine = engine
@@ -138,6 +140,9 @@ class StreamingVoiceSynthesizer:
         self.piper_bin = piper_bin
         self.target_sink = target_sink
         self.sample_rate = sample_rate
+        self.cosyvoice_api_url = cosyvoice_api_url
+        self.cosyvoice_model_dir = cosyvoice_model_dir
+        self.cosyvoice_model = None
         self.pulse_idx = resolve_pulse_device_index()
         self.current_epoch = 0
         self._lock = asyncio.Lock()
@@ -155,8 +160,43 @@ class StreamingVoiceSynthesizer:
         self.pending_barge_in_audio = None
         self.speech_history: deque[tuple[float, str]] = deque(maxlen=30)
 
-        if self.engine == "kokoro":
+        if self.engine == "cosyvoice":
+            self._init_cosyvoice()
+        elif self.engine == "kokoro":
             self._init_kokoro()
+
+    def _init_cosyvoice(self):
+        """Initializes CosyVoice client or direct model with graceful standby fallback to Kokoro."""
+        print(f"[TTS] Initializing CosyVoice engine (endpoint: {self.cosyvoice_api_url})...")
+        # 1. Try local direct module if available
+        try:
+            from cosyvoice.cli.cosyvoice import CosyVoice, CosyVoice2
+            print(f"[TTS] Loading local CosyVoice model from '{self.cosyvoice_model_dir}'...")
+            try:
+                self.cosyvoice_model = CosyVoice2(self.cosyvoice_model_dir)
+            except Exception:
+                self.cosyvoice_model = CosyVoice(self.cosyvoice_model_dir)
+            print("[TTS] CosyVoice loaded successfully in-process.")
+            return
+        except ImportError:
+            pass
+        except Exception as e:
+            print(f"[TTS] Direct CosyVoice model loading failed: {e}")
+
+        # 2. Check if local streaming server is active
+        try:
+            import urllib.request
+            req = urllib.request.Request(f"{self.cosyvoice_api_url}/", headers={"User-Agent": "Shin/1.0"})
+            with urllib.request.urlopen(req, timeout=1.0) as resp:
+                if resp.status in (200, 404):
+                    print(f"[TTS] Connected to CosyVoice streaming service at {self.cosyvoice_api_url}.")
+                    return
+        except Exception:
+            pass
+
+        # 3. Fallback to Kokoro
+        print(f"[TTS] CosyVoice service is not running at {self.cosyvoice_api_url}. Initializing Kokoro-82M as active standby fallback.")
+        self._init_kokoro()
 
     def _init_kokoro(self):
         """Initializes Kokoro ONNX on configured device with graceful fallback to CPU."""
@@ -500,11 +540,70 @@ class StreamingVoiceSynthesizer:
             if buffer.strip() and epoch == self.current_epoch:
                 await self._synthesize_and_play_clause(buffer.strip(), epoch)
 
+    async def _synthesize_cosyvoice(self, clause: str):
+        """Synthesizes speech using CosyVoice direct model or local streaming HTTP endpoint."""
+        import numpy as np
+
+        if self.cosyvoice_model is not None:
+            try:
+                def _gen():
+                    for out in self.cosyvoice_model.inference_sft(clause, self.voice, stream=False):
+                        audio = out['tts_speech'].numpy().flatten()
+                        return audio, self.sample_rate
+                    return None, self.sample_rate
+                return await asyncio.to_thread(_gen)
+            except Exception as e:
+                print(f"[TTS] CosyVoice direct synthesis error: {e}")
+
+        if self.cosyvoice_api_url:
+            try:
+                import urllib.request
+                import json
+                import io
+                import wave
+
+                payload = json.dumps({
+                    "text": clause,
+                    "speaker": self.voice,
+                    "speed": self.speed
+                }).encode("utf-8")
+
+                req = urllib.request.Request(
+                    f"{self.cosyvoice_api_url}/inference_sft",
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST"
+                )
+
+                def _fetch():
+                    with urllib.request.urlopen(req, timeout=5.0) as resp:
+                        data = resp.read()
+                        with wave.open(io.BytesIO(data), "rb") as wf:
+                            sr = wf.getframerate()
+                            n_frames = wf.getnframes()
+                            raw_bytes = wf.readframes(n_frames)
+                            audio = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+                            return audio, sr
+
+                return await asyncio.to_thread(_fetch)
+            except Exception:
+                pass
+
+        return None, self.sample_rate
+
     async def _synthesize_and_play_clause(self, clause: str, epoch: int):
         if epoch != self.current_epoch:
             return
 
-        if self.engine == "kokoro" and self.kokoro:
+        if self.engine == "cosyvoice":
+            samples, sr = await self._synthesize_cosyvoice(clause)
+            if samples is not None and len(samples) > 0:
+                if epoch != self.current_epoch:
+                    return
+                await asyncio.to_thread(self._play_float32_audio, samples, sr, epoch)
+                return
+
+        if (self.engine == "kokoro" or self.engine == "cosyvoice") and self.kokoro:
             try:
                 # Detect language: if Japanese kana or kanji present, use 'ja'
                 is_ja = any('\u3040' <= c <= '\u30ff' or '\u4e00' <= c <= '\u9fff' for c in clause)
@@ -512,7 +611,7 @@ class StreamingVoiceSynthesizer:
                 samples, sr = await asyncio.to_thread(
                     self.kokoro.create,
                     clause,
-                    voice=self.voice,
+                    voice=self.voice if self.voice in getattr(self.kokoro, "voices", {}) or hasattr(self.kokoro, "get_voice") else "am_onyx",
                     speed=self.speed,
                     lang=lang
                 )

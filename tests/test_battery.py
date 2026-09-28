@@ -579,3 +579,22 @@ def test_custom_wake_word_anchoring_and_speaker_rejection():
 
     m9, _ = detector.match_custom_wake_word("He was kicked in the shin during the match.")
     assert m9 is False
+
+
+def test_cosyvoice_config_and_fallback():
+    from src.config import load_config, TTSConfig
+    cfg = load_config()
+    assert hasattr(cfg.tts, "cosyvoice_api_url")
+    assert hasattr(cfg.tts, "cosyvoice_model_dir")
+
+    # Instantiate synthesizer with cosyvoice engine
+    tts = StreamingVoiceSynthesizer(
+        engine="cosyvoice",
+        model_path=cfg.tts.model_path,
+        voices_path=cfg.tts.voices_path,
+        voice="am_adam",
+        cosyvoice_api_url="http://127.0.0.1:59999"
+    )
+    # Must have initialized Kokoro as active standby fallback
+    assert tts.kokoro is not None
+

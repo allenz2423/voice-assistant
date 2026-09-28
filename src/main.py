@@ -99,7 +99,9 @@ class ShinDaemon:
             speed=self.config.tts.speed,
             piper_bin=self.config.tts.piper_bin,
             target_sink=self.config.audio.target_sink,
-            sample_rate=self.config.tts.sample_rate
+            sample_rate=self.config.tts.sample_rate,
+            cosyvoice_api_url=getattr(self.config.tts, "cosyvoice_api_url", "http://localhost:50000"),
+            cosyvoice_model_dir=getattr(self.config.tts, "cosyvoice_model_dir", "pretrained_models/CosyVoice2-0.5B"),
         )
 
         print("[Init] Initializing PriorityAudioArbiter...")

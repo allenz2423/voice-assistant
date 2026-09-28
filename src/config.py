@@ -31,7 +31,7 @@ class SpeakerVerificationConfig(BaseModel):
     threshold: float = 0.25
 
 class TTSConfig(BaseModel):
-    engine: str = "kokoro" # "kokoro" | "piper"
+    engine: str = "kokoro" # "kokoro" | "cosyvoice" | "piper"
     model_path: str = "assets/voices/kokoro/kokoro-v1.0.onnx"
     voices_path: str = "assets/voices/kokoro/voices-v1.0.bin"
     voice: str = "af_nicole"
@@ -40,6 +40,9 @@ class TTSConfig(BaseModel):
     piper_bin: str = "piper"
     config_path: str = "assets/voices/en_US-ryan-high.onnx.json"
     sample_rate: int = 24000
+    cosyvoice_api_url: str = "http://localhost:50000"
+    cosyvoice_model_dir: str = "pretrained_models/CosyVoice2-0.5B"
+
 
 class LLMConfig(BaseModel):
     provider: str = "local"
