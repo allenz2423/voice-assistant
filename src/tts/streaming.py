@@ -429,7 +429,7 @@ class StreamingVoiceSynthesizer:
                 self.current_sentence = ""
                 if self.mic_stream:
                     self.mic_stream.is_assistant_speaking = False
-                    self.mic_stream.quench(duration=0.65)
+                    self.mic_stream.quench(duration=0.30)
 
     async def _barge_in_monitor(self, stop_event: asyncio.Event):
         """Monitors microphone for intentional interruption while TTS is active."""
@@ -695,7 +695,7 @@ class StreamingVoiceSynthesizer:
 
         import numpy as np
         # Pad 200ms silence so sounddevice ring buffer fully drains before stream closes
-        tail_samples = int(sample_rate * 0.20)
+        tail_samples = int(sample_rate * 0.06)
         audio_data = np.concatenate([audio_data, np.zeros(tail_samples, dtype=np.float32)])
 
         try:
