@@ -23,8 +23,11 @@ wheels/
 
 # Virtual environments
 .venv/
+.venv-cosyvoice/
 venv/
 ENV/
+cosyvoice/
+services/
 
 # Project specifics
 .env

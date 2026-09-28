@@ -1,0 +1,19 @@
+[Unit]
+Description=CosyVoice2 Streaming Neural TTS Engine
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/incoming/voice-assistant
+ExecStart=/home/incoming/voice-assistant/.venv-cosyvoice/bin/python services/cosyvoice/server.py --port 50000
+Restart=on-failure
+RestartSec=3s
+Environment=PYTHONUNBUFFERED=1
+Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
+Environment=CUDA_VISIBLE_DEVICES=0
+Environment=PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

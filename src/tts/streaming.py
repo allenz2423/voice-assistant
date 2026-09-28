@@ -566,55 +566,48 @@ class StreamingVoiceSynthesizer:
                 await self._synthesize_and_play_clause(buffer.strip(), epoch)
 
     async def _synthesize_cosyvoice(self, clause: str):
-        """Synthesizes speech using CosyVoice direct model or local streaming HTTP endpoint."""
+        """Synthesizes speech via the CosyVoice2 local streaming server."""
         import numpy as np
+        import urllib.request
+        import urllib.parse
 
-        if self.cosyvoice_model is not None:
-            try:
-                def _gen():
-                    for out in self.cosyvoice_model.inference_sft(clause, self.voice, stream=False):
-                        audio = out['tts_speech'].numpy().flatten()
-                        return audio, self.sample_rate
-                    return None, self.sample_rate
-                return await asyncio.to_thread(_gen)
-            except Exception as e:
-                print(f"[TTS] CosyVoice direct synthesis error: {e}")
+        if not self.cosyvoice_api_url:
+            return None, self.sample_rate
 
-        if self.cosyvoice_api_url:
-            try:
-                import urllib.request
-                import json
-                import io
-                import wave
+        try:
+            # Use the pre-cached cross-lingual speaker endpoint
+            form_data = urllib.parse.urlencode({
+                "tts_text": clause,
+                "spk_id": "default",
+            }).encode("utf-8")
 
-                payload = json.dumps({
-                    "text": clause,
-                    "speaker": self.voice,
-                    "speed": self.speed
-                }).encode("utf-8")
+            req = urllib.request.Request(
+                f"{self.cosyvoice_api_url}/inference_sft",
+                data=form_data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                method="POST"
+            )
 
-                req = urllib.request.Request(
-                    f"{self.cosyvoice_api_url}/inference_sft",
-                    data=payload,
-                    headers={"Content-Type": "application/json"},
-                    method="POST"
-                )
+            def _fetch():
+                chunks = []
+                with urllib.request.urlopen(req, timeout=20.0) as resp:
+                    while True:
+                        chunk = resp.read(4096)
+                        if not chunk:
+                            break
+                        chunks.append(chunk)
+                if not chunks:
+                    return None, 24000
+                raw = b"".join(chunks)
+                audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                return audio, 24000
 
-                def _fetch():
-                    with urllib.request.urlopen(req, timeout=5.0) as resp:
-                        data = resp.read()
-                        with wave.open(io.BytesIO(data), "rb") as wf:
-                            sr = wf.getframerate()
-                            n_frames = wf.getnframes()
-                            raw_bytes = wf.readframes(n_frames)
-                            audio = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-                            return audio, sr
-
-                return await asyncio.to_thread(_fetch)
-            except Exception:
-                pass
+            return await asyncio.to_thread(_fetch)
+        except Exception as e:
+            print(f"[TTS] CosyVoice HTTP error: {e}")
 
         return None, self.sample_rate
+
 
     async def _synthesize_and_play_clause(self, clause: str, epoch: int):
         if epoch != self.current_epoch:
