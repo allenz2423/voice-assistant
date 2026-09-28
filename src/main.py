@@ -357,7 +357,7 @@ class ShinDaemon:
                     await asyncio.sleep(0.01)
                     continue
 
-                # Path A: Custom Wake Word (e.g. "hey adam", "hey shin") via VAD + Whisper spotting OR within follow-up window
+                # Path A: Custom Wake Word via VAD + ASR spotting OR within follow-up window
                 if self.wake.is_custom_mode or is_in_followup:
                     dynamic_floor = max(0.0035, min(0.022, self.stream.ref_monitor.speaker_rms * 0.40)) if (self.stream.ref_monitor and self.stream.ref_monitor.is_active) else 0.0025
                     is_speech, prob = self.stream.vad.is_speech(
@@ -464,7 +464,7 @@ class ShinDaemon:
                             else:
                                 self.speculative_router.cancel_active()
                                 if text and not is_in_followup:
-                                    print(f"[Wake] (Phrase heard but not addressed to Adam/Shin; resuming listening)", flush=True)
+                                    print(f"[Wake] (Phrase heard but not addressed to assistant; resuming listening)", flush=True)
                                 if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
                                     await self.arbiter.set_state("IDLE_LISTENING")
 

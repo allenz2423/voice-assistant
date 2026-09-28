@@ -34,7 +34,7 @@ class TTSConfig(BaseModel):
     engine: str = "kokoro" # "kokoro" | "piper"
     model_path: str = "assets/voices/kokoro/kokoro-v1.0.onnx"
     voices_path: str = "assets/voices/kokoro/voices-v1.0.bin"
-    voice: str = "am_adam"
+    voice: str = "af_nicole"
     device_id: int = 0
     speed: float = 1.05
     piper_bin: str = "piper"

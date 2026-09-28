@@ -121,7 +121,7 @@ class StreamingVoiceSynthesizer:
         engine="kokoro",
         model_path="assets/voices/kokoro/kokoro-v1.0.onnx",
         voices_path="assets/voices/kokoro/voices-v1.0.bin",
-        voice="am_adam",
+        voice="af_nicole",
         device_id=0,
         speed=1.05,
         piper_bin="piper",
@@ -452,7 +452,7 @@ class StreamingVoiceSynthesizer:
                             contains_interrupt = any(kw in text_clean.lower() for kw in INTERRUPT_KEYWORDS)
 
                             # Genuine barge-in requires:
-                            # 1. Wake word (e.g. "hey adam ..."), OR
+                            # 1. Configured wake word, OR
                             # 2. Explicit interrupt command ("stop", "wait", etc.)
                             # Note: Like Amazon Alexa and Google Assistant, arbitrary speech without wake word
                             # or interrupt keyword is suppressed during playback to prevent acoustic bleed self-interruption.

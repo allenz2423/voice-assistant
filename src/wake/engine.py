@@ -45,12 +45,12 @@ class WakeWordDetector:
             self.is_custom_mode = True
             self.custom_regex = self._build_wake_regex(self.raw_wake_word, self.aliases)
 
-    FILLERS = {"uh", "um", "er", "ah", "so", "okay", "ok", "well", "all", "right", "alright", "あの", "ええと", "えーと"}
-    GREETINGS = {"hey", "hi", "hello", "yo", "ヘイ", "ねえ", "ねぇ"}
+    FILLERS = {"uh", "um", "er", "ah", "so", "okay", "ok", "well", "all", "right", "alright"}
+    GREETINGS = {"hey", "hi", "hello", "yo"}
     ALLOWED_PREFIX_WORDS = FILLERS | GREETINGS
-    PURE_HESITATIONS = {"uh", "um", "er", "ah", "あの", "ええと", "えーと"}
+    PURE_HESITATIONS = {"uh", "um", "er", "ah"}
 
-    PUNCT_CHARS = r",.!?:;\"'\‘\’\“\”\`、。！？「」…—–\-\s~/\#@*()"
+    PUNCT_CHARS = r",.!?:;\"'\‘\’\“\”\`，、。！？；：「」…—–\-\s~/\#@*()"
     PUNCT_SPLIT = re.compile(rf"[{PUNCT_CHARS}]+")
     LEADING_PUNCT = re.compile(rf"^[{PUNCT_CHARS}]+")
     TRAILING_PUNCT = re.compile(rf"[\"'\‘\’\“\”\`]+$")
@@ -81,17 +81,6 @@ class WakeWordDetector:
                 if a_clean.startswith("hey "):
                     names.add(a_clean[4:].strip())
                 names.add(a_clean)
-
-        # Multilingual / Japanese / phonetic transliterations & common STT misrecognitions
-        if base_name in ["adam", "hey adam"]:
-            names.update([
-                "アダム", "エイダム", "ヘイアダム", "ヘイ・アダム", "ヘイ アダム",
-                "ペアラン", "エイ・アダム"
-            ])
-        elif base_name in ["shin", "hey shin"]:
-            names.update([
-                "シン", "ヘイシン", "ヘイ・シン", "ヘイ シン"
-            ])
 
         patterns = []
         for n in sorted(names, key=len, reverse=True):
@@ -158,7 +147,7 @@ class WakeWordDetector:
         """Find the last addressed wake phrase and return only the command after it.
 
         Scanning the whole transcript lets a user correct or restart a request with
-        a later "Hey Adam" without accidentally sending the abandoned first clause.
+        a later wake phrase address without accidentally sending the abandoned first clause.
         Bare-name aliases remain anchored to the utterance or a sentence boundary.
         """
         if not self.is_custom_mode or not self.custom_regex or not text:

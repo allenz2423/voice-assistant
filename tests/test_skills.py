@@ -479,7 +479,7 @@ async def test_brain_uses_generic_fallback_if_summary_retry_is_empty():
 def test_multilingual_wake_word_detection():
     from src.wake.engine import WakeWordDetector
 
-    detector = WakeWordDetector(wake_word="hey adam")
+    detector = WakeWordDetector(wake_word="hey adam", aliases=["ペアラン", "アダム"])
     assert detector.is_custom_mode is True
 
     # Test Japanese comma and punctuation

@@ -107,7 +107,7 @@ class SemanticEndpointer:
         raw = text.strip()
         lower = raw.lower()
 
-        # Strip wake word prefix if provided (e.g. "hey adam, what time is it" -> "what time is it")
+        # Strip wake word prefix if provided
         if wake_word:
             wake_clean = wake_word.strip().lower()
             if lower.startswith(wake_clean):
@@ -117,7 +117,7 @@ class SemanticEndpointer:
 
         lower = re.sub(r"[.!?。！？]+$", "", lower).strip()
         if not lower:
-            # Only wake word was spoken so far (e.g. user just said "Hey Adam") -> wait for command
+            # Only wake word was spoken so far -> wait for command
             return EndpointState.INCOMPLETE, self.incomplete_silence
 
         # Check explicit standalone complete commands
