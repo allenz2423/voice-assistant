@@ -693,6 +693,11 @@ class StreamingVoiceSynthesizer:
         if epoch != self.current_epoch:
             return
 
+        import numpy as np
+        # Pad 200ms silence so sounddevice ring buffer fully drains before stream closes
+        tail_samples = int(sample_rate * 0.20)
+        audio_data = np.concatenate([audio_data, np.zeros(tail_samples, dtype=np.float32)])
+
         try:
             with sd.OutputStream(
                 samplerate=sample_rate,
@@ -700,25 +705,29 @@ class StreamingVoiceSynthesizer:
                 dtype="float32",
                 device=self.pulse_idx,
                 blocksize=2048,
-                latency=0.05
+                latency=0.08,
             ) as stream:
                 self.stream = stream
                 chunk_size = 2048
                 for i in range(0, len(audio_data), chunk_size):
                     if epoch != self.current_epoch:
-                        break
+                        stream.abort()
+                        return
                     stream.write(audio_data[i:i + chunk_size])
         except Exception as e:
             if epoch == self.current_epoch:
                 print(f"[TTS] Playback error: {e}")
 
+
     def _play_raw_pcm(self, pcm_bytes: bytes, epoch: int):
         if epoch != self.current_epoch:
             return
 
-        # Convert raw int16 PCM to float32
         import numpy as np
         audio_data = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        # Pad 200ms silence so ring buffer fully drains before stream closes
+        tail_samples = int(self.sample_rate * 0.20)
+        audio_data = np.concatenate([audio_data, np.zeros(tail_samples, dtype=np.float32)])
 
         try:
             with sd.OutputStream(
@@ -727,13 +736,14 @@ class StreamingVoiceSynthesizer:
                 dtype="float32",
                 device=self.pulse_idx,
                 blocksize=2048,
-                latency=0.05
+                latency=0.08,
             ) as stream:
                 self.stream = stream
                 chunk_size = 2048
                 for i in range(0, len(audio_data), chunk_size):
                     if epoch != self.current_epoch:
-                        break
+                        stream.abort()
+                        return
                     stream.write(audio_data[i:i + chunk_size])
         except Exception as e:
             if epoch == self.current_epoch:
