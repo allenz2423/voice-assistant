@@ -214,7 +214,7 @@ class StreamingVoiceSynthesizer:
             available = ort.get_available_providers()
             sess = None
 
-            if "CUDAExecutionProvider" in available:
+            if self.device_id >= 0 and "CUDAExecutionProvider" in available:
                 try:
                     providers = [("CUDAExecutionProvider", {"device_id": self.device_id})]
                     sess = ort.InferenceSession(self.model_path, sess_opt, providers=providers)
