@@ -655,26 +655,37 @@ class StreamingVoiceSynthesizer:
         env["PIPEWIRE_NODE"] = self.target_sink
 
         # Launch Piper to stream raw 16-bit mono PCM to stdout
-        proc = await asyncio.create_subprocess_exec(
-            self.piper_bin,
-            "-m", self.model_path,
-            "--output-raw",
-            "--length-scale", "0.92",
-            "--sentence-silence", "0.05",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            env=env
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                self.piper_bin,
+                "-m", self.model_path,
+                "--output-raw",
+                "--length-scale", "0.92",
+                "--sentence-silence", "0.05",
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env
+            )
+        except Exception as e:
+            print(f"[TTS] Could not start Piper ({self.piper_bin}): {e}", flush=True)
+            return
         self.active_piper_proc = proc
 
         # Send clause to Piper stdin
         try:
-            stdout_data, _ = await proc.communicate(input=f"{clause}\n".encode("utf-8"))
-        except Exception:
+            stdout_data, stderr_data = await proc.communicate(input=f"{clause}\n".encode("utf-8"))
+        except Exception as e:
+            print(f"[TTS] Piper synthesis failed: {e}", flush=True)
             return
 
+        if proc.returncode != 0:
+            detail = stderr_data.decode("utf-8", errors="replace").strip()
+            print(f"[TTS] Piper exited with status {proc.returncode}: {detail or 'no error details'}", flush=True)
+            return
         if epoch != self.current_epoch or not stdout_data:
+            if not stdout_data and epoch == self.current_epoch:
+                print("[TTS] Piper produced no audio. Check that tts.model_path is a valid Piper voice model (.onnx).", flush=True)
             return
 
         # Play audio buffer through sounddevice

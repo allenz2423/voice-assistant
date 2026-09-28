@@ -105,6 +105,15 @@ def update_config_value(key: str, value: str):
     new_content, count = re.subn(pattern, replacement, content, flags=re.MULTILINE)
     if count > 0:
         config_path.write_text(new_content, encoding="utf-8")
+    elif key in ("api_base", "api_key"):
+        # These optional LLM settings may be missing from configs created by
+        # older versions. Add them to the llm section so custom providers are
+        # actually saved when the wizard is rerun.
+        llm_match = re.search(r"^llm:\s*(?:#.*)?$", content, flags=re.MULTILINE)
+        if llm_match:
+            insert_at = llm_match.end()
+            new_content = content[:insert_at] + f'\n  {key}: "{value}"' + content[insert_at:]
+            config_path.write_text(new_content, encoding="utf-8")
     else:
         # If key didn't exist in config, we don't break the file
         pass
@@ -318,7 +327,18 @@ def configure_tts():
             print(f"{CLR_GREEN}Configured custom voice:{CLR_RESET} {custom_v}")
     else:
         update_config_value("engine", "piper")
-        print(f"{CLR_GREEN}Configured Piper TTS engine.{CLR_RESET}")
+        current_model = get_current_config_value("model_path", "")
+        if "kokoro" in current_model.lower():
+            current_model = ""
+        piper_model = prompt_text(
+            "Path to a Piper voice model (.onnx; its matching .onnx.json must also exist)",
+            current_model,
+        )
+        if piper_model:
+            update_config_value("model_path", piper_model)
+            print(f"{CLR_GREEN}Configured Piper model:{CLR_RESET} {piper_model}")
+        else:
+            print(f"{CLR_YELLOW}Piper selected without a model path. Set tts.model_path before speech can work.{CLR_RESET}")
 
 
 # ------------------------------------------------------------------------------
@@ -398,8 +418,25 @@ def configure_llm():
             "Google Gemini  - Fast & reliable (gemini-2.5-flash)",
             "Anthropic      - Highest reasoning accuracy (claude-3-5-sonnet)",
             "OpenAI         - Industry standard (gpt-4o-mini, gpt-4o)",
+            "Custom         - Your own OpenAI-compatible provider / endpoint",
         ]
         p_choice = prompt_choice("Select cloud provider", cloud_providers, 0)
+        if p_choice == 4:
+            update_config_value("provider", "custom")
+            current_base = get_current_config_value("api_base", "")
+            api_base = prompt_text("Enter API base URL (for example https://api.example.com/v1)", current_base)
+            update_config_value("api_base", api_base)
+
+            current_model = get_current_config_value("cloud_model", "") or get_current_config_value("local_model", "")
+            model = prompt_text("Enter provider model name", current_model)
+            update_config_value("cloud_model", model)
+
+            api_key = prompt_text("Enter API key / Bearer token (leave blank if none)", get_current_config_value("api_key", ""))
+            if api_key:
+                update_config_value("api_key", api_key)
+            print(f"{CLR_GREEN}Custom OpenAI-compatible provider configured for model:{CLR_RESET} {model}")
+            return
+
         p_keys = {0: "groq", 1: "gemini", 2: "anthropic", 3: "openai"}
         provider_name = p_keys[p_choice]
         update_config_value("provider", provider_name)

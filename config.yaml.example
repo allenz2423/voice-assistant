@@ -34,10 +34,12 @@ tts:
   sample_rate: 24000
 
 llm:
-  provider: "local"         # "local" | "groq" | "gemini" | "anthropic"
+  provider: "local"         # "local" | "groq" | "gemini" | "anthropic" | "openai" | "custom"
   local_model: "qwen3.5:4b"
   cloud_model: "llama-3.3-70b-versatile" # or "gemini-2.5-flash"
   ollama_host: "http://localhost:11434"
+  api_base: ""              # Base URL for custom OpenAI-compatible providers
+  api_key: ""               # Optional API key for cloud/custom providers
   num_ctx: 16384             # 4x expanded context window (16,384 tokens)
   temperature: 0.3
   think: "low"               # Sets thinking level to low (options: "low", "medium", "high", false, true)

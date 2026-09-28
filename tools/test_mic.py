@@ -3,11 +3,26 @@ import sys
 import time
 import re
 import numpy as np
-import sounddevice as sd
 from pathlib import Path
+import os
 
-# Add project root to sys.path
+# Honor the microphone chosen by the setup wizard when the PulseAudio
+# compatibility layer is available. PortAudio device names are host-specific;
+# many valid PipeWire/ALSA systems do not expose a device literally named
+# "pulse", so recording below uses PortAudio's configured default input.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+try:
+    import yaml
+    config_path = Path(__file__).resolve().parent.parent / "config.yaml"
+    if config_path.exists():
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        target_source = config.get("audio", {}).get("target_source", "default")
+        if target_source and target_source != "default":
+            os.environ["PULSE_SOURCE"] = target_source
+except Exception:
+    pass
+
+import sounddevice as sd
 
 # Load Faster-Whisper
 print("[1/3] Loading faster-whisper...")
@@ -30,7 +45,7 @@ sample_rate = 16000
 duration = 4.0  # 4 seconds
 
 try:
-    audio = sd.rec(int(sample_rate * duration), samplerate=sample_rate, channels=1, dtype="float32", device="pulse")
+    audio = sd.rec(int(sample_rate * duration), samplerate=sample_rate, channels=1, dtype="float32", device=None)
     sd.wait()
 except Exception as e:
     print(f"Error recording from pulse device: {e}")
@@ -75,7 +90,7 @@ try:
     raw_pcm, _ = p.communicate(input=f"{msg}\n".encode("utf-8"))
     
     pcm_audio = np.frombuffer(raw_pcm, dtype=np.int16).astype(np.float32) / 32768.0
-    sd.play(pcm_audio, samplerate=22050, device="pulse")
+    sd.play(pcm_audio, samplerate=22050, device=None)
     sd.wait()
     print("[TTS] Playback finished!")
 except Exception as e:

@@ -117,7 +117,7 @@ class UniversalLLMClient:
         if key:
             headers["Authorization"] = f"Bearer {key}"
 
-        model = self.cloud_model if self.provider in ["groq", "cloud", "openai"] else self.local_model
+        model = self.cloud_model if self.provider in ["groq", "cloud", "openai", "custom"] else self.local_model
         openai_tools = [t.to_openai() for t in tools] if tools else None
 
         formatted = []
