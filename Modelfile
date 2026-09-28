@@ -1,0 +1,13 @@
+FROM gemma4:e4b
+
+# Batch size for prompt evaluation
+PARAMETER num_batch 4096
+
+# Context & generation limits
+PARAMETER num_ctx 45056
+PARAMETER num_predict 32768
+
+# Sampling parameters
+PARAMETER temperature 0.2
+PARAMETER top_k 64
+PARAMETER top_p 0.95

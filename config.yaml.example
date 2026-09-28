@@ -1,0 +1,184 @@
+# Shin Configuration
+audio:
+  target_sink: "default"        # "default", or specific PipeWire node/ALSA sink
+  target_source: "default"      # "default", or specific PipeWire source/ALSA mic
+  sample_rate: 48000
+  chunk_size: 1280
+  vad_threshold_idle: 0.45
+  vad_threshold_speaking: 0.88
+  vad_silence_duration: 1.25  # seconds of sustained silence to finalize utterance (allows natural pauses)
+
+wake:
+  wake_word: "hey adam"  # openWakeWord default; customizable to "hey shin"
+  threshold: 0.50
+  followup_window_seconds: 7.0  # continuous conversation window after speaking
+
+stt:
+  model_size: "qwen3-asr-1.7b" # "qwen3-asr-1.7b", "distil-large-v3", or "base.en"
+  device: "Vulkan0"         # Dedicated GPU 0 (GTX 1080 Ti) via Vulkan / CUDA
+  device_index: 0
+  compute_type: "int8_float32" # Pascal CC 6.1 optimized
+
+speaker_verification:
+  enabled: true # Activates only after a local voice profile is enrolled
+  threshold: 0.25
+
+tts:
+  engine: "kokoro"             # "kokoro" (natural neural voice) | "piper"
+  model_path: "assets/voices/kokoro/kokoro-v1.0.onnx"
+  voices_path: "assets/voices/kokoro/voices-v1.0.bin"
+  voice: "af_nicole"             # Natural studio-quality voice matching wake word 'Hey Adam'
+  device_id: 0                 # Dedicated GPU 0 (GTX 1080 Ti via CUDA)
+  speed: 1.1
+  sample_rate: 24000
+
+llm:
+  provider: "local"         # "local" | "groq" | "gemini" | "anthropic"
+  local_model: "qwen3.5:4b"
+  cloud_model: "llama-3.3-70b-versatile" # or "gemini-2.5-flash"
+  ollama_host: "http://localhost:11434"
+  num_ctx: 16384             # 4x expanded context window (16,384 tokens)
+  temperature: 0.3
+  think: "low"               # Sets thinking level to low (options: "low", "medium", "high", false, true)
+
+execution:
+  workspace_dir: "~/workspace"
+  downloads_dir: "~/Downloads"
+  jobs_log_dir: "~/.local/state/shin/jobs"
+  max_log_mb: 50
+  preferred_video_codec: "av1"
+
+# Desktop application & window aliases (user-customizable)
+desktop:
+  # Default browser executable or application name (e.g. "microsoft-edge-stable", "firefox", "google-chrome-stable")
+  default_browser: "microsoft-edge-stable"
+
+  # Aliases used when launching applications (e.g. "open discord", "open cyberpunk")
+  application_aliases:
+    discord: ["vesktop", "discord", "webcord", "armcord"]
+    browser: ["microsoft edge", "google chrome", "firefox", "chromium", "brave"]
+    edge: ["microsoft edge", "microsoft edge (beta)"]
+    chrome: ["google chrome"]
+    terminal: ["alacritty", "kitty", "foot", "konsole", "wezterm", "xterm"]
+    music: ["spotify"]
+    spotify: ["spotify"]
+    code: ["zed", "neovim", "visual studio code", "code", "codium"]
+    editor: ["zed", "neovim", "gedit", "micro", "vim"]
+    zed: ["zed"]
+    resolve: ["davinci resolve"]
+    davinci: ["davinci resolve"]
+    obs: ["obs studio"]
+    steam: ["steam"]
+    cyberpunk: ["cyberpunk 2077"]
+    cs2: ["counter-strike 2"]
+    counter strike: ["counter-strike 2"]
+    wukong: ["black myth: wukong"]
+    black myth: ["black myth: wukong"]
+    hollow knight: ["hollow knight"]
+    ultrakill: ["ultrakill"]
+    ror2: ["risk of rain 2"]
+    risk of rain: ["risk of rain 2"]
+    siege: ["tom clancy's rainbow six siege"]
+    rainbow six: ["tom clancy's rainbow six siege"]
+    street fighter: ["street fighter v"]
+    sfv: ["street fighter v"]
+    files: ["dolphin", "nautilus", "thunar"]
+    file manager: ["dolphin", "nautilus", "thunar"]
+    calculator: ["kcalc", "gnome-calculator", "calc"]
+    settings: ["kde system settings", "system settings"]
+
+  # Aliases used when focusing, moving, or closing existing windows
+  window_aliases:
+    browser: ["edge", "microsoft-edge", "chrome", "google-chrome", "firefox", "chromium", "brave", "zen", "vivaldi", "opera"]
+    edge: ["microsoft-edge", "microsoftedge", "edge"]
+    chrome: ["google-chrome", "chrome"]
+    discord: ["vesktop", "webcord", "discord", "armcord"]
+    terminal: ["alacritty", "kitty", "foot", "konsole", "wezterm", "ghostty", "xterm"]
+    music: ["spotify", "cider", "rhythmbox", "cmus"]
+    spotify: ["spotify"]
+    code: ["code", "codium", "vscode", "zed", "cursor", "neovim", "sublime"]
+    editor: ["code", "codium", "vscode", "zed", "cursor", "neovim", "sublime", "kate"]
+    zed: ["dev.zed.zed", "zed"]
+    files: ["nautilus", "dolphin", "thunar", "nemo", "pcmanfm"]
+    obs: ["com.obsproject.studio", "obs", "obs64"]
+    resolve: ["resolve", "davinciresolve"]
+    steam: ["steam"]
+    cyberpunk: ["cyberpunk2077.exe", "cyberpunk"]
+    cs2: ["cs2", "counterstrike"]
+
+  # User-defined macros or compositor actions (DE-agnostic)
+  # Shin includes defaults for detected DEs (e.g. KDE: overview, show_desktop, grid, night_mode, lock;
+  # Hyprland: toggle_floating, fullscreen, pin, split, lock; Sway: toggle_floating, fullscreen, lock; Niri: toggle_floating, center).
+  # You can define custom macros or override defaults here:
+  macros:
+    overview: "qdbus6 org.kde.kglobalaccel /component/kwin invokeShortcut 'Overview' || qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Overview'"
+    show_desktop: "qdbus6 org.kde.kglobalaccel /component/kwin invokeShortcut 'Show Desktop' || qdbus org.kde.kglobalaccel /component/kwin invokeShortcut 'Show Desktop'"
+    toggle_floating: "hyprctl dispatch togglefloating active || swaymsg floating toggle || niri msg action toggle-window-floating"
+    lock: "loginctl lock-session"
+
+  # Optional explicit list of capabilities or tools to disable manually
+  # disabled_capabilities:
+  #   - window_swap
+  # disabled_tools:
+  #   - swap_windows
+
+# User-defined custom tools (YAML declarative command sequences)
+# Can also be placed as standalone .yaml files in ~/.config/shin/tools/*.yaml
+custom_tools:
+  - name: "start_coding_session"
+    description: "Switches to workspace 2 and launches editor and dev terminal for a project"
+    timeout: -1                  # -1 means straight sequential wait until done (no timeout)
+    background: false            # false = synchronous foreground; true = background with proactive notification
+    parameters:
+      project:
+        type: string
+        description: "Name of the project folder"
+        default: "voice-assistant"
+      workspace_id:
+        type: integer
+        description: "Workspace ID (i.e., 1,2,3,4,5....)"
+        default: 0
+    commands:
+      - "hyprctl dispatch workspace {workspace_id}"
+      - "zed ~/workspace/{project} &"
+      - "alacritty --working-directory ~/workspace/{project} &"
+    success_message: "Started coding session for {project}."
+  # Example SSH custom tool:
+  # - name: "remote_terminal"
+  #   description: "Spawns a terminal and connects to a remote server via SSH"
+  #   timeout: 10
+  #   background: false
+  #   commands:
+  #     - "alacritty -e ssh user@example.com &"
+  #   success_message: "Connected to remote server."
+
+  - name: "google_calendar_agenda"
+    description: "Shows the upcoming Google Calendar agenda using gcalcli. Requires gcalcli OAuth setup."
+    timeout: 30
+    command: "gcalcli agenda"
+
+  - name: "google_calendar_quick_add"
+    description: "Adds an event to Google Calendar from a natural-language description such as 'Lunch with Adam tomorrow at noon'. Requires gcalcli OAuth setup."
+    confirm: true
+    timeout: 60
+    parameters:
+      event:
+        type: string
+        description: "Natural-language event title, date, and time to add"
+    command: "gcalcli quick {event}"
+
+
+
+  # Example of a background task that informs the user it is waiting:
+  # - name: "build_project"
+  #   description: "Compiles a project in the background and announces completion"
+  #   background: true
+  #   timeout: -1
+  #   waiting_message: "Starting compilation of {project}. Waiting for build to finish..."
+  #   success_message: "Build for {project} completed successfully."
+  #   parameters:
+  #     project:
+  #       type: string
+  #       default: "voice-assistant"
+  #   commands:
+  #     - "cd ~/workspace/{project} && cargo build --release"

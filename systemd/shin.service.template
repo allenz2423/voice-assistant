@@ -1,0 +1,20 @@
+[Unit]
+Description=Shin: Voice-Activated Autonomous Terminal Agent
+After=pipewire.service wireplumber.service pipewire-pulse.service
+Wants=pipewire.service wireplumber.service
+
+[Service]
+Type=simple
+WorkingDirectory={{PROJECT_DIR}}
+ExecStart={{PROJECT_DIR}}/.venv/bin/python -m src.main
+Restart=on-failure
+RestartSec=3s
+Environment=PYTHONUNBUFFERED=1
+Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
+Environment="PATH={{PROJECT_DIR}}/.venv/bin:{{HOME}}/.local/bin:/usr/local/bin:/usr/bin:/bin"
+PassEnvironment=DISPLAY WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_RUNTIME_DIR
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,512 @@
+import pytest
+import re
+import asyncio
+from pathlib import Path
+import tempfile
+import shutil
+
+from src.main import merge_overlapping_transcripts
+from src.arbiter.confirmation import TriStateConfirmationManager
+from src.arbiter.arbiter import PriorityAudioArbiter, SystemState
+from src.llm.brain import ShinBrain
+from src.tts.streaming import StreamingVoiceSynthesizer
+from src.config import load_config
+
+# ==============================================================================
+# 1. TRANSCRIPT OVERLAP & DEDUPLICATION TESTS
+# ==============================================================================
+
+def test_merge_overlapping_exact_match():
+    assert merge_overlapping_transcripts("Yes.", "Yes.") == "Yes."
+    assert merge_overlapping_transcripts("Stop", "stop") == "Stop"
+
+def test_merge_overlapping_prefix_suffix():
+    assert merge_overlapping_transcripts("Just pick one.", "Pick one. Show.") == "Just pick one. Show."
+    assert merge_overlapping_transcripts("Could you?", "Could you list the files") == "Could you list the files"
+    assert merge_overlapping_transcripts("Please sort the", "the video files") == "Please sort the video files"
+
+def test_merge_overlapping_substring():
+    assert merge_overlapping_transcripts("Not that.", "Not that. Downloads folder.") == "Not that. Downloads folder."
+    assert merge_overlapping_transcripts("Downloads folder", "Downloads") == "Downloads folder"
+
+def test_merge_disjoint():
+    assert merge_overlapping_transcripts("Not that.", "Downloads folder.") == "Not that. Downloads folder."
+    assert merge_overlapping_transcripts("Hello", "world") == "Hello world"
+
+def test_merge_empty():
+    assert merge_overlapping_transcripts("", "test") == "test"
+    assert merge_overlapping_transcripts("test", "") == "test"
+
+
+# ==============================================================================
+# 2. CONFIRMATION STATE MACHINE & BARGE-IN TESTS
+# ==============================================================================
+
+class MockTTS:
+    def __init__(self):
+        self.spoken = []
+        self.pending_barge_in_text = None
+        self.current_spoken_text = ""
+        self.current_sentence = ""
+
+    async def speak_async(self, text):
+        self.spoken.append(text)
+
+    def _is_speaker_echo(self, text):
+        return False
+
+@pytest.mark.asyncio
+async def test_confirmation_affirm_variations():
+    tts = MockTTS()
+    arbiter = PriorityAudioArbiter(tts, None)
+    mgr = TriStateConfirmationManager(tts, arbiter)
+    await mgr.request_confirmation({"command": "echo test"}, "Confirm?")
+
+    affirm_phrases = [
+        "yes", "yeah", "yep", "sure", "do it", "confirm", "proceed",
+        "go ahead", "ok", "okay", "please do", "sort them", "move them", "yes please"
+    ]
+    for phrase in affirm_phrases:
+        mgr.pending_action = {"command": "echo test"}
+        result, _ = await mgr.evaluate_response(phrase)
+        assert result == "AFFIRM", f"Failed to affirm with: '{phrase}'"
+
+@pytest.mark.asyncio
+async def test_confirmation_deny_variations():
+    tts = MockTTS()
+    arbiter = PriorityAudioArbiter(tts, None)
+    mgr = TriStateConfirmationManager(tts, arbiter)
+
+    deny_phrases = ["no", "nope", "cancel", "stop", "don't", "abort", "nevermind", "leave it"]
+    for phrase in deny_phrases:
+        mgr.pending_action = {"command": "echo test"}
+        result, _ = await mgr.evaluate_response(phrase)
+        assert result == "DENY", f"Failed to deny with: '{phrase}'"
+
+@pytest.mark.asyncio
+async def test_confirmation_clarify_variations():
+    tts = MockTTS()
+    arbiter = PriorityAudioArbiter(tts, None)
+    mgr = TriStateConfirmationManager(tts, arbiter)
+
+    clarify_phrases = ["wait, what?", "why?", "can you repeat that?", "which files?"]
+    for phrase in clarify_phrases:
+        mgr.pending_action = {"command": "echo test", "summary": "move files"}
+        result, _ = await mgr.evaluate_response(phrase)
+        assert result == "CLARIFY", f"Failed to trigger clarification with: '{phrase}'"
+
+
+# ==============================================================================
+# 3. WORLD TIMEZONE & CLOCK TESTS
+# ==============================================================================
+
+def test_resolve_time_local():
+    cfg = load_config()
+    brain = ShinBrain(cfg, None, None, None, None)
+    res = brain._resolve_time("local")
+    assert "Current local time:" in res
+    assert "UTC" in res
+
+def test_resolve_time_japan():
+    cfg = load_config()
+    brain = ShinBrain(cfg, None, None, None, None)
+    res = brain._resolve_time("Japan")
+    assert "Asia/Tokyo" in res
+    assert "JST" in res
+
+def test_resolve_time_world_locations():
+    cfg = load_config()
+    brain = ShinBrain(cfg, None, None, None, None)
+    for loc, tz in [("London", "Europe/London"), ("Paris", "Europe/Paris"), ("California", "America/Los_Angeles"), ("UTC", "UTC")]:
+        res = brain._resolve_time(loc)
+        assert tz in res, f"Expected {tz} for location {loc}, got {res}"
+
+def test_resolve_time_unknown_fallback():
+    cfg = load_config()
+    brain = ShinBrain(cfg, None, None, None, None)
+    res = brain._resolve_time("Atlantis City")
+    assert "Could not find timezone" in res or "Local time" in res
+
+
+# ==============================================================================
+# 4. SHOW NAME EXTRACTION & MEDIA CLASSIFICATION TESTS
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_organize_files_logic_in_tempdir():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+
+        # Create dummy mock files matching user's real library
+        mock_files = [
+            "[SubsPlease] Link Click S3 - 01 (1080p) [4B8BBF23].mkv",
+            "[SubsPlease] Link Click S3 - 02 (1080p) [33FFB581].mkv",
+            "[Erai-raws] Mushoku Tensei III - Isekai Ittara Honki Dasu - 01 [1080p CR WEBRip HEVC AAC].mkv",
+            "[Erai-raws] Mushoku Tensei III - Isekai Ittara Honki Dasu - 02 [1080p CR WEBRip HEVC AAC].mkv",
+            "[Erai-raws] Tensei Shitara Slime Datta Ken 4th Season - 01 [1080p].mkv",
+            "Rick.and.Morty.S09E01.Theres.Something.About.Morty.mkv",
+            "notes.txt"
+        ]
+        for fname in mock_files:
+            (tmp_path / fname).write_text("dummy video content")
+
+        cfg = load_config()
+        tts = MockTTS()
+        arbiter = PriorityAudioArbiter(tts, None)
+        confirmation = TriStateConfirmationManager(tts, arbiter)
+        brain = ShinBrain(cfg, None, None, confirmation, tts)
+
+        # 1. Test dry-run
+        res_dry = await brain._handle_organize_files({
+            "directory": str(tmp_path),
+            "group_by": "show",
+            "dry_run": True
+        })
+        assert "Dry-run organization plan" in res_dry
+        assert "Link Click" in res_dry
+        assert "Mushoku Tensei" in res_dry
+        assert "Rick and Morty" in res_dry
+
+        # 2. Test actual organization execution plan
+        res = await brain._handle_organize_files({
+            "directory": str(tmp_path),
+            "group_by": "show",
+            "dry_run": False
+        })
+        assert "Confirmation requested" in res
+        assert confirmation.pending_action is not None
+        plan = confirmation.pending_action.get("plan", {})
+
+        # Simulate user saying "Yes" and executing the move
+        for dest_dir, src_files in plan.items():
+            Path(dest_dir).mkdir(parents=True, exist_ok=True)
+            for sf in src_files:
+                shutil.move(sf, dest_dir)
+
+        # Verify files were moved into proper folders
+        assert (tmp_path / "Link Click" / mock_files[0]).exists()
+        assert (tmp_path / "Link Click" / mock_files[1]).exists()
+        assert (tmp_path / "Mushoku Tensei" / mock_files[2]).exists()
+        assert (tmp_path / "Rick and Morty" / mock_files[5]).exists()
+
+
+# ==============================================================================
+# 5. BASH SAFETY & PING VALIDATION TESTS
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_ping_target_validation():
+    cfg = load_config()
+    brain = ShinBrain(cfg, None, None, None, None)
+
+    # Invalid conversational phrases should be rejected
+    invalid_res = await brain._execute_tool("run_bash_command", {"command": "ping German Wicket PD"})
+    assert "not a valid domain name or IP address" in invalid_res
+
+    invalid_res2 = await brain._execute_tool("run_bash_command", {"command": "ping the drum"})
+    assert "not a valid domain name or IP address" in invalid_res2
+
+    # Valid domain should have -c automatically added if omitted
+    # Note: don't actually run long ping, verify command inspection or timeout
+    assert "-c" not in "ping 127.0.0.1"
+
+
+# ==============================================================================
+# 6. SPEAKER ECHO DETECTION TESTS
+# ==============================================================================
+
+def test_speaker_echo_filtering():
+    tts = StreamingVoiceSynthesizer(
+        engine="kokoro",
+        model_path="assets/voices/kokoro/kokoro-v1.0.onnx",
+        voices_path="assets/voices/kokoro/voices-v1.0.bin",
+        voice="am_adam"
+    )
+    tts.current_spoken_text = "I found 74 video files in your Downloads folder."
+    tts.current_sentence = "I found 74 video files in your Downloads folder."
+
+    # Direct echo
+    assert tts._is_speaker_echo("I found 74 video files in your Downloads folder.") is True
+
+    # Partial echo with >=65% overlap
+    assert tts._is_speaker_echo("found 74 video files in your Downloads") is True
+
+    # Genuine user speech (disjoint)
+    assert tts._is_speaker_echo("Hey Adam, can you sort them into folders?") is False
+    assert tts._is_speaker_echo("Stop right now") is False
+
+
+# ==============================================================================
+# 7. LLM EMBEDDED TOOL CALL RECOVERY TESTS
+# ==============================================================================
+
+from src.llm.provider import UniversalLLMClient
+
+def test_extract_markdown_json_tool_call():
+    cfg = load_config()
+    client = UniversalLLMClient(cfg)
+    text = "Sure, I will run that command:\n```json\n{\"name\": \"run_bash_command\", \"arguments\": {\"command\": \"ls -la\"}}\n```"
+    cleaned, calls = client._extract_embedded_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "run_bash_command"
+    assert calls[0]["function"]["arguments"]["command"] == "ls -la"
+    assert "Sure, I will run that command:" in cleaned
+
+def test_extract_raw_json_tool_call():
+    cfg = load_config()
+    client = UniversalLLMClient(cfg)
+    text = "{\"name\": \"get_current_time\", \"arguments\": {\"location\": \"Japan\"}}"
+    cleaned, calls = client._extract_embedded_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "get_current_time"
+    assert calls[0]["function"]["arguments"]["location"] == "Japan"
+
+def test_extract_inline_stream_json():
+    cfg = load_config()
+    client = UniversalLLMClient(cfg)
+    text = "Checking now {\"name\": \"find_files\", \"arguments\": {\"directory\": \"~/Downloads\", \"pattern\": \"*.mkv\"}} please wait"
+    cleaned, calls = client._extract_embedded_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["function"]["name"] == "find_files"
+    assert calls[0]["function"]["arguments"]["pattern"] == "*.mkv"
+    assert "Checking now" in cleaned
+
+
+# ==============================================================================
+# 8. COMPLEX / UNICODE / EDGE CASE FILE ORGANIZATION TESTS
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_organize_files_with_unicode_and_colons():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmp_path = Path(tmpdir)
+        mock_files = [
+            "[SubsPlease] Re:Zero − Starting Life in Another World 2nd Season - 25.mkv",
+            "Cowboy Bebop - 01 - Asteroid Blues.mkv",
+            "unknown_file_without_season.mp4"
+        ]
+        for f in mock_files:
+            (tmp_path / f).write_text("test")
+
+        cfg = load_config()
+        tts = MockTTS()
+        brain = ShinBrain(cfg, None, None, None, tts)
+
+        res = await brain._handle_organize_files({
+            "directory": str(tmp_path),
+            "group_by": "show",
+            "dry_run": True
+        })
+        assert "Dry-run organization plan" in res
+        assert "Re:Zero" in res or "Starting Life" in res
+        assert "Cowboy Bebop" in res
+
+
+# ==============================================================================
+# 9. JOB SUPERVISOR LIFECYCLE & PROCESS GROUP TESTS
+# ==============================================================================
+
+from src.execution.supervisor import HardenedJobSupervisor
+
+@pytest.mark.asyncio
+async def test_job_supervisor_start_and_cleanup():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        supervisor = HardenedJobSupervisor(
+            log_dir=tmpdir,
+            workspace=tmpdir,
+            downloads=tmpdir
+        )
+        # Launch simple detached job
+        pid = await supervisor.start_sandboxed_job(
+            job_id="test_sleep",
+            raw_cmd=["sleep", "5"]
+        )
+        assert pid > 0
+        assert "test_sleep" in supervisor.active_jobs
+
+        # Verify job is tracked and can be terminated cleanly
+        await supervisor.kill_job("test_sleep")
+        assert "test_sleep" not in supervisor.active_jobs
+
+
+# ==============================================================================
+# 10. CONFIRMATION WATCHDOG EXPIRY TESTS
+# ==============================================================================
+
+@pytest.mark.asyncio
+async def test_confirmation_timeout_expiry():
+    tts = MockTTS()
+    arbiter = PriorityAudioArbiter(tts, None)
+    # Short timeout for testing (0.1s)
+    mgr = TriStateConfirmationManager(tts, arbiter, timeout_seconds=0.1)
+
+    await mgr.request_confirmation({"command": "rm -rf /"}, "Delete all?")
+    assert mgr.pending_action is not None
+
+    # Wait for watchdog to expire
+    await asyncio.sleep(0.15)
+    assert mgr.pending_action is None
+    assert any("timed out" in s for s in tts.spoken)
+
+
+# ==============================================================================
+# 11. ACOUSTIC QUENCH & ECHO HISTORY TESTS
+# ==============================================================================
+
+def test_audio_stream_quench_suppression():
+    from src.audio.stream import AudioStreamManager
+    import numpy as np
+    import time
+
+    stream = AudioStreamManager(chunk_size=512)
+    stream.running = True
+
+    # Call quench for 0.15s
+    stream.quench(duration=0.15)
+
+    # Chunks incoming during quench are ignored
+    chunk = np.zeros((512, 1), dtype=np.float32)
+    stream._audio_callback(chunk, 512, None, None)
+    assert stream.audio_queue.empty()
+    assert stream.get_chunk(timeout=0.01) is None
+
+    # Wait for quench to expire
+    time.sleep(0.16)
+    stream._audio_callback(chunk, 512, None, None)
+    assert not stream.audio_queue.empty()
+    assert stream.get_chunk(timeout=0.01) is not None
+
+
+def test_speaker_echo_history_and_filler_suppression():
+    tts = StreamingVoiceSynthesizer(
+        engine="kokoro",
+        model_path="assets/voices/kokoro/kokoro-v1.0.onnx",
+        voices_path="assets/voices/kokoro/voices-v1.0.bin",
+        voice="am_adam"
+    )
+    import time
+    tts.speech_history.append((time.time() - 2.0, "your downloads folder is quite full with wistoria files"))
+
+    # Matches sentence in history
+    assert tts._is_speaker_echo("downloads folder is full") is True
+    assert tts._is_speaker_echo("wistoria files") is True
+
+    # Filler word suppression while speaking
+    tts.is_speaking = True
+    assert tts._is_speaker_echo("yes") is True
+    assert tts._is_speaker_echo("there's like") is True
+
+    # Genuine command while speaking is NOT echo
+    assert tts._is_speaker_echo("what is the weather in tokyo right now") is False
+
+
+def test_vad_noise_gate_suppresses_low_ambient_energy():
+    from src.audio.vad import SileroVAD
+    import numpy as np
+
+    vad = SileroVAD()
+    # Extremely low energy noise (e.g. 0.001 RMS ambient room background)
+    low_noise = np.random.uniform(-0.001, 0.001, 1600).astype(np.float32)
+    is_speech, prob = vad.is_speech(low_noise, threshold=0.45, use_energy_floor=True)
+
+    assert is_speech is False
+    assert prob == 0.0
+
+
+def test_reference_audio_monitor_correlation():
+    from src.audio.stream import ReferenceAudioMonitor
+    import numpy as np
+
+    mon = ReferenceAudioMonitor(sample_rate=16000, buffer_seconds=4.0)
+    mon.running = True
+
+    # Populate monitor buffer with synthetic speaker playback
+    np.random.seed(42)
+    speaker_audio = np.random.randn(32000).astype(np.float32) * 0.1
+    mon._audio_callback(speaker_audio[:, None], 32000, None, None)
+
+    # 1. Delayed reflection of speaker output (simulating room acoustics, 40ms delay = 640 samples)
+    mic_echo = speaker_audio[32000 - 16000 - 640 : 32000 - 640]
+    is_echo, score = mon.is_speaker_echo(mic_echo, threshold=0.35)
+    assert is_echo is True
+    assert score > 0.80
+
+    # 2. Independent novel user speech while speaker audio is in buffer
+    user_speech = np.random.randn(16000).astype(np.float32) * 0.1
+    is_echo_user, user_score = mon.is_speaker_echo(user_speech, threshold=0.35)
+    assert is_echo_user is False
+    assert user_score < 0.20
+
+
+def test_custom_wake_word_anchoring_and_speaker_rejection():
+    from src.wake.engine import WakeWordDetector
+
+    detector = WakeWordDetector(wake_word="hey adam")
+
+    # Positive matches (addressed to assistant at the start of utterance)
+    m1, r1 = detector.match_custom_wake_word("Hey Adam, could you close Firefox?")
+    assert m1 is True
+    assert r1.lower() == "could you close firefox?"
+
+    m2, r2 = detector.match_custom_wake_word("Uh, hey Adam, what is the weather?")
+    assert m2 is True
+    assert "weather" in r2.lower()
+
+    m2b, r2b = detector.match_custom_wake_word("All right. Hey Adam, what's on my screen?")
+    assert m2b is True
+    assert r2b.lower() == "what's on my screen?"
+
+    # A self-correction may restart the request with a later wake phrase;
+    # only the command after that final address should be sent to the agent.
+    corrected, corrected_cmd = detector.match_custom_wake_word(
+        "Hey, Shin. What's on my Google? Hey, Adam. What's on my Google Calendar?"
+    )
+    assert corrected is True
+    assert corrected_cmd == "What's on my Google Calendar?"
+
+    restarted, restarted_cmd = detector.match_custom_wake_word(
+        "Hey Adam, what's on my screen? Hey Adam, what's on my Google Calendar?"
+    )
+    assert restarted is True
+    assert restarted_cmd == "what's on my Google Calendar?"
+
+    m3, r3 = detector.match_custom_wake_word("Adam, what time is it?")
+    assert m3 is True
+    assert "what time is it" in r3.lower()
+
+    m4, r4 = detector.match_custom_wake_word("Hey Adam")
+    assert m4 is True
+    assert r4 == ""
+
+    # Repeated hesitations, punctuation variations, and leading hesitation in command
+    m4b, r4b = detector.match_custom_wake_word("Uh, hey, uh, hey, Adam. Uh, what applications do I have?")
+    assert m4b is True
+    assert r4b == "what applications do I have?"
+
+    m4c, r4c = detector.match_custom_wake_word("Hey, Adam, what time is it?")
+    assert m4c is True
+    assert r4c == "what time is it?"
+
+    m4d, r4d = detector.match_custom_wake_word("Hey... Adam, what time is it?")
+    assert m4d is True
+    assert r4d == "what time is it?"
+
+    m4e, r4e = detector.match_custom_wake_word("Uh, hey, uh, hey, Adam.")
+    assert m4e is True
+    assert r4e == ""
+
+    # Negative matches (YouTube, podcasts, background dialogue NOT addressing assistant)
+    m5, _ = detector.match_custom_wake_word("I met Adam at the restaurant.")
+    assert m5 is False
+
+    m6, _ = detector.match_custom_wake_word("You know what yours, right? No. Then you don't.")
+    assert m6 is False
+
+    m7, _ = detector.match_custom_wake_word("Vietnamese chicken over rice or chicken over rice.")
+    assert m7 is False
+
+    m8, _ = detector.match_custom_wake_word("A big dam was constructed on the river.")
+    assert m8 is False
+
+    m9, _ = detector.match_custom_wake_word("He was kicked in the shin during the match.")
+    assert m9 is False

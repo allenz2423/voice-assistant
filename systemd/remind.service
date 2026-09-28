@@ -1,0 +1,12 @@
+[Unit]
+Description=Remind calendar and alarm daemon
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/remind -z1 "-k:/usr/bin/notify-send --app-name=Shin --urgency=normal %%s" %h/.config/remind
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
