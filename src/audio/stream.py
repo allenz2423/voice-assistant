@@ -202,7 +202,7 @@ class AudioStreamManager:
         speaking_threshold=0.85,
         initial_chunk=None,
         on_partial_audio=None,
-        partial_interval_s=0.35,
+        partial_interval_s=0.50,
     ) -> np.ndarray:
         """Records speech chunks until silence is sustained for silence_duration.
         Supports streaming partial audio callbacks to dynamically adapt silence_duration

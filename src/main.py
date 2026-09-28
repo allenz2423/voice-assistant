@@ -202,8 +202,18 @@ class ShinDaemon:
         Performs semantic endpoint analysis to dynamically scale VAD silence duration
         and dispatches speculative pre-flight tool execution while speech is ongoing."""
         def on_partial(audio_chunk) -> float | None:
-            if len(audio_chunk) < int(0.25 * self.stream.sample_rate):
+            if len(audio_chunk) < int(0.5 * self.stream.sample_rate):
                 return None
+
+            # Filter out non-enrolled speakers on CPU (0% GPU) before invoking heavy ASR
+            if self.speaker_verifier is not None:
+                try:
+                    matched, _ = self.speaker_verifier.verify(audio_chunk)
+                    if not matched:
+                        return None
+                except Exception:
+                    pass
+
             try:
                 partial_text = self.stt.transcribe(audio_chunk)
                 if not partial_text:
@@ -367,8 +377,7 @@ class ShinDaemon:
                     )
                     if is_speech:
                         print(f"\n[Mic] Speech detected (prob={prob:.2f}). Recording utterance...", flush=True)
-                        wake_w = "" if is_in_followup else self.wake.raw_wake_word
-                        partial_cb = self._create_partial_callback(loop, wake_word=wake_w)
+                        partial_cb = self._create_partial_callback(loop, wake_word="") if is_in_followup else None
                         audio_data = await asyncio.to_thread(
                             self.stream.record_utterance,
                             silence_duration=self.config.audio.vad_silence_duration,
