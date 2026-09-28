@@ -19,11 +19,14 @@ class WakeWordDetector:
 
     def _load_model(self):
         try:
+            import glob
+            import os
             print(f"[Wake] Searching for openWakeWord model matching '{self.wake_word}'...")
-            available_paths = openwakeword.get_pretrained_model_paths()
+            available_paths = list(openwakeword.get_pretrained_model_paths())
+            available_paths.extend(glob.glob("assets/models/*.onnx"))
             selected_path = None
             for p in available_paths:
-                if self.wake_word in p.lower():
+                if self.wake_word in os.path.basename(p).lower():
                     selected_path = p
                     break
 

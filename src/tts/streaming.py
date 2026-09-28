@@ -385,8 +385,14 @@ class StreamingVoiceSynthesizer:
 
         INTERRUPT_KEYWORDS = {
             "stop", "wait", "hold on", "quiet", "shut up", "cancel", "nevermind",
-            "silence", "shh", "adam", "hey adam", "pause", "enough"
+            "silence", "shh", "pause", "enough"
         }
+        if self.wake_detector:
+            raw_w = getattr(self.wake_detector, "raw_wake_word", "").lower().strip()
+            if raw_w:
+                INTERRUPT_KEYWORDS.add(raw_w)
+                if raw_w.startswith("hey "):
+                    INTERRUPT_KEYWORDS.add(raw_w[4:].strip())
 
         while not stop_event.is_set():
             chunk = await asyncio.to_thread(self.mic_stream.get_chunk, timeout=0.03)
