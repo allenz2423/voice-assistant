@@ -182,13 +182,14 @@ def _format_visual_spoken_answer(text: str) -> str:
 
 class ShinBrain:
     """The central ReAct autonomous agent loop driving tool execution and conversation."""
-    def __init__(self, config, supervisor, probe, confirmation_mgr, tts_engine, arbiter=None):
+    def __init__(self, config, supervisor, probe, confirmation_mgr, tts_engine, arbiter=None, speculative_router=None):
         self.config = config
         self.supervisor = supervisor
         self.probe = probe
         self.confirmation = confirmation_mgr
         self.tts = tts_engine
         self.arbiter = arbiter
+        self.speculative_router = speculative_router
         self.timer_mgr = TimerManager(
             tts_engine=self.tts,
             earcon_engine=getattr(self.arbiter, "earcon", None) if self.arbiter else None
@@ -445,6 +446,11 @@ class ShinBrain:
 
     async def _execute_tool(self, name: str, args: dict) -> str:
         """Executes the requested tool action."""
+        if self.speculative_router:
+            hit, cached_result = await self.speculative_router.consume_speculative_result(name, args)
+            if hit:
+                return str(cached_result)
+
         if self.custom_tool_mgr.has_tool(name):
             return await self.custom_tool_mgr.execute(
                 name=name,

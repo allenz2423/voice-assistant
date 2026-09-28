@@ -194,8 +194,19 @@ class AudioStreamManager:
             except queue.Empty:
                 break
 
-    def record_utterance(self, silence_duration=1.25, max_duration=45.0, idle_threshold=0.25, speaking_threshold=0.85, initial_chunk=None) -> np.ndarray:
-        """Records speech chunks until silence is sustained for silence_duration."""
+    def record_utterance(
+        self,
+        silence_duration=1.25,
+        max_duration=45.0,
+        idle_threshold=0.25,
+        speaking_threshold=0.85,
+        initial_chunk=None,
+        on_partial_audio=None,
+        partial_interval_s=0.35,
+    ) -> np.ndarray:
+        """Records speech chunks until silence is sustained for silence_duration.
+        Supports streaming partial audio callbacks to dynamically adapt silence_duration
+        via semantic endpointing and speculative tool pre-flight."""
         while time.time() < self.quench_until:
             time.sleep(0.02)
         self.flush()
@@ -207,6 +218,7 @@ class AudioStreamManager:
         speech_started = False
         silence_start = None
         start_time = time.time()
+        last_partial_time = start_time
 
         self.vad.reset()
 
@@ -241,6 +253,20 @@ class AudioStreamManager:
                     # Keep rolling window of pre-speech frames
                     if len(frames) > int(0.5 * self.sample_rate / self.chunk_size):
                         frames.pop(0)
+
+            if speech_started and on_partial_audio is not None:
+                now = time.time()
+                if now - last_partial_time >= partial_interval_s:
+                    last_partial_time = now
+                    # Only invoke if at least 0.25s of speech accumulated
+                    if len(frames) * self.chunk_size >= int(0.25 * self.sample_rate):
+                        try:
+                            partial_arr = np.concatenate(frames)
+                            new_silence = on_partial_audio(partial_arr)
+                            if new_silence is not None and isinstance(new_silence, (int, float)):
+                                silence_duration = float(new_silence)
+                        except Exception:
+                            pass
 
         if frames:
             audio_res = np.concatenate(frames)

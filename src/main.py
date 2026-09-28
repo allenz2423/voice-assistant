@@ -19,6 +19,11 @@ from src.arbiter.confirmation import TriStateConfirmationManager
 from src.execution.probe import HardwareEncoderProbe
 from src.execution.supervisor import HardenedJobSupervisor
 from src.llm.brain import ShinBrain
+from src.audio.endpoint import SemanticEndpointer
+from src.llm.speculative import SpeculativeRouter
+from src.tools.weather import get_weather_report
+from src.tools.web import web_search
+from src.tools.system_telemetry import get_system_status
 from src.tools.desktop import (
     ensure_gui_environment,
     configure_desktop_aliases,
@@ -145,7 +150,17 @@ class ShinDaemon:
         )
         self.tts.set_audio_context(self.stream, self.wake, self.earcon, stt=self.stt)
 
-        # 4. Agent Brain
+        # 4. Tiered Speech Architecture (Semantic Endpointing & Speculative Tool Pre-flight)
+        print("[Init] Initializing SemanticEndpointer & SpeculativeRouter...")
+        self.endpointer = SemanticEndpointer()
+        self.speculative_router = SpeculativeRouter({
+            "get_weather": get_weather_report,
+            "web_search": web_search,
+            "get_system_status": get_system_status,
+            "battery_status": get_system_status,
+        })
+
+        # 5. Agent Brain
         print("[Init] Initializing ShinBrain ReAct Agent...")
         self.brain = ShinBrain(
             self.config,
@@ -153,8 +168,10 @@ class ShinDaemon:
             self.probe,
             self.confirmation,
             self.tts,
-            arbiter=self.arbiter
+            arbiter=self.arbiter,
+            speculative_router=self.speculative_router
         )
+        self.speculative_router.set_executor("get_current_time", lambda location="local": self.brain._resolve_time(location))
 
         self.conversation_deadline = 0.0
         self.exit_keywords = re.compile(
@@ -180,9 +197,38 @@ class ShinDaemon:
             print(f"[Speaker] Enrolled voice matched (score={score:.3f}).", flush=True)
         return matched
 
+    def _create_partial_callback(self, loop: asyncio.AbstractEventLoop, wake_word: str = ""):
+        """Returns a non-blocking callback invoked on streaming partial audio chunks.
+        Performs semantic endpoint analysis to dynamically scale VAD silence duration
+        and dispatches speculative pre-flight tool execution while speech is ongoing."""
+        def on_partial(audio_chunk) -> float | None:
+            if len(audio_chunk) < int(0.25 * self.stream.sample_rate):
+                return None
+            try:
+                partial_text = self.stt.transcribe(audio_chunk)
+                if not partial_text:
+                    return None
+
+                # 1. Semantic linguistic endpoint analysis
+                analysis = self.endpointer.analyze(partial_text, wake_word=wake_word)
+
+                # 2. Speculative preflight dispatch (non-blocking threadsafe call on asyncio loop)
+                loop.call_soon_threadsafe(
+                    lambda text=partial_text: asyncio.create_task(
+                        self.speculative_router.preflight(text, wake_word=wake_word)
+                    )
+                )
+
+                return analysis.recommended_silence_s
+            except Exception:
+                return None
+
+        return on_partial
+
     async def run(self):
         """Main non-blocking asynchronous event loop."""
         self.running = True
+        loop = asyncio.get_running_loop()
 
         # Preload and warm up the LLM model in VRAM
         await self.brain.warmup()
@@ -220,7 +266,8 @@ class ShinDaemon:
                         silence_duration=self.config.audio.vad_silence_duration,
                         max_duration=45.0,
                         idle_threshold=self.config.audio.vad_threshold_idle,
-                        speaking_threshold=self.config.audio.vad_threshold_speaking
+                        speaking_threshold=self.config.audio.vad_threshold_speaking,
+                        on_partial_audio=self._create_partial_callback(loop, wake_word="")
                     )
                     if len(trailing_audio) > 0:
                         if not await self._speaker_allowed(trailing_audio):
@@ -262,7 +309,8 @@ class ShinDaemon:
                                 silence_duration=self.config.audio.vad_silence_duration,
                                 max_duration=45.0,
                                 idle_threshold=self.config.audio.vad_threshold_idle,
-                                speaking_threshold=self.config.audio.vad_threshold_speaking
+                                speaking_threshold=self.config.audio.vad_threshold_speaking,
+                                on_partial_audio=self._create_partial_callback(loop, wake_word="")
                             )
                             self.earcon.play("captured")
                             if len(prompt_audio) > 0:
@@ -319,16 +367,20 @@ class ShinDaemon:
                     )
                     if is_speech:
                         print(f"\n[Mic] Speech detected (prob={prob:.2f}). Recording utterance...", flush=True)
+                        wake_w = "" if is_in_followup else self.wake.raw_wake_word
+                        partial_cb = self._create_partial_callback(loop, wake_word=wake_w)
                         audio_data = await asyncio.to_thread(
                             self.stream.record_utterance,
                             silence_duration=self.config.audio.vad_silence_duration,
                             max_duration=45.0,
                             idle_threshold=self.config.audio.vad_threshold_idle,
                             speaking_threshold=self.config.audio.vad_threshold_speaking,
-                            initial_chunk=chunk
+                            initial_chunk=chunk,
+                            on_partial_audio=partial_cb
                         )
                         if len(audio_data) > 0:
                             if not await self._speaker_allowed(audio_data):
+                                self.speculative_router.cancel_active()
                                 continue
                             duration_s = len(audio_data) / self.stream.sample_rate
                             text = await asyncio.to_thread(self.stt.transcribe, audio_data)
@@ -336,11 +388,13 @@ class ShinDaemon:
                                 print(f"[Speech] >>> Heard ({duration_s:.1f}s): \"{text}\" <<<", flush=True)
                             else:
                                 print(f"[Speech] (No words recognized in {duration_s:.1f}s audio)", flush=True)
+                                self.speculative_router.cancel_active()
                                 continue
 
                             # Exit phrase handling in follow-up mode
                             if is_in_followup and self.exit_keywords.search(text):
                                 print(f"[Follow-up] Exit phrase heard: \"{text}\". Closing conversation.", flush=True)
+                                self.speculative_router.cancel_active()
                                 self.conversation_deadline = 0.0
                                 self.earcon.play("done")
                                 await self.arbiter.set_state("IDLE_LISTENING")
@@ -358,16 +412,19 @@ class ShinDaemon:
                                     self.earcon.play("wake")
                                     await self.arbiter.set_state("USER_SPEAKING")
                                     print("[Mic] Listening for command...", flush=True)
+                                    prompt_cb = self._create_partial_callback(loop, wake_word="")
                                     prompt_audio = await asyncio.to_thread(
                                         self.stream.record_utterance,
                                         silence_duration=self.config.audio.vad_silence_duration,
                                         max_duration=45.0,
                                         idle_threshold=self.config.audio.vad_threshold_idle,
-                                        speaking_threshold=self.config.audio.vad_threshold_speaking
+                                        speaking_threshold=self.config.audio.vad_threshold_speaking,
+                                        on_partial_audio=prompt_cb
                                     )
                                     self.earcon.play("captured")
                                     if len(prompt_audio) > 0:
                                         if not await self._speaker_allowed(prompt_audio):
+                                            self.speculative_router.cancel_active()
                                             await self.arbiter.set_state("IDLE_LISTENING")
                                             continue
                                         prompt_text = await asyncio.to_thread(self.stt.transcribe, prompt_audio)
@@ -379,9 +436,11 @@ class ShinDaemon:
                                 # suppress follow-up mode to prevent speaker voices from triggering!
                                 if self.stream.ref_monitor and self.stream.ref_monitor.is_active:
                                     print(f"[Follow-up] Desktop audio is active on speakers; ignoring background speech without wake word.", flush=True)
+                                    self.speculative_router.cancel_active()
                                     continue
                                 if self.tts._is_speaker_echo(text):
                                     print(f"[Follow-up] Discarding acoustic echo of recent assistant speech: \"{text}\"", flush=True)
+                                    self.speculative_router.cancel_active()
                                     self.stream.flush()
                                     self.stream.quench(duration=0.4)
                                     continue
@@ -395,6 +454,7 @@ class ShinDaemon:
                                 try:
                                     await self.brain.process_user_utterance(target_cmd)
                                 finally:
+                                    self.speculative_router.cancel_active()
                                     if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
                                         await self.arbiter.set_state("IDLE_LISTENING")
                                         self.stream.flush()
@@ -402,6 +462,7 @@ class ShinDaemon:
                                         self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
                                         print(f"[Follow-up] Window open for {self.config.wake.followup_window_seconds:.1f}s (no wake word needed)...", flush=True)
                             else:
+                                self.speculative_router.cancel_active()
                                 if text and not is_in_followup:
                                     print(f"[Wake] (Phrase heard but not addressed to Adam/Shin; resuming listening)", flush=True)
                                 if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
@@ -417,18 +478,21 @@ class ShinDaemon:
 
                         # Record utterance following wake word
                         print("[Mic] Listening for prompt...")
+                        prompt_cb = self._create_partial_callback(loop, wake_word="")
                         audio_data = await asyncio.to_thread(
                             self.stream.record_utterance,
                             silence_duration=self.config.audio.vad_silence_duration,
                             max_duration=45.0,
                             idle_threshold=self.config.audio.vad_threshold_idle,
-                            speaking_threshold=self.config.audio.vad_threshold_speaking
+                            speaking_threshold=self.config.audio.vad_threshold_speaking,
+                            on_partial_audio=prompt_cb
                         )
 
                         self.earcon.play("captured")
 
                         if len(audio_data) > 0:
                             if not await self._speaker_allowed(audio_data):
+                                self.speculative_router.cancel_active()
                                 self.wake.reset()
                                 continue
                             text = await asyncio.to_thread(self.stt.transcribe, audio_data)
@@ -437,10 +501,15 @@ class ShinDaemon:
                                 try:
                                     await self.brain.process_user_utterance(text)
                                 finally:
+                                    self.speculative_router.cancel_active()
                                     if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
                                         await self.arbiter.set_state("IDLE_LISTENING")
                                         self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
                                         print(f"[Follow-up] Window open for {self.config.wake.followup_window_seconds:.1f}s...", flush=True)
+                            else:
+                                self.speculative_router.cancel_active()
+                        else:
+                            self.speculative_router.cancel_active()
 
                         self.wake.reset()
 
@@ -462,7 +531,8 @@ class ShinDaemon:
                         silence_duration=self.config.audio.vad_silence_duration,
                         max_duration=30.0,
                         idle_threshold=self.config.audio.vad_threshold_idle,
-                        speaking_threshold=self.config.audio.vad_threshold_speaking
+                        speaking_threshold=self.config.audio.vad_threshold_speaking,
+                        on_partial_audio=self._create_partial_callback(loop, wake_word="")
                     )
                     if len(audio_data) > 0:
                         confirmation_audio = audio_data
