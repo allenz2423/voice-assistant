@@ -180,6 +180,8 @@ class StreamingVoiceSynthesizer:
             self._init_cosyvoice()
         elif self.engine == "kokoro":
             self._init_kokoro()
+        elif self.engine == "silent":
+            print("[TTS] Silent mode — responses will appear as desktop notifications only.")
 
     def _init_cosyvoice(self):
         """Waits for the CosyVoice HTTP server to become ready (up to 60s)."""
@@ -366,6 +368,18 @@ class StreamingVoiceSynthesizer:
 
     async def speak_async(self, text: str):
         """Synthesizes and speaks text with clause chunking and active barge-in monitoring."""
+        # Silent mode: show notification instead of speaking
+        if self.engine == "silent":
+            clean_text = clean_speech_text(text)
+            if clean_text:
+                await asyncio.to_thread(
+                    lambda: __import__("subprocess").run(
+                        ["notify-send", "-a", "Adam", "-t", "0", "Adam", clean_text],
+                        capture_output=True
+                    )
+                )
+            return
+
         epoch_at_call = self.current_epoch
         async with self._lock:
             # If an interruption occurred while waiting for the speech lock, discard speech immediately!
@@ -533,6 +547,21 @@ class StreamingVoiceSynthesizer:
 
     async def stream_tokens(self, token_async_generator):
         """Streams tokens from LLM, splits at clause boundaries, and synthesizes immediately."""
+        # Silent mode: collect all tokens then notify
+        if self.engine == "silent":
+            full = ""
+            async for token in token_async_generator:
+                full += token
+            clean_text = clean_speech_text(full)
+            if clean_text:
+                await asyncio.to_thread(
+                    lambda: __import__("subprocess").run(
+                        ["notify-send", "-a", "Adam", "-t", "0", "Adam", clean_text],
+                        capture_output=True
+                    )
+                )
+            return
+
         async with self._lock:
             epoch = self.current_epoch
             buffer = ""
@@ -549,6 +578,7 @@ class StreamingVoiceSynthesizer:
 
             if buffer.strip() and epoch == self.current_epoch:
                 await self._synthesize_and_play_clause(buffer.strip(), epoch)
+
 
     async def _synthesize_cosyvoice(self, clause: str):
         """Synthesizes speech via the CosyVoice2 local streaming server."""
