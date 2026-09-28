@@ -214,27 +214,18 @@ class StreamingVoiceSynthesizer:
             available = ort.get_available_providers()
             sess = None
 
-            # Try CUDA on configured device first, then any other available GPU before CPU fallback
             if "CUDAExecutionProvider" in available:
-                devices_to_try = [self.device_id]
-                for d in range(2):
-                    if d not in devices_to_try:
-                        devices_to_try.append(d)
+                try:
+                    providers = [("CUDAExecutionProvider", {"device_id": self.device_id})]
+                    sess = ort.InferenceSession(self.model_path, sess_opt, providers=providers)
+                    print(f"[TTS] Kokoro-82M loaded on CUDA device {self.device_id}.")
+                except Exception as e:
+                    print(f"[TTS] CUDA device {self.device_id} unavailable ({type(e).__name__}), falling back to CPU.")
 
-                for dev in devices_to_try:
-                    try:
-                        providers = [("CUDAExecutionProvider", {"device_id": dev})]
-                        sess = ort.InferenceSession(self.model_path, sess_opt, providers=providers)
-                        print(f"[TTS] Kokoro-82M loaded on CUDA device {dev}.")
-                        self.device_id = dev
-                        break
-                    except Exception as e:
-                        print(f"[TTS] CUDA initialization failed on device {dev}: {e}")
-
-            # Fallback to high-performance CPUExecutionProvider if all CUDA devices failed
             if sess is None:
                 sess = ort.InferenceSession(self.model_path, sess_opt, providers=["CPUExecutionProvider"])
-                print("[TTS] Kokoro-82M loaded on CPUExecutionProvider (AVX-optimized).")
+                print("[TTS] Kokoro-82M loaded on CPU (AVX-optimized).")
+
 
             self.kokoro = Kokoro.from_session(sess, self.voices_path)
 
