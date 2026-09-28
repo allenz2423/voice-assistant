@@ -182,37 +182,22 @@ class StreamingVoiceSynthesizer:
             self._init_kokoro()
 
     def _init_cosyvoice(self):
-        """Initializes CosyVoice client or direct model with graceful standby fallback to Kokoro."""
-        print(f"[TTS] Initializing CosyVoice engine (endpoint: {self.cosyvoice_api_url})...")
-        # 1. Try local direct module if available
-        try:
-            from cosyvoice.cli.cosyvoice import CosyVoice, CosyVoice2
-            print(f"[TTS] Loading local CosyVoice model from '{self.cosyvoice_model_dir}'...")
+        """Waits for the CosyVoice HTTP server to become ready (up to 60s)."""
+        import urllib.request
+        import time
+        print(f"[TTS] Waiting for CosyVoice server at {self.cosyvoice_api_url}...")
+        deadline = time.time() + 60.0
+        while time.time() < deadline:
             try:
-                self.cosyvoice_model = CosyVoice2(self.cosyvoice_model_dir)
+                with urllib.request.urlopen(f"{self.cosyvoice_api_url}/health", timeout=2.0) as resp:
+                    if resp.status == 200:
+                        print(f"[TTS] CosyVoice server ready.")
+                        return
             except Exception:
-                self.cosyvoice_model = CosyVoice(self.cosyvoice_model_dir)
-            print("[TTS] CosyVoice loaded successfully in-process.")
-            return
-        except ImportError:
-            pass
-        except Exception as e:
-            print(f"[TTS] Direct CosyVoice model loading failed: {e}")
+                pass
+            time.sleep(2.0)
+        print(f"[TTS] CosyVoice server did not respond within 60s — will retry at synthesis time.")
 
-        # 2. Check if local streaming server is active
-        try:
-            import urllib.request
-            req = urllib.request.Request(f"{self.cosyvoice_api_url}/", headers={"User-Agent": "Shin/1.0"})
-            with urllib.request.urlopen(req, timeout=1.0) as resp:
-                if resp.status in (200, 404):
-                    print(f"[TTS] Connected to CosyVoice streaming service at {self.cosyvoice_api_url}.")
-                    return
-        except Exception:
-            pass
-
-        # 3. Fallback to Kokoro
-        print(f"[TTS] CosyVoice service is not running at {self.cosyvoice_api_url}. Initializing Kokoro-82M as active standby fallback.")
-        self._init_kokoro()
 
     def _init_kokoro(self):
         """Initializes Kokoro ONNX on configured device with graceful fallback to CPU."""
