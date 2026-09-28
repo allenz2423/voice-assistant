@@ -112,6 +112,22 @@ def clean_speech_text(text: str) -> str:
 
     return re.sub(r"\s+", " ", cleaned).strip()
 
+
+def _ensure_nvidia_libs():
+    """Preloads bundled NVIDIA CUDA shared libraries from virtualenv into global symbol table so ONNX Runtime can find cublas."""
+    try:
+        import ctypes
+        from pathlib import Path
+        venv_dir = Path(__file__).resolve().parent.parent.parent / ".venv"
+        for lib in sorted(venv_dir.glob("lib/python*/site-packages/nvidia/*/lib/*.so*")):
+            try:
+                ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
 class StreamingVoiceSynthesizer:
     """Natural streaming Voice Synthesizer supporting Kokoro-82M (CUDA/CPU) and Piper with barge-in cancellation and epoch barriers."""
     SENTENCE_SPLIT_REGEX = re.compile(r"(?<=[.!?。！？])\s*(?=[A-Z0-9\u3040-\u30ff\u4e00-\u9fff])|\n+")
@@ -201,6 +217,7 @@ class StreamingVoiceSynthesizer:
     def _init_kokoro(self):
         """Initializes Kokoro ONNX on configured device with graceful fallback to CPU."""
         try:
+            _ensure_nvidia_libs()
             import onnxruntime as ort
             from kokoro_onnx import Kokoro
 
@@ -210,16 +227,24 @@ class StreamingVoiceSynthesizer:
             available = ort.get_available_providers()
             sess = None
 
-            # Try CUDA on configured device first
+            # Try CUDA on configured device first, then any other available GPU before CPU fallback
             if "CUDAExecutionProvider" in available:
-                try:
-                    providers = [("CUDAExecutionProvider", {"device_id": self.device_id})]
-                    sess = ort.InferenceSession(self.model_path, sess_opt, providers=providers)
-                    print(f"[TTS] Kokoro-82M loaded on CUDA device {self.device_id}.")
-                except Exception as e:
-                    print(f"[TTS] CUDA initialization failed on device {self.device_id} ({e}). Falling back to CPU.")
+                devices_to_try = [self.device_id]
+                for d in range(2):
+                    if d not in devices_to_try:
+                        devices_to_try.append(d)
 
-            # Fallback to high-performance CPUExecutionProvider
+                for dev in devices_to_try:
+                    try:
+                        providers = [("CUDAExecutionProvider", {"device_id": dev})]
+                        sess = ort.InferenceSession(self.model_path, sess_opt, providers=providers)
+                        print(f"[TTS] Kokoro-82M loaded on CUDA device {dev}.")
+                        self.device_id = dev
+                        break
+                    except Exception as e:
+                        print(f"[TTS] CUDA initialization failed on device {dev}: {e}")
+
+            # Fallback to high-performance CPUExecutionProvider if all CUDA devices failed
             if sess is None:
                 sess = ort.InferenceSession(self.model_path, sess_opt, providers=["CPUExecutionProvider"])
                 print("[TTS] Kokoro-82M loaded on CPUExecutionProvider (AVX-optimized).")
