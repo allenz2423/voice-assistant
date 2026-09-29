@@ -58,7 +58,9 @@ def test_punctuated_sentences():
 
 def test_record_utterance_partial_callback():
     from unittest.mock import MagicMock
+    from collections import deque
     import queue
+    import threading
     import numpy as np
     from src.audio.stream import AudioStreamManager
 
@@ -68,6 +70,10 @@ def test_record_utterance_partial_callback():
     manager.ref_monitor = None
     manager.sample_rate = 16000
     manager.chunk_size = 512
+    manager._recent_audio_seconds = 5.0
+    manager._recent_audio_chunks = deque()
+    manager._recent_audio_samples = 0
+    manager._recent_audio_lock = threading.Lock()
     manager.audio_queue = queue.Queue()
     manager.vad = MagicMock()
     manager.vad.reset = MagicMock()

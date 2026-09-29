@@ -5,7 +5,6 @@ import asyncio
 import difflib
 import threading
 from collections import deque
-import sounddevice as sd
 from src.audio.earcon import resolve_pulse_device_index, setup_audio_routing
 
 MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
@@ -166,7 +165,8 @@ class StreamingVoiceSynthesizer:
         self.cosyvoice_api_url = cosyvoice_api_url
         self.cosyvoice_model_dir = cosyvoice_model_dir
         self.cosyvoice_model = None
-        self.pulse_idx = resolve_pulse_device_index()
+        self.pulse_idx = None
+        self._pulse_idx_resolved = False
         self.current_epoch = 0
         self._lock = asyncio.Lock()
         self.active_piper_proc = None
@@ -193,21 +193,17 @@ class StreamingVoiceSynthesizer:
             print(f"[TTS] OpenAI cloud speech enabled ({self.cloud_model}, voice {self.cloud_voice}).")
 
     def _init_cosyvoice(self):
-        """Waits for the CosyVoice HTTP server to become ready (up to 60s)."""
+        """Check CosyVoice once without delaying assistant startup."""
         import urllib.request
-        import time
-        print(f"[TTS] Waiting for CosyVoice server at {self.cosyvoice_api_url}...")
-        deadline = time.time() + 60.0
-        while time.time() < deadline:
-            try:
-                with urllib.request.urlopen(f"{self.cosyvoice_api_url}/health", timeout=2.0) as resp:
-                    if resp.status == 200:
-                        print(f"[TTS] CosyVoice server ready.")
-                        return
-            except Exception:
-                pass
-            time.sleep(2.0)
-        print(f"[TTS] CosyVoice server did not respond within 60s — will retry at synthesis time.")
+        print(f"[TTS] Checking CosyVoice server at {self.cosyvoice_api_url}...")
+        try:
+            with urllib.request.urlopen(f"{self.cosyvoice_api_url}/health", timeout=1.0) as resp:
+                if resp.status == 200:
+                    print("[TTS] CosyVoice server ready.")
+                    return
+        except Exception:
+            pass
+        print("[TTS] CosyVoice server unavailable; it will be checked again at synthesis time.")
 
 
     def _init_kokoro(self):
@@ -759,7 +755,9 @@ class StreamingVoiceSynthesizer:
         if epoch != self.current_epoch:
             return
 
+        import sounddevice as sd
         import numpy as np
+        self._resolve_pulse_device()
         # Pad 200ms silence so sounddevice ring buffer fully drains before stream closes
         tail_samples = int(sample_rate * 0.06)
         audio_data = np.concatenate([audio_data, np.zeros(tail_samples, dtype=np.float32)])
@@ -789,7 +787,9 @@ class StreamingVoiceSynthesizer:
         if epoch != self.current_epoch:
             return
 
+        import sounddevice as sd
         import numpy as np
+        self._resolve_pulse_device()
         audio_data = np.frombuffer(pcm_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         # Pad 200ms silence so ring buffer fully drains before stream closes
         tail_samples = int(self.sample_rate * 0.20)
@@ -814,3 +814,9 @@ class StreamingVoiceSynthesizer:
         except Exception as e:
             if epoch == self.current_epoch:
                 print(f"[TTS] Playback error: {e}")
+
+    def _resolve_pulse_device(self):
+        """Defer PortAudio device enumeration until audio is actually played."""
+        if not self._pulse_idx_resolved:
+            self.pulse_idx = resolve_pulse_device_index()
+            self._pulse_idx_resolved = True

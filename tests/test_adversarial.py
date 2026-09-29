@@ -115,7 +115,7 @@ async def test_arbiter_drains_multiple_notifications_holding_lock():
 
 
 @pytest.mark.asyncio
-async def test_confirmation_interrupted_with_unrelated_command_trapped_in_awaiting():
+async def test_confirmation_interrupted_with_unrelated_command_trapped_in_awaiting(monkeypatch):
     """
     VERIFIED: When in AWAITING_CONFIRMATION, if the user issues an unrelated command
     (e.g. 'What time is it in Tokyo?'), the confirmation manager clears the pending action
@@ -125,6 +125,7 @@ async def test_confirmation_interrupted_with_unrelated_command_trapped_in_awaiti
     earcon = MockEarcon()
     arbiter = PriorityAudioArbiter(tts, earcon)
     mgr = TriStateConfirmationManager(tts, arbiter)
+    monkeypatch.setattr("src.tools.desktop.show_desktop_notification", lambda *args, **kwargs: "mocked")
 
     await mgr.request_confirmation({"command": "rm -rf /tmp/data", "summary": "delete data"}, "Confirm delete?")
     assert arbiter.current_state == SystemState.AWAITING_CONFIRMATION
@@ -137,7 +138,7 @@ async def test_confirmation_interrupted_with_unrelated_command_trapped_in_awaiti
 
 
 @pytest.mark.asyncio
-async def test_confirmation_interrupted_with_stop_drops_subsequent_command():
+async def test_confirmation_interrupted_with_stop_drops_subsequent_command(monkeypatch):
     """
     VERIFIED: When in AWAITING_CONFIRMATION, if the user says 'Wait, stop that, what time is it in Tokyo?',
     the confirmation is denied and the trailing command is preserved for execution.
@@ -146,6 +147,7 @@ async def test_confirmation_interrupted_with_stop_drops_subsequent_command():
     earcon = MockEarcon()
     arbiter = PriorityAudioArbiter(tts, earcon)
     mgr = TriStateConfirmationManager(tts, arbiter)
+    monkeypatch.setattr("src.tools.desktop.show_desktop_notification", lambda *args, **kwargs: "mocked")
 
     await mgr.request_confirmation({"command": "rm -rf /tmp/data", "summary": "delete data"}, "Confirm delete?")
 

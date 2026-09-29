@@ -2,7 +2,7 @@ import os
 import yaml
 from pathlib import Path
 from typing import Union, Literal, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 class AudioConfig(BaseModel):
     target_sink: str = "Adam_Playback_Sink"
@@ -22,6 +22,7 @@ class WakeConfig(BaseModel):
 class STTConfig(BaseModel):
     provider: str = "local"
     model_size: str = "qwen3-asr-1.7b"
+    language: str = "English"
     device: str = "Vulkan0"
     device_index: int = 0
     compute_type: str = "int8_float32"
@@ -41,8 +42,31 @@ class SpeakerDiarizationConfig(BaseModel):
     enabled: bool = False
     executable: str = "nemo-speech"
     model: str = "nvidia/Nemotron-3-Diarization"
-    device: str = "vulkan:0"
+    device: str = "auto"
     timeout_seconds: float = 45.0
+
+    @field_validator("model", mode="before")
+    @classmethod
+    def migrate_legacy_gguf_model(cls, value):
+        # Earlier setup versions stored a GGUF that NeMo-Speech.cpp cannot run
+        # with Nemotron 3's pre-LN architecture. Use the official HF checkpoint.
+        if isinstance(value, str) and value.lower().endswith(".gguf"):
+            return "nvidia/Nemotron-3-Diarization"
+        return value
+
+    @field_validator("device", mode="before")
+    @classmethod
+    def migrate_legacy_vulkan_device(cls, value):
+        if isinstance(value, str) and value.lower().startswith("vulkan"):
+            return "auto"
+        return value
+
+class MeetingConfig(BaseModel):
+    output_dir: str = "~/.local/state/adam/meetings"
+    max_duration_hours: float = 4.0
+    silence_duration: float = 1.25
+    max_segment_seconds: float = 30.0
+    speaker_similarity_threshold: float = 0.55
 
 class TTSConfig(BaseModel):
     engine: str = "kokoro" # "kokoro" | "openai" | "cosyvoice" | "silent"
@@ -147,6 +171,7 @@ class AppConfig(BaseModel):
     stt: STTConfig = Field(default_factory=STTConfig)
     speaker_verification: SpeakerVerificationConfig = Field(default_factory=SpeakerVerificationConfig)
     speaker_diarization: SpeakerDiarizationConfig = Field(default_factory=SpeakerDiarizationConfig)
+    meeting: MeetingConfig = Field(default_factory=MeetingConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)

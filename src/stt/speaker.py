@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -34,6 +35,7 @@ class SpeakerVerifier:
         self.profile_path = Path(profile_path).expanduser() if profile_path else default_profile_path()
         self.threshold = threshold
         self.classifier = classifier
+        self._classifier_lock = threading.Lock()
         self.profile = self._load_profile()
 
     @property
@@ -79,7 +81,8 @@ class SpeakerVerifier:
         import torch
 
         signal = torch.from_numpy(audio).unsqueeze(0)
-        encoded = self._get_classifier().encode_batch(signal).detach().cpu().numpy().reshape(-1)
+        with self._classifier_lock:
+            encoded = self._get_classifier().encode_batch(signal).detach().cpu().numpy().reshape(-1)
         if not np.all(np.isfinite(encoded)) or np.linalg.norm(encoded) < 1e-8:
             raise RuntimeError("Speaker model returned an invalid voice embedding.")
         return encoded.astype(np.float32) / np.linalg.norm(encoded)

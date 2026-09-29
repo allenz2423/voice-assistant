@@ -1,7 +1,6 @@
 import os
 import queue
 import threading
-import sounddevice as sd
 import numpy as np
 
 def setup_audio_routing(target_sink: str = ""):
@@ -13,6 +12,7 @@ def setup_audio_routing(target_sink: str = ""):
 def resolve_pulse_device_index() -> int | None:
     """Finds the integer index for the PortAudio 'pulse' ALSA bridge."""
     try:
+        import sounddevice as sd
         for idx, dev in enumerate(sd.query_devices()):
             if dev["name"] == "pulse" and dev["max_output_channels"] > 0:
                 return idx
@@ -25,7 +25,7 @@ class RobustEarconEngine:
     def __init__(self, target_sink="Adam_Playback_Sink", sample_rate=48000):
         setup_audio_routing(target_sink)
         self.sample_rate = sample_rate
-        self.pulse_idx = resolve_pulse_device_index()
+        self.pulse_idx = None
         self.queue = queue.Queue(maxsize=16)
         self.current_epoch = 0
         self.running = True
@@ -84,6 +84,8 @@ class RobustEarconEngine:
     def _stream_loop(self):
         # Bind to pulse ALSA device to guarantee PULSE_SINK routing
         try:
+            self.pulse_idx = resolve_pulse_device_index()
+            import sounddevice as sd
             with sd.OutputStream(
                 samplerate=self.sample_rate,
                 channels=1,

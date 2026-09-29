@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Adam / Adam Voice Assistant - Universal Linux Setup Script
-# Supports: Gentoo, openSUSE/SLES, Debian/Ubuntu, RHEL/Fedora/CentOS, Arch/CachyOS
+# Supports: Debian/Ubuntu, Fedora/RHEL, openSUSE, Arch, Gentoo, Alpine, Void, Solus
 # ==============================================================================
 
 set -euo pipefail
@@ -29,6 +29,12 @@ SKIP_SYS_PKGS=false
 SKIP_MODELS=false
 SKIP_OLLAMA=false
 SKIP_SERVICE=false
+SKIP_PYTHON=false
+SKIP_SPEAKER_VERIFICATION=false
+SKIP_ENROLLMENT=false
+CPU_ONLY=false
+FORCE_NVIDIA_RUNTIME=false
+RUNTIME_EXTRA="runtime-cpu"
 
 print_usage() {
     cat <<EOF
@@ -36,13 +42,24 @@ Usage: ./setup.sh [OPTIONS]
 
 Interactive setup wizard for the Adam / Adam Voice Assistant.
 Detects Linux distribution, installs dependencies, sets up Python virtualenv,
-downloads neural models, and interactively configures audio, wake word, and service.
+downloads neural models, and interactively configures audio, wake word, speech,
+speaker verification, optional Nemotron diarization, and the user service.
+
+Nemotron diarization uses NVIDIA's official Transformers model runtime. The wizard
+lets you choose CPU or a specific CUDA GPU, installs the optional runtime, and can
+download the model before starting the service. Meeting transcripts preserve mixed
+audio and add speaker labels; they do not isolate or filter speakers.
 
 Options:
   -y, --yes            Non-interactive / unattended mode (accept all defaults)
   --skip-sys-pkgs      Skip system package manager installation
+  --skip-python-deps   Do not run uv sync (use an existing prepared environment)
   --skip-models        Skip downloading Kokoro TTS and Silero VAD neural models
-  --skip-ollama        Skip Ollama check and LLM model pull
+  --skip-ollama        Skip the prompt to pull a local Ollama model
+  --skip-speaker-verification  Do not install speaker verification or enroll a voice
+  --skip-enrollment    Install speaker verification but skip microphone enrollment
+  --cpu-only           Use CPU runtime packages and avoid CUDA libraries
+  --nvidia-runtime     Install ONNX Runtime and CUDA support for NVIDIA GPUs
   --skip-service       Skip creating and enabling systemd user service
   -h, --help           Show this help message and exit
 
@@ -52,6 +69,8 @@ Supported Linux Distributions:
   - openSUSE Leap / Tumbleweed (zypper)
   - Gentoo Linux (emerge)
   - Arch Linux / CachyOS / Manjaro (pacman)
+  - Alpine Linux (apk; Python ML wheels may be limited by musl), Void (xbps), Solus (eopkg)
+  - NixOS is recognized; install system packages declaratively with Nix
 EOF
 }
 
@@ -66,12 +85,32 @@ while [[ $# -gt 0 ]]; do
             SKIP_SYS_PKGS=true
             shift
             ;;
+        --skip-python-deps)
+            SKIP_PYTHON=true
+            shift
+            ;;
         --skip-models)
             SKIP_MODELS=true
             shift
             ;;
         --skip-ollama)
             SKIP_OLLAMA=true
+            shift
+            ;;
+        --skip-speaker-verification)
+            SKIP_SPEAKER_VERIFICATION=true
+            shift
+            ;;
+        --skip-enrollment)
+            SKIP_ENROLLMENT=true
+            shift
+            ;;
+        --cpu-only)
+            CPU_ONLY=true
+            shift
+            ;;
+        --nvidia-runtime)
+            FORCE_NVIDIA_RUNTIME=true
             shift
             ;;
         --skip-service)
@@ -89,6 +128,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$CPU_ONLY" == true && "$FORCE_NVIDIA_RUNTIME" == true ]]; then
+    log_err "--cpu-only and --nvidia-runtime cannot be used together."
+    exit 2
+fi
 
 # Ensure not running directly as root
 if [[ $EUID -eq 0 ]]; then
@@ -141,7 +185,7 @@ install_system_packages() {
         return 0
     fi
 
-    # Determine package manager and package list
+    # Select both the package manager and distro-specific package names.
     local PKG_MANAGER=""
     local -a PKGS=()
 
@@ -160,6 +204,9 @@ install_system_packages() {
             net-misc/curl
             dev-vcs/git
             app-misc/jq
+            dev-build/pkgconf
+            sys-devel/gcc
+            sys-devel/make
         )
     elif [[ "$DISTRO_ID" == *"suse"* || "$DISTRO_LIKE" == *"suse"* ]]; then
         PKG_MANAGER="zypper"
@@ -175,11 +222,15 @@ install_system_packages() {
             pipewire-pulseaudio
             wireplumber
             alsa-utils
+            pulseaudio-utils
             curl
             git
             jq
+            pkg-config
+            gcc
+            make
         )
-    elif [[ "$DISTRO_ID" =~ (debian|ubuntu|linuxmint|pop|elementary|zorin) || "$DISTRO_LIKE" == *"debian"* || "$DISTRO_LIKE" == *"ubuntu"* ]]; then
+    elif [[ "$DISTRO_ID" =~ (debian|ubuntu|linuxmint|pop|elementary|zorin|devuan|kali|parrot) || "$DISTRO_LIKE" == *"debian"* || "$DISTRO_LIKE" == *"ubuntu"* ]]; then
         PKG_MANAGER="apt"
         PKGS=(
             libportaudio2
@@ -193,12 +244,15 @@ install_system_packages() {
             pipewire-pulse
             wireplumber
             alsa-utils
+            pulseaudio-utils
             curl
             git
             jq
+            pkg-config
+            build-essential
         )
-    elif [[ "$DISTRO_ID" =~ (fedora|rhel|centos|rocky|alma) || "$DISTRO_LIKE" == *"fedora"* || "$DISTRO_LIKE" == *"rhel"* ]]; then
-        PKG_MANAGER="dnf"
+    elif [[ "$DISTRO_ID" =~ (fedora|rhel|centos|rocky|alma|ol|amzn|openmandriva) || "$DISTRO_LIKE" == *"fedora"* || "$DISTRO_LIKE" == *"rhel"* ]]; then
+        if command -v dnf &>/dev/null; then PKG_MANAGER="dnf"; else PKG_MANAGER="yum"; fi
         PKGS=(
             portaudio
             portaudio-devel
@@ -211,9 +265,14 @@ install_system_packages() {
             pipewire-pulseaudio
             wireplumber
             alsa-utils
+            pulseaudio-utils
             curl
             git
             jq
+            pkgconf-pkg-config
+            gcc
+            gcc-c++
+            make
         )
     elif [[ "$DISTRO_ID" =~ (arch|cachyos|manjaro|endeavouros|artix) || "$DISTRO_LIKE" == *"arch"* ]]; then
         PKG_MANAGER="pacman"
@@ -228,15 +287,67 @@ install_system_packages() {
             pipewire-pulse
             wireplumber
             alsa-utils
+            libpulse
             curl
             git
             jq
+            pkgconf
+            base-devel
         )
+    elif [[ "$DISTRO_ID" == "alpine" || "$DISTRO_LIKE" == *"alpine"* ]]; then
+        PKG_MANAGER="apk"
+        PKGS=(
+            portaudio portaudio-dev wtype grim slurp brightnessctl libnotify
+            pipewire pipewire-pulse wireplumber alsa-utils pulseaudio-utils
+            curl git jq pkgconf build-base linux-headers
+        )
+    elif [[ "$DISTRO_ID" == "void" || "$DISTRO_LIKE" == *"void"* ]]; then
+        PKG_MANAGER="xbps-install"
+        PKGS=(
+            portaudio-devel wtype grim slurp brightnessctl libnotify
+            pipewire wireplumber alsa-utils pulseaudio curl git jq
+            pkg-config base-devel
+        )
+    elif [[ "$DISTRO_ID" == "solus" || "$DISTRO_LIKE" == *"solus"* ]]; then
+        PKG_MANAGER="eopkg"
+        PKGS=(
+            portaudio-devel wtype grim slurp brightnessctl libnotify
+            pipewire wireplumber alsa-utils pulseaudio curl git jq
+            pkg-config system.devel
+        )
+    elif [[ "$DISTRO_ID" == "nixos" || "$DISTRO_LIKE" == *"nixos"* ]]; then
+        log_warn "NixOS uses declarative system packages. Add portaudio, pipewire, wireplumber, libnotify, curl, git, jq, wtype, grim, slurp, and brightnessctl to your system configuration."
+        log_warn "Continuing without changing your NixOS configuration."
+        return 0
+    elif command -v apt-get &>/dev/null; then
+        PKG_MANAGER="apt"
+        PKGS=(libportaudio2 portaudio19-dev pipewire pipewire-pulse wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config build-essential)
+    elif command -v dnf &>/dev/null; then
+        PKG_MANAGER="dnf"
+        PKGS=(portaudio portaudio-devel pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconf-pkg-config gcc gcc-c++ make)
+    elif command -v yum &>/dev/null; then
+        PKG_MANAGER="yum"
+        PKGS=(portaudio portaudio-devel pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconfig gcc gcc-c++ make)
+    elif command -v zypper &>/dev/null; then
+        PKG_MANAGER="zypper"
+        PKGS=(portaudio portaudio-devel pipewire pipewire-pulseaudio wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config gcc make)
+    elif command -v pacman &>/dev/null; then
+        PKG_MANAGER="pacman"
+        PKGS=(portaudio pipewire pipewire-pulse wireplumber pulseaudio alsa-utils curl git jq pkgconf base-devel)
+    elif command -v apk &>/dev/null; then
+        PKG_MANAGER="apk"
+        PKGS=(portaudio portaudio-dev pipewire wireplumber alsa-utils pulseaudio curl git jq pkgconf build-base linux-headers)
+    elif command -v xbps-install &>/dev/null; then
+        PKG_MANAGER="xbps-install"
+        PKGS=(portaudio-devel pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config base-devel)
+    elif command -v eopkg &>/dev/null; then
+        PKG_MANAGER="eopkg"
+        PKGS=(portaudio-devel pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config system.devel)
     fi
 
     if [[ -z "$PKG_MANAGER" ]]; then
-        log_warn "Unrecognized Linux distribution '${DISTRO_ID}'."
-        log_warn "Please ensure the following tools are installed: portaudio, wtype, grim, slurp, brightnessctl, notify-send, pipewire, wireplumber, curl, git, jq."
+        log_warn "Could not identify a supported package manager for '${DISTRO_ID}'."
+        log_warn "Install PortAudio development files, PipeWire, WirePlumber, PulseAudio utilities (pactl), curl, git, jq, and a C build toolchain, then rerun with --skip-sys-pkgs."
         return 0
     fi
 
@@ -251,45 +362,50 @@ install_system_packages() {
     fi
 
     log_info "Installing system packages via ${PKG_MANAGER}..."
-    case "$PKG_MANAGER" in
-        emerge)
-            if [[ -n "$SUDO" ]]; then
-                $SUDO emerge --ask=n --noreplace "${PKGS[@]}"
-            else
-                emerge --ask=n --noreplace "${PKGS[@]}"
-            fi
-            ;;
-        zypper)
-            if [[ -n "$SUDO" ]]; then
-                $SUDO zypper --non-interactive install -y "${PKGS[@]}"
-            else
-                zypper --non-interactive install -y "${PKGS[@]}"
-            fi
-            ;;
-        apt)
-            if [[ -n "$SUDO" ]]; then
-                $SUDO apt-get update -y && $SUDO apt-get install -y "${PKGS[@]}"
-            else
-                apt-get update -y && apt-get install -y "${PKGS[@]}"
-            fi
-            ;;
-        dnf)
-            if [[ -n "$SUDO" ]]; then
-                $SUDO dnf install -y "${PKGS[@]}"
-            else
-                dnf install -y "${PKGS[@]}"
-            fi
-            ;;
-        pacman)
-            if [[ -n "$SUDO" ]]; then
-                $SUDO pacman -S --needed --noconfirm "${PKGS[@]}"
-            else
-                pacman -S --needed --noconfirm "${PKGS[@]}"
-            fi
-            ;;
-    esac
+    if [[ "$PKG_MANAGER" == "apt" ]]; then
+        if [[ -n "$SUDO" ]]; then "$SUDO" apt-get update -y; else apt-get update -y; fi
+    fi
 
-    log_success "System package verification completed."
+    install_package_batch() {
+        case "$PKG_MANAGER" in
+            apt) if [[ -n "$SUDO" ]]; then "$SUDO" apt-get install -y "$@"; else apt-get install -y "$@"; fi ;;
+            dnf|yum) if [[ -n "$SUDO" ]]; then "$SUDO" "$PKG_MANAGER" install -y "$@"; else "$PKG_MANAGER" install -y "$@"; fi ;;
+            zypper) if [[ -n "$SUDO" ]]; then "$SUDO" zypper --non-interactive install -y "$@"; else zypper --non-interactive install -y "$@"; fi ;;
+            pacman) if [[ -n "$SUDO" ]]; then "$SUDO" pacman -S --needed --noconfirm "$@"; else pacman -S --needed --noconfirm "$@"; fi ;;
+            emerge) if [[ -n "$SUDO" ]]; then "$SUDO" emerge --ask=n --noreplace "$@"; else emerge --ask=n --noreplace "$@"; fi ;;
+            apk) if [[ -n "$SUDO" ]]; then "$SUDO" apk add "$@"; else apk add "$@"; fi ;;
+            xbps-install) if [[ -n "$SUDO" ]]; then "$SUDO" xbps-install -Sy "$@"; else xbps-install -Sy "$@"; fi ;;
+            eopkg) if [[ -n "$SUDO" ]]; then "$SUDO" eopkg install -y "$@"; else eopkg install -y "$@"; fi ;;
+        esac
+    }
+
+    install_one_package() {
+        local package="$1"
+        case "$PKG_MANAGER" in
+            apt) if [[ -n "$SUDO" ]]; then "$SUDO" apt-get install -y "$package"; else apt-get install -y "$package"; fi ;;
+            dnf|yum) if [[ -n "$SUDO" ]]; then "$SUDO" "$PKG_MANAGER" install -y "$package"; else "$PKG_MANAGER" install -y "$package"; fi ;;
+            zypper) if [[ -n "$SUDO" ]]; then "$SUDO" zypper --non-interactive install -y "$package"; else zypper --non-interactive install -y "$package"; fi ;;
+            pacman) if [[ -n "$SUDO" ]]; then "$SUDO" pacman -S --needed --noconfirm "$package"; else pacman -S --needed --noconfirm "$package"; fi ;;
+            emerge) if [[ -n "$SUDO" ]]; then "$SUDO" emerge --ask=n --noreplace "$package"; else emerge --ask=n --noreplace "$package"; fi ;;
+            apk) if [[ -n "$SUDO" ]]; then "$SUDO" apk add "$package"; else apk add "$package"; fi ;;
+            xbps-install) if [[ -n "$SUDO" ]]; then "$SUDO" xbps-install -Sy "$package"; else xbps-install -Sy "$package"; fi ;;
+            eopkg) if [[ -n "$SUDO" ]]; then "$SUDO" eopkg install -y "$package"; else eopkg install -y "$package"; fi ;;
+        esac
+    }
+
+    local -a FAILED_PKGS=()
+    if ! install_package_batch "${PKGS[@]}"; then
+        log_warn "The package manager rejected at least one package name; retrying packages individually."
+        for package in "${PKGS[@]}"; do
+            if ! install_one_package "$package"; then FAILED_PKGS+=("$package"); fi
+        done
+    fi
+    if ((${#FAILED_PKGS[@]})); then
+        log_warn "Some optional packages were unavailable: ${FAILED_PKGS[*]}"
+        log_warn "Install missing tools later if a desktop action or audio device needs them."
+    else
+        log_success "System package installation completed."
+    fi
 }
 
 # ------------------------------------------------------------------------------
@@ -320,8 +436,45 @@ ensure_uv() {
 # 3. Python Environment & Dependencies
 # ------------------------------------------------------------------------------
 setup_python_env() {
+    export ADAM_SKIP_SPEAKER_VERIFICATION="$([[ "$SKIP_SPEAKER_VERIFICATION" == true ]] && echo 1 || echo 0)"
+    export ADAM_SKIP_ENROLLMENT="$([[ "$SKIP_ENROLLMENT" == true ]] && echo 1 || echo 0)"
+    export ADAM_SKIP_OLLAMA="$([[ "$SKIP_OLLAMA" == true ]] && echo 1 || echo 0)"
+    export ADAM_SKIP_SERVICE="$([[ "$SKIP_SERVICE" == true ]] && echo 1 || echo 0)"
+    export ADAM_CPU_ONLY="$([[ "$CPU_ONLY" == true ]] && echo 1 || echo 0)"
+    export ADAM_SKIP_PYTHON="$([[ "$SKIP_PYTHON" == true ]] && echo 1 || echo 0)"
+    if [[ "$SKIP_PYTHON" == true ]]; then
+        log_info "Skipping Python dependency sync (--skip-python-deps)."
+        [[ "$CPU_ONLY" == true ]] && RUNTIME_EXTRA="runtime-cpu"
+        [[ "$FORCE_NVIDIA_RUNTIME" == true ]] && RUNTIME_EXTRA="runtime-nvidia"
+        export ADAM_RUNTIME_EXTRA="${RUNTIME_EXTRA}"
+        return 0
+    fi
+
+    if [[ "$CPU_ONLY" == true ]]; then
+        RUNTIME_EXTRA="runtime-cpu"
+    elif [[ "$FORCE_NVIDIA_RUNTIME" == true ]]; then
+        RUNTIME_EXTRA="runtime-nvidia"
+    elif command -v nvidia-smi &>/dev/null && nvidia-smi -L 2>/dev/null | grep 'GPU' >/dev/null; then
+        if [[ "$ASSUME_YES" == true ]]; then
+            RUNTIME_EXTRA="runtime-nvidia"
+        else
+            echo ""
+            read -r -p "Install NVIDIA CUDA runtime support? This only installs libraries; Adam will use only the GPU you select. [Y/n] " answer
+            [[ "$answer" =~ ^[Nn]$ ]] && RUNTIME_EXTRA="runtime-cpu" || RUNTIME_EXTRA="runtime-nvidia"
+        fi
+    else
+        RUNTIME_EXTRA="runtime-cpu"
+        log_info "No NVIDIA GPU was detected; using the CPU ONNX Runtime."
+    fi
+
+    export ADAM_RUNTIME_EXTRA="$RUNTIME_EXTRA"
+
     log_info "Synchronizing Python virtual environment and dependencies..."
-    uv sync --extra speaker-verification
+    local -a UV_ARGS=(sync --extra "$RUNTIME_EXTRA")
+    if [[ "$SKIP_SPEAKER_VERIFICATION" != true ]]; then
+        UV_ARGS+=(--extra speaker-verification)
+    fi
+    uv "${UV_ARGS[@]}"
     log_success "Python virtual environment configured in $SCRIPT_DIR/.venv"
 }
 
@@ -395,6 +548,11 @@ download_models() {
 # 5. Systemd User Service Template Generation
 # ------------------------------------------------------------------------------
 generate_systemd_template() {
+    if [[ ! -d /run/systemd/system ]] || ! command -v systemctl &>/dev/null || ! systemctl --user show-environment &>/dev/null; then
+        log_warn "This Linux system does not use systemd; skipping the systemd user unit."
+        log_info "Start Adam manually with: uv run python -m src.main"
+        return 0
+    fi
     local user_systemd_dir="$HOME/.config/systemd/user"
     mkdir -p "$user_systemd_dir"
     local service_dest="${user_systemd_dir}/adam.service"
@@ -439,10 +597,12 @@ EOF
 # ------------------------------------------------------------------------------
 run_unattended_setup() {
     log_info "Running in automated non-interactive mode..."
-    generate_systemd_template
-    if [[ "$SKIP_SERVICE" != true ]]; then
+    if [[ "$SKIP_SERVICE" != true ]] && [[ -d /run/systemd/system ]] && command -v systemctl &>/dev/null && systemctl --user show-environment &>/dev/null; then
+        generate_systemd_template
         systemctl --user enable --now adam.service
         log_success "adam.service enabled and started."
+    elif [[ "$SKIP_SERVICE" != true ]]; then
+        log_warn "No systemd user service is available; start Adam manually with: uv run python -m src.main"
     fi
 }
 
@@ -460,17 +620,25 @@ main() {
     setup_python_env
     download_models
 
-    # Initialize config.yaml from example if missing
+    # Initialize config.yaml from example if missing without touching existing settings.
     if [[ ! -f "${SCRIPT_DIR}/config.yaml" && -f "${SCRIPT_DIR}/config.yaml.example" ]]; then
         log_info "Initializing config.yaml from config.yaml.example..."
         cp "${SCRIPT_DIR}/config.yaml.example" "${SCRIPT_DIR}/config.yaml"
+        chmod 600 "${SCRIPT_DIR}/config.yaml"
+        if [[ "$RUNTIME_EXTRA" == "runtime-cpu" ]]; then
+            log_info "Preparing laptop-friendly transcription defaults (small.en on CPU)."
+            sed -i \
+                -e '/^stt:/,/^[^ ]/ { s/^  model_size: "qwen3-asr-1.7b"/  model_size: "small.en"/; s/^  device: "Vulkan0"/  device: "cpu"/; s/^  compute_type: "int8_float32"/  compute_type: "int8"/; }' \
+                -e 's/^  device_id: 0/  device_id: -1/' \
+                "${SCRIPT_DIR}/config.yaml"
+        fi
     fi
 
     if [[ "$ASSUME_YES" == true ]]; then
         run_unattended_setup
     else
-        # Always generate / update the systemd service file first
-        generate_systemd_template
+        # Generate the unit only on systemd hosts and when the user wants one.
+        if [[ "$SKIP_SERVICE" != true ]]; then generate_systemd_template; fi
         # Launch full interactive wizard for audio, persona, ollama, and enrollment
         uv run python "${SCRIPT_DIR}/tools/setup_wizard.py"
     fi

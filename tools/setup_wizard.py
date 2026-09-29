@@ -4,11 +4,14 @@
 Configures:
 - Audio hardware (Microphone inputs, playback outputs)
 - Assistant persona & wake word
-- Speech-to-Text (STT) engine & hardware acceleration (Vulkan, CUDA, CPU)
+- Speech-to-Text (STT) engine, model, language, and hardware acceleration
 - Text-to-Speech (TTS) engine, voice & device
 - LLM sourcing (Local Ollama, custom vLLM/llama.cpp server, or Cloud APIs: Groq/Gemini/Claude/OpenAI)
 - Default web browser
 - Voice profile enrollment (speaker verification)
+- Optional NVIDIA Nemotron speaker diarization through Transformers
+- Continuous meeting capture, transcripts, and speaker labels
+- Speech engine restored after silent mode
 - Systemd background user service
 """
 
@@ -17,6 +20,7 @@ import re
 import sys
 import subprocess
 import getpass
+import shutil
 from pathlib import Path
 
 # Ensure repo root is on sys.path
@@ -32,6 +36,8 @@ CLR_YELLOW = "\033[1;33m"
 CLR_CYAN = "\033[1;36m"
 CLR_MAGENTA = "\033[1;35m"
 CLR_RED = "\033[1;31m"
+
+NEMOTRON_DIARIZATION_MODEL = "nvidia/Nemotron-3-Diarization"
 
 
 def print_banner():
@@ -116,6 +122,8 @@ def update_config_value(key: str, value: str, section: str | None = None):
     if section:
         section_match = re.search(rf"^{re.escape(section)}:\s*(?:#.*)?$", content, flags=re.MULTILINE)
         if not section_match:
+            new_content = content.rstrip() + f'\n\n{section}:\n  {key}: "{value}"\n'
+            config_path.write_text(new_content, encoding="utf-8")
             return
         next_section = re.search(r"^[^\s#][^:\n]*:\s*(?:#.*)?$", content[section_match.end():], flags=re.MULTILINE)
         section_end = section_match.end() + next_section.start() if next_section else len(content)
@@ -274,60 +282,184 @@ def configure_persona():
 # ------------------------------------------------------------------------------
 # Step 3: Speech-to-Text (STT) Model & Hardware
 # ------------------------------------------------------------------------------
+def detect_nvidia_devices() -> list[tuple[str, str]]:
+    """Return physical CUDA indices and names without selecting a GPU implicitly."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,name", "--format=csv,noheader"],
+            check=True, capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    devices = []
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.split(",", 1)]
+        if len(parts) == 2 and parts[0].isdigit():
+            devices.append((parts[0], parts[1]))
+    return devices
+
+
+def detect_qwen_vulkan_devices() -> list[tuple[str, str]]:
+    """List Vulkan GPU backends Qwen can use; do not default to another GPU."""
+    try:
+        import transcribe_cpp
+        return [
+            (str(device.name), str(device.description))
+            for device in transcribe_cpp.backends()
+            if "vulkan" in str(getattr(device, "kind", "")).lower()
+            and str(getattr(device, "device_type", "")).lower() == "gpu"
+        ]
+    except (ImportError, OSError, RuntimeError):
+        return []
+
+
+def choose_nvidia_device(prompt: str, devices: list[tuple[str, str]], default_index: str = "0") -> str:
+    if devices:
+        labels = [f"CUDA:{index} — {name}" for index, name in devices]
+        selected = next((i for i, (index, _) in enumerate(devices) if index == default_index), 0)
+        return devices[prompt_choice(prompt, labels, selected)][0]
+    print(f"{CLR_YELLOW}No NVIDIA GPU was detected with nvidia-smi; CUDA may fail and fall back to CPU.{CLR_RESET}")
+    value = prompt_text("CUDA GPU index", default_index)
+    while not value.isdigit():
+        print(f"{CLR_RED}Enter a non-negative GPU index, such as 0.{CLR_RESET}")
+        value = prompt_text("CUDA GPU index", default_index)
+    return value
+
+
+def ensure_nvidia_runtime() -> bool:
+    """Install NVIDIA ONNX/CUDA wheels only when a GPU feature is selected."""
+    if os.environ.get("ADAM_RUNTIME_EXTRA", "runtime-cpu") == "runtime-nvidia":
+        return True
+    if os.environ.get("ADAM_CPU_ONLY") == "1":
+        print(f"{CLR_YELLOW}CUDA support was disabled by --cpu-only.{CLR_RESET}")
+        return False
+    if os.environ.get("ADAM_SKIP_PYTHON") == "1":
+        print(f"{CLR_YELLOW}Cannot install CUDA support because Python dependency installation was skipped.{CLR_RESET}")
+        return False
+    if not prompt_yes_no("Install NVIDIA CUDA runtime support for the selected GPU?", default_yes=True):
+        return False
+    uv = shutil.which("uv")
+    if not uv:
+        print(f"{CLR_RED}uv was not found; install the NVIDIA runtime with './setup.sh --nvidia-runtime'.{CLR_RESET}")
+        return False
+    args = [uv, "sync", "--extra", "runtime-nvidia"]
+    if os.environ.get("ADAM_SKIP_SPEAKER_VERIFICATION") != "1":
+        args.extend(["--extra", "speaker-verification"])
+    if os.environ.get("ADAM_DIARIZATION_ENABLED") == "1":
+        args.extend(["--extra", "nemotron-diarization"])
+    try:
+        subprocess.run(args, cwd=PROJECT_DIR, check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"{CLR_RED}Could not install NVIDIA runtime ({exc}); leaving the CPU runtime active.{CLR_RESET}")
+        return False
+    os.environ["ADAM_RUNTIME_EXTRA"] = "runtime-nvidia"
+    print(f"{CLR_GREEN}NVIDIA runtime installed. Adam will use only the GPU you select.{CLR_RESET}")
+    return True
+
+
 def configure_stt():
     print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 3: Speech-to-Text (STT) Engine & Hardware ---{CLR_RESET}")
     current_provider = get_current_config_value("provider", "local", section="stt")
     current_model = get_current_config_value("model_size", "qwen3-asr-1.7b", section="stt")
     current_dev = get_current_config_value("device", "Vulkan0", section="stt")
+    current_language = get_current_config_value("language", "English", section="stt")
+    nvidia_devices = [] if os.environ.get("ADAM_CPU_ONLY") == "1" else detect_nvidia_devices()
+    qwen_devices = [] if os.environ.get("ADAM_CPU_ONLY") == "1" else detect_qwen_vulkan_devices()
 
     stt_options = [
-        "Qwen3-ASR-1.7B on GPU / Vulkan (Recommended: fast, high accuracy, low latency)",
-        "Faster-Whisper (distil-large-v3) on NVIDIA CUDA (Pascal/Ampere/Ada)",
-        "Faster-Whisper (base.en) on CPU (Universal: low resource, no GPU needed)",
+        "Qwen3-ASR-1.7B on a selected Vulkan GPU (desktop, fast and accurate)",
+        "Faster-Whisper small.en on a selected NVIDIA CUDA GPU",
+        "Faster-Whisper small.en on CPU (laptop-friendly, no GPU required)",
         "Custom STT model & device",
         "OpenAI Cloud transcription (audio is sent to OpenAI)",
         "OpenRouter Cloud transcription (choose any available STT model)",
         "Custom cloud transcription endpoint + model (OpenAI-compatible)",
     ]
 
-    default_idx = 0
-    if "distil" in current_model.lower():
-        default_idx = 1
-    elif "base" in current_model.lower() or current_dev == "cpu":
+    default_idx = 0 if qwen_devices else 2
+    if "small.en" in current_model.lower():
+        default_idx = 1 if current_dev.lower() == "cuda" and nvidia_devices else 2
+    elif "base" in current_model.lower():
+        default_idx = 2 if current_dev.lower() == "cpu" else 3
+    elif current_provider != "local":
+        default_idx = 4 if current_provider == "openai" else 5 if current_provider == "openrouter" else 6
+    elif "qwen" in current_model.lower() and qwen_devices:
+        default_idx = 0
+    elif "qwen" in current_model.lower() and not qwen_devices:
         default_idx = 2
-    if current_provider == "openai":
-        default_idx = 4
-    elif current_provider == "openrouter":
-        default_idx = 5
-    elif current_provider == "custom":
-        default_idx = 6
+    elif "small.en" not in current_model.lower() and "base" not in current_model.lower():
+        default_idx = 3
 
     choice = prompt_choice("Select STT engine configuration", stt_options, default_idx)
 
     if choice == 0:
+        if os.environ.get("ADAM_CPU_ONLY") == "1":
+            print(f"{CLR_YELLOW}Qwen GPU inference is unavailable in CPU-only mode. Select small.en on CPU instead.{CLR_RESET}")
+            return
+        if qwen_devices:
+            labels = [f"{name} — {description}" for name, description in qwen_devices]
+            default_device = next((i for i, (name, _) in enumerate(qwen_devices) if name.lower() == current_dev.lower()), 0)
+            device = qwen_devices[prompt_choice("Select the Vulkan GPU for Qwen", labels, default_device)][0]
+        else:
+            print(f"{CLR_YELLOW}No Vulkan GPU was detected. Qwen may fall back to CPU and run slowly.{CLR_RESET}")
+            device = prompt_text("Qwen backend name (for example Vulkan0, Vulkan1, or CPU)", current_dev)
         update_config_value("provider", "local", section="stt")
         update_config_value("model_size", "qwen3-asr-1.7b", section="stt")
-        update_config_value("device", "Vulkan0", section="stt")
+        update_config_value("device", device, section="stt")
         update_config_value("compute_type", "int8_float32", section="stt")
-        print(f"{CLR_GREEN}Configured Qwen3-ASR on Vulkan0.{CLR_RESET}")
+        language_options = [
+            "English (force English recognition; recommended for English meetings)",
+            "Auto-detect (allow all languages supported by Qwen)",
+        ]
+        language_idx = 1 if not current_language.strip() or current_language.lower() == "auto" else 0
+        language_choice = prompt_choice("Select Qwen language behavior", language_options, language_idx)
+        update_config_value("language", "English" if language_choice == 0 else "", section="stt")
+        print(f"{CLR_GREEN}Configured Qwen3-ASR on {device}.{CLR_RESET}")
     elif choice == 1:
+        if not ensure_nvidia_runtime():
+            print(f"{CLR_YELLOW}Keeping the current STT device because CUDA runtime support is unavailable.{CLR_RESET}")
+            return
+        current_index = str(get_current_config_value("device_index", "0", section="stt"))
+        device_index = choose_nvidia_device("Select the CUDA GPU for Whisper", nvidia_devices, current_index)
+        precision_options = [
+            "INT8 with FP32 compute (compatible with older NVIDIA GPUs)",
+            "FP16 (faster on newer NVIDIA GPUs)",
+        ]
+        precision_default = 1 if get_current_config_value("compute_type", "int8_float32", section="stt") == "float16" else 0
+        compute_type = ("int8_float32", "float16")[prompt_choice("Select GPU precision", precision_options, precision_default)]
         update_config_value("provider", "local", section="stt")
-        update_config_value("model_size", "distil-large-v3", section="stt")
+        update_config_value("model_size", "small.en", section="stt")
         update_config_value("device", "cuda", section="stt")
-        update_config_value("compute_type", "int8_float32", section="stt")
-        print(f"{CLR_GREEN}Configured faster-whisper distil-large-v3 on CUDA.{CLR_RESET}")
+        update_config_value("device_index", device_index, section="stt")
+        update_config_value("compute_type", compute_type, section="stt")
+        print(f"{CLR_GREEN}Configured faster-whisper small.en on CUDA:{device_index} ({compute_type}).{CLR_RESET}")
     elif choice == 2:
         update_config_value("provider", "local", section="stt")
-        update_config_value("model_size", "base.en", section="stt")
+        update_config_value("model_size", "small.en", section="stt")
         update_config_value("device", "cpu", section="stt")
         update_config_value("compute_type", "int8", section="stt")
-        print(f"{CLR_GREEN}Configured faster-whisper base.en on CPU.{CLR_RESET}")
+        print(f"{CLR_GREEN}Configured faster-whisper small.en on CPU.{CLR_RESET}")
     elif choice == 3:
-        custom_model = prompt_text("Enter STT model name (e.g. 'qwen3-asr-1.7b', 'small.en', 'medium.en')", current_model)
-        custom_dev = prompt_text("Enter compute device ('cuda', 'Vulkan0', 'cpu')", current_dev)
+        custom_model = prompt_text("Enter STT model name (for example qwen3-asr-1.7b, small.en, or medium.en)", current_model)
+        custom_dev = prompt_text("Enter compute device (cpu, cuda, or the exact Vulkan backend name)", current_dev)
         update_config_value("provider", "local", section="stt")
         update_config_value("model_size", custom_model, section="stt")
         update_config_value("device", custom_dev, section="stt")
+        if custom_dev.lower() == "cuda":
+            if not ensure_nvidia_runtime():
+                print(f"{CLR_YELLOW}Keeping the existing local STT configuration.{CLR_RESET}")
+                return
+            current_index = str(get_current_config_value("device_index", "0", section="stt"))
+            device_index = choose_nvidia_device("Select the CUDA GPU", nvidia_devices, current_index)
+            update_config_value("device_index", device_index, section="stt")
+            compute_type = prompt_text(
+                "CTranslate2 compute type (float16, int8_float16, int8_float32)",
+                get_current_config_value("compute_type", "int8_float32", section="stt"),
+            )
+            update_config_value("compute_type", compute_type, section="stt")
+        if "qwen" in custom_model.lower():
+            language = prompt_text("Qwen language hint (English, or blank for automatic detection)", current_language)
+            update_config_value("language", language, section="stt")
         print(f"{CLR_GREEN}Configured custom STT:{CLR_RESET} model={custom_model}, device={custom_dev}")
     else:
         is_openrouter = choice == 5
@@ -398,6 +530,7 @@ def configure_tts():
     print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 4: Text-to-Speech (TTS) Engine & Voice ---{CLR_RESET}")
     current_engine = get_current_config_value("engine", "kokoro")
     current_voice = get_current_config_value("voice", "am_adam")
+    restore_engine = get_current_config_value("silent_restore_engine", "kokoro", section="tts").lower()
 
     engines = [
         "Kokoro-82M Neural TTS (High fidelity, natural phrasing)",
@@ -409,6 +542,27 @@ def configure_tts():
 
     if chosen_engine_idx == 0:
         update_config_value("engine", "kokoro", section="tts")
+        nvidia_devices = [] if os.environ.get("ADAM_CPU_ONLY") == "1" else detect_nvidia_devices()
+        current_device_id = get_current_config_value("device_id", "0", section="tts")
+        device_options = ["CPU (works on laptops without CUDA)"]
+        if nvidia_devices:
+            device_options.extend([f"CUDA:{index} — {name}" for index, name in nvidia_devices])
+            default_device_idx = next(
+                (i + 1 for i, (index, _) in enumerate(nvidia_devices) if index == current_device_id),
+                0,
+            )
+        else:
+            default_device_idx = 0
+        device_choice = prompt_choice("Select Kokoro compute device", device_options, default_device_idx)
+        if device_choice > 0 and not ensure_nvidia_runtime():
+            print(f"{CLR_YELLOW}Kokoro will use CPU because CUDA support is unavailable.{CLR_RESET}")
+            device_choice = 0
+        if device_choice == 0:
+            update_config_value("device_id", "-1", section="tts")
+        else:
+            selected_index = nvidia_devices[device_choice - 1][0]
+            update_config_value("device_id", selected_index, section="tts")
+        print(f"{CLR_GREEN}Kokoro device set to {'CPU' if device_choice == 0 else 'CUDA:' + selected_index}.{CLR_RESET}")
         voices = [
             "am_adam   - Studio natural male voice",
             "am_michael - Authoritative assistant tone",
@@ -439,13 +593,25 @@ def configure_tts():
         update_config_value("cloud_model", model, section="tts")
         voice = prompt_text("OpenAI voice (for example marin, cedar, coral, alloy)", get_current_config_value("cloud_voice", "marin", section="tts"))
         update_config_value("cloud_voice", voice, section="tts")
-        api_key = prompt_text("OpenAI API key", get_current_config_value("api_key", "", section="tts") or os.environ.get("OPENAI_API_KEY", ""))
+        api_key = prompt_secret("OpenAI API key", get_current_config_value("api_key", "", section="tts") or os.environ.get("OPENAI_API_KEY", ""))
         if api_key:
             update_config_value("api_key", api_key, section="tts")
         print(f"{CLR_GREEN}Configured OpenAI cloud speech ({model}, voice {voice}).{CLR_RESET}")
     else:
         update_config_value("engine", "silent", section="tts")
+        restore_options = [
+            "Kokoro (local speech)",
+            "OpenAI (cloud speech)",
+        ]
+        restore_idx = 1 if restore_engine == "openai" else 0
+        restore_choice = prompt_choice("Choose the speech engine restored when silent mode is disabled", restore_options, restore_idx)
+        restore_engine = "openai" if restore_choice == 1 else "kokoro"
         print(f"{CLR_GREEN}Configured silent mode; responses will appear as desktop notification alerts.{CLR_RESET}")
+
+    if chosen_engine_idx != 2:
+        restore_engine = "openai" if chosen_engine_idx == 1 else "kokoro"
+    update_config_value("silent_restore_engine", restore_engine, section="tts")
+    print(f"{CLR_GREEN}Silent mode will restore {restore_engine} speech when disabled.{CLR_RESET}")
 
 
 # ------------------------------------------------------------------------------
@@ -482,7 +648,7 @@ def configure_llm():
             endpoint = prompt_text("Enter local/remote server endpoint URL", curr_endpoint if curr_endpoint else "http://localhost:8000/v1")
             update_config_value("ollama_host", endpoint, section="llm")
             update_config_value("api_base", endpoint, section="llm")
-            api_key = prompt_text("Optional API key / Bearer token (leave blank if none)", "")
+            api_key = prompt_secret("Optional API key / Bearer token (leave blank if none)", get_current_config_value("api_key", "", section="llm"))
             if api_key:
                 update_config_value("api_key", api_key, section="llm")
 
@@ -513,7 +679,9 @@ def configure_llm():
         print(f"{CLR_GREEN}Local model configured:{CLR_RESET} {target_model} at {endpoint}")
 
         # If standard local Ollama is available, offer to pull
-        if b_choice == 0 and subprocess.run(["command", "-v", "ollama"], shell=True, stdout=subprocess.DEVNULL).returncode == 0:
+        if os.environ.get("ADAM_SKIP_OLLAMA") == "1":
+            print(f"{CLR_YELLOW}Ollama model checks and downloads skipped by setup option.{CLR_RESET}")
+        elif b_choice == 0 and subprocess.run(["command", "-v", "ollama"], shell=True, stdout=subprocess.DEVNULL).returncode == 0:
             if prompt_yes_no(f"Pull '{target_model}' into Ollama now?", default_yes=True):
                 print(f"{CLR_CYAN}Pulling {target_model}...{CLR_RESET}")
                 subprocess.run(["ollama", "pull", target_model])
@@ -538,7 +706,7 @@ def configure_llm():
             model = prompt_text("Enter provider model name", current_model)
             update_config_value("cloud_model", model, section="llm")
 
-            api_key = prompt_text("Enter API key / Bearer token (leave blank if none)", get_current_config_value("api_key", "", section="llm"))
+            api_key = prompt_secret("Enter API key / Bearer token (leave blank if none)", get_current_config_value("api_key", "", section="llm"))
             if api_key:
                 update_config_value("api_key", api_key, section="llm")
             print(f"{CLR_GREEN}Custom OpenAI-compatible provider configured for model:{CLR_RESET} {model}")
@@ -565,7 +733,7 @@ def configure_llm():
         }[provider_name]
 
         existing_key = os.environ.get(key_env_var, get_current_config_value("api_key", "", section="llm"))
-        api_key = prompt_text(f"Enter {key_env_var}", existing_key)
+        api_key = prompt_secret(f"Enter {key_env_var}", existing_key)
         if api_key:
             update_config_value("api_key", api_key, section="llm")
             print(f"{CLR_GREEN}API key configured for {provider_name}.{CLR_RESET}")
@@ -584,20 +752,19 @@ def configure_browser():
         "Google Chrome (google-chrome-stable)",
         "Brave Browser (brave)",
         "Zen Browser (zen-browser)",
+        "Chromium (chromium)",
+        "Vivaldi (vivaldi-stable)",
         "Custom browser command",
     ]
 
-    default_idx = 0
-    if "firefox" in current_browser:
-        default_idx = 1
-    elif "chrome" in current_browser:
-        default_idx = 2
-    elif "brave" in current_browser:
-        default_idx = 3
-    elif "zen" in current_browser:
-        default_idx = 4
-    elif "edge" not in current_browser:
-        default_idx = 5
+    browser_binaries = [
+        "microsoft-edge-stable", "firefox", "google-chrome-stable", "brave",
+        "zen-browser", "chromium", "vivaldi-stable",
+    ]
+    default_idx = next(
+        (i for i, binary in enumerate(browser_binaries) if binary in current_browser and shutil.which(binary)),
+        next((i for i, binary in enumerate(browser_binaries) if shutil.which(binary)), 7),
+    )
 
     choice = prompt_choice("Choose default browser for web searches and links", browsers, default_idx)
     browser_map = {
@@ -605,7 +772,9 @@ def configure_browser():
         1: "firefox",
         2: "google-chrome-stable",
         3: "brave",
-        4: "zen-browser"
+        4: "zen-browser",
+        5: "chromium",
+        6: "vivaldi-stable",
     }
 
     if choice in browser_map:
@@ -622,6 +791,16 @@ def configure_browser():
 # ------------------------------------------------------------------------------
 def configure_speaker_verification():
     print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 7: Speaker Verification (Voice Profile) ---{CLR_RESET}")
+    currently_enabled = get_current_config_value("enabled", "true", section="speaker_verification").lower() in ("true", "yes", "1")
+    if os.environ.get("ADAM_SKIP_SPEAKER_VERIFICATION") == "1":
+        update_config_value("enabled", "false", section="speaker_verification")
+        print(f"{CLR_YELLOW}Speaker verification skipped by setup option.{CLR_RESET}")
+        return
+    if not prompt_yes_no("Enable speaker verification and identify you in meetings?", default_yes=currently_enabled):
+        update_config_value("enabled", "false", section="speaker_verification")
+        print(f"{CLR_YELLOW}Speaker verification is disabled. Meeting labels will remain anonymous.{CLR_RESET}")
+        return
+    update_config_value("enabled", "true", section="speaker_verification")
     profile_path = Path.home() / ".local" / "state" / "adam" / "speaker-profile.npz"
 
     if profile_path.exists():
@@ -633,7 +812,7 @@ def configure_speaker_verification():
         enroll_prompt = "Would you like to enroll your voice profile now (takes ~30s)?"
         default_enroll = True
 
-    if prompt_yes_no(enroll_prompt, default_yes=default_enroll):
+    if os.environ.get("ADAM_SKIP_ENROLLMENT") != "1" and prompt_yes_no(enroll_prompt, default_yes=default_enroll):
         print(f"\n{CLR_CYAN}Starting enrollment session... Speak clearly when prompted.{CLR_RESET}")
         try:
             from src.stt.enroll import main as run_enroll
@@ -643,11 +822,125 @@ def configure_speaker_verification():
             print(f"You can enroll anytime later by running: {CLR_BOLD}uv run python -m src.stt.enroll{CLR_RESET}")
 
 
+def configure_meeting():
+    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 8: Meeting Mode & Recording ---{CLR_RESET}")
+    print(
+        "Say 'Hey Adam, meeting mode' to record and transcribe continuously. "
+        "Meeting audio is kept intact; diarization labels who spoke without filtering anyone out."
+    )
+    print(
+        f"Every finalized microphone capture and transcript is also saved privately under "
+        f"{Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'adam' / 'heard-captures'}."
+    )
+    default_dir = get_current_config_value("output_dir", "~/.local/state/adam/meetings", section="meeting")
+    output_dir = prompt_text("Meeting recordings and transcripts directory", default_dir)
+    update_config_value("output_dir", output_dir, section="meeting")
+
+    max_hours = prompt_text(
+        "Maximum meeting duration in hours (automatically stops at the limit)",
+        get_current_config_value("max_duration_hours", "4.0", section="meeting"),
+    )
+    while True:
+        try:
+            if 0.25 <= float(max_hours) <= 24:
+                break
+        except ValueError:
+            pass
+        print(f"{CLR_RED}Enter a duration from 0.25 to 24 hours.{CLR_RESET}")
+        max_hours = prompt_text("Maximum meeting duration in hours", "4.0")
+    update_config_value("max_duration_hours", max_hours, section="meeting")
+    print(f"{CLR_GREEN}Meeting recording is configured for up to {max_hours} hours.{CLR_RESET}")
+
+
 # ------------------------------------------------------------------------------
-# Step 8: Systemd Daemon Setup
+# Step 8: Optional Speaker Diarization
+# ------------------------------------------------------------------------------
+def configure_speaker_diarization():
+    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 9: Optional Nemotron Speaker Diarization ---{CLR_RESET}")
+    print(
+        "Diarization assigns separate speaker labels to the intact meeting transcript. "
+        "It does not remove, isolate, or filter any speaker's audio. "
+        "Choose CPU or an explicit NVIDIA CUDA device; Vulkan is not supported here."
+    )
+
+    current_enabled = get_current_config_value("enabled", "false", section="speaker_diarization").lower() in ("true", "yes", "1")
+    if not prompt_yes_no("Enable optional Nemotron diarization?", default_yes=current_enabled):
+        update_config_value("enabled", "false", section="speaker_diarization")
+        print(f"{CLR_YELLOW}Nemotron diarization remains disabled.{CLR_RESET}")
+        return
+
+    current_model = get_current_config_value("model", NEMOTRON_DIARIZATION_MODEL, section="speaker_diarization")
+    if current_model.strip().lower().endswith(".gguf"):
+        current_model = NEMOTRON_DIARIZATION_MODEL
+    model = prompt_text("Diarization model", current_model)
+    current_device = get_current_config_value("device", "auto", section="speaker_diarization").strip().lower()
+    current_backend = "cpu" if current_device == "cpu" else "cuda" if current_device.startswith("cuda") else "auto"
+    nvidia_devices = [] if os.environ.get("ADAM_CPU_ONLY") == "1" else detect_nvidia_devices()
+    device_options = ["CPU (recommended for laptops; does not select a GPU)"]
+    device_options.extend([f"CUDA:{index} — {name}" for index, name in nvidia_devices])
+    backend_idx = 0 if current_backend == "cpu" or not nvidia_devices else next(
+        (i + 1 for i, (index, _) in enumerate(nvidia_devices) if current_device == f"cuda:{index}"), 0
+    )
+    backend_choice = prompt_choice("Choose compute device", device_options, backend_idx)
+    if backend_choice == 0:
+        device = "cpu"
+    else:
+        device = f"cuda:{nvidia_devices[backend_choice - 1][0]}"
+    update_config_value("enabled", "true", section="speaker_diarization")
+    update_config_value("executable", "nemo-speech", section="speaker_diarization")
+    update_config_value("model", model, section="speaker_diarization")
+    update_config_value("device", device, section="speaker_diarization")
+    os.environ["ADAM_DIARIZATION_ENABLED"] = "1"
+
+    if os.environ.get("ADAM_SKIP_PYTHON") == "1":
+        import importlib.util
+        if not all(importlib.util.find_spec(module) for module in ("transformers", "torch", "librosa")):
+            print(f"{CLR_YELLOW}Diarization dependencies are missing and --skip-python-deps prevents installing them.{CLR_RESET}")
+            update_config_value("enabled", "false", section="speaker_diarization")
+            return
+        print(f"{CLR_GREEN}Using the already-installed diarization dependencies.{CLR_RESET}")
+
+    uv = shutil.which("uv")
+    if not uv:
+        print(f"{CLR_RED}uv was not found; install project dependencies before enabling diarization.{CLR_RESET}")
+        update_config_value("enabled", "false", section="speaker_diarization")
+        return
+    try:
+        if os.environ.get("ADAM_SKIP_PYTHON") != "1":
+            sync_args = [uv, "sync", "--extra", os.environ.get("ADAM_RUNTIME_EXTRA", "runtime-cpu"), "--extra", "nemotron-diarization"]
+            if os.environ.get("ADAM_SKIP_SPEAKER_VERIFICATION") != "1":
+                sync_args.extend(["--extra", "speaker-verification"])
+            subprocess.run(sync_args, cwd=PROJECT_DIR, check=True)
+        if Path(model).expanduser().is_dir():
+            print(f"{CLR_GREEN}Using local Nemotron model directory: {model}{CLR_RESET}")
+        elif prompt_yes_no("Download the Nemotron model now (~400 MB)?", default_yes=True):
+            subprocess.run(
+                [uv, "run", "python", "-c",
+                 "import sys; from huggingface_hub import snapshot_download; snapshot_download(repo_id=sys.argv[1], allow_patterns=['config.json', 'model.safetensors', 'processor_config.json', 'preprocessor_config.json', 'tokenizer_config.json', 'special_tokens_map.json'])",
+                 model],
+                cwd=PROJECT_DIR,
+                check=True,
+            )
+        print(f"{CLR_GREEN}Nemotron diarization enabled. The model will load on first use.{CLR_RESET}")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"{CLR_YELLOW}Diarization setup failed ({exc}); setting was saved but diarization is inactive until setup succeeds.{CLR_RESET}")
+
+
+# ------------------------------------------------------------------------------
+# Step 9: Systemd Daemon Setup
 # ------------------------------------------------------------------------------
 def configure_systemd():
-    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 8: Systemd User Service ---{CLR_RESET}")
+    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 10: Systemd User Service ---{CLR_RESET}")
+    if os.environ.get("ADAM_SKIP_SERVICE") == "1":
+        print(f"{CLR_YELLOW}Service setup skipped by setup option.{CLR_RESET}")
+        return
+    if (
+        not shutil.which("systemctl")
+        or not Path("/run/systemd/system").exists()
+        or subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True).returncode != 0
+    ):
+        print(f"{CLR_YELLOW}This Linux system does not use systemd; start Adam with 'uv run python -m src.main' or use your init system.{CLR_RESET}")
+        return
     if prompt_yes_no("Enable and start Adam as an automatic background service (adam.service)?", default_yes=True):
         print(f"{CLR_CYAN}Enabling and starting adam.service...{CLR_RESET}")
         subprocess.run(["systemctl", "--user", "daemon-reload"])
@@ -670,6 +963,11 @@ def main():
         configure_llm()
         configure_browser()
         configure_speaker_verification()
+        configure_meeting()
+        configure_speaker_diarization()
+        config_path = PROJECT_DIR / "config.yaml"
+        if config_path.exists():
+            config_path.chmod(0o600)
         configure_systemd()
 
         print(f"\n{CLR_GREEN}{CLR_BOLD}================================================================{CLR_RESET}")
@@ -678,6 +976,8 @@ def main():
         print(f"  • View live logs:    {CLR_BOLD}journalctl --user -u adam.service -f{CLR_RESET}")
         print(f"  • Re-enroll voice:   {CLR_BOLD}uv run python -m src.stt.enroll{CLR_RESET}")
         print(f"  • Test microphone:   {CLR_BOLD}uv run python tools/test_mic.py{CLR_RESET}")
+        print(f"  • Meeting recordings: {CLR_BOLD}{Path(get_current_config_value('output_dir', '~/.local/state/adam/meetings', section='meeting')).expanduser()}{CLR_RESET}")
+        print(f"  • Heard audio/logs:  {CLR_BOLD}{Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'adam' / 'heard-captures'}{CLR_RESET}")
         print(f"  • Edit config:       {CLR_BOLD}{PROJECT_DIR}/config.yaml{CLR_RESET}\n")
     except KeyboardInterrupt:
         print(f"\n\n{CLR_YELLOW}Setup cancelled by user.{CLR_RESET}\n")

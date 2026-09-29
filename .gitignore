@@ -53,3 +53,8 @@ assets/voices/cosyvoice/*.bin
 # Models cache
 models/
 .cache/
+
+# Local speaker-separation experiments contain private recordings and transcripts.
+/poc_target_separation/outputs/
+/poc_target_separation/speechbrain-model/
+/poc_target_separation/RESULTS.md

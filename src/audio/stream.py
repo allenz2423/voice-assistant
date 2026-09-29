@@ -2,10 +2,23 @@ import os
 import time
 import queue
 import threading
-import sounddevice as sd
+from collections import deque
 import numpy as np
 from src.audio.vad import SileroVAD
 from src.audio.earcon import resolve_pulse_device_index
+
+
+def _take_audio_tail(chunks: list[np.ndarray], sample_count: int) -> list[np.ndarray]:
+    selected = []
+    remaining = sample_count
+    for chunk in reversed(chunks):
+        if remaining <= 0:
+            break
+        take = min(len(chunk), remaining)
+        selected.append(chunk[-take:])
+        remaining -= take
+    return list(reversed(selected))
+
 
 def setup_mic_routing(target_source=""):
     if target_source and target_source not in ("Adam_Clean_Mic", "default"):
@@ -23,14 +36,19 @@ class ReferenceAudioMonitor:
         self.lock = threading.Lock()
         self.running = False
         self.stream = None
-        self.pulse_idx = resolve_pulse_device_index()
+        self.pulse_idx = None
         self.speaker_rms = 0.0
         self.is_active = False
 
     def start(self):
-        if self.running or self.pulse_idx is None:
+        if self.running:
+            return
+        if self.pulse_idx is None:
+            self.pulse_idx = resolve_pulse_device_index()
+        if self.pulse_idx is None:
             return
         try:
+            import sounddevice as sd
             orig_pulse_source = os.environ.get("PULSE_SOURCE")
             os.environ["PULSE_SOURCE"] = "@DEFAULT_SINK@.monitor"
             try:
@@ -135,7 +153,7 @@ class AudioStreamManager:
         setup_mic_routing(target_source)
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size  # 512 samples = 32ms at 16kHz
-        self.pulse_idx = resolve_pulse_device_index()
+        self.pulse_idx = None
         self.vad = SileroVAD(sample_rate=sample_rate)
         self.audio_queue = queue.Queue(maxsize=100)
         self.running = False
@@ -144,8 +162,21 @@ class AudioStreamManager:
         self.is_assistant_speaking = False
         self.quench_until = 0.0
         self.ref_monitor = ReferenceAudioMonitor(sample_rate=self.sample_rate)
+        self._recent_audio_seconds = 5.0
+        self._recent_audio_chunks = deque()
+        self._recent_audio_samples = 0
+        self._recent_audio_lock = threading.Lock()
+        self._audio_tap = None
+
+    def set_audio_tap(self, callback=None) -> None:
+        """Register a nonblocking observer for every captured mic chunk."""
+        self._audio_tap = callback
 
     def start(self):
+        if self.running:
+            return
+        import sounddevice as sd
+        self.pulse_idx = resolve_pulse_device_index()
         self.running = True
         self.stream = sd.InputStream(
             samplerate=self.sample_rate,
@@ -160,9 +191,17 @@ class AudioStreamManager:
             self.ref_monitor.start()
 
     def _audio_callback(self, indata, frames, time_info, status):
-        if not self.running or time.time() < self.quench_until:
+        if not self.running:
             return
         chunk = indata[:, 0].copy()
+        tap = getattr(self, "_audio_tap", None)
+        if tap is not None:
+            try:
+                tap(chunk)
+            except Exception:
+                pass
+        if time.time() < self.quench_until:
+            return
         try:
             self.audio_queue.put_nowait(chunk)
         except queue.Full:
@@ -177,9 +216,53 @@ class AudioStreamManager:
             self.flush()
             return None
         try:
-            return self.audio_queue.get(timeout=timeout)
+            chunk = self.audio_queue.get(timeout=timeout)
+            self._remember_recent_audio(chunk)
+            return chunk
         except queue.Empty:
             return None
+
+    def _remember_recent_audio(self, chunk: np.ndarray) -> None:
+        audio = np.asarray(chunk, dtype=np.float32).reshape(-1).copy()
+        if audio.size == 0:
+            return
+        limit = int(self._recent_audio_seconds * self.sample_rate)
+        with self._recent_audio_lock:
+            self._recent_audio_chunks.append(audio)
+            self._recent_audio_samples += len(audio)
+            excess = self._recent_audio_samples - limit
+            while excess > 0 and self._recent_audio_chunks:
+                oldest = self._recent_audio_chunks[0]
+                if len(oldest) <= excess:
+                    self._recent_audio_chunks.popleft()
+                    self._recent_audio_samples -= len(oldest)
+                    excess -= len(oldest)
+                else:
+                    self._recent_audio_chunks[0] = oldest[excess:].copy()
+                    self._recent_audio_samples -= excess
+                    excess = 0
+
+    def get_recent_audio(self, duration_s: float = 5.0, exclude_latest_samples: int = 0) -> np.ndarray:
+        """Return recently consumed mic audio, optionally excluding the current chunk."""
+        requested = min(self._recent_audio_seconds, max(0.0, duration_s))
+        requested_samples = int(requested * self.sample_rate)
+        with self._recent_audio_lock:
+            chunks = list(self._recent_audio_chunks)
+        if exclude_latest_samples > 0:
+            remaining = max(0, sum(map(len, chunks)) - int(exclude_latest_samples))
+            selected = []
+            for chunk in chunks:
+                if remaining <= 0:
+                    break
+                take = min(len(chunk), remaining)
+                selected.append(chunk[:take])
+                remaining -= take
+            chunks = selected
+        available = sum(map(len, chunks))
+        take = min(requested_samples, available)
+        if take <= 0:
+            return np.zeros(0, dtype=np.float32)
+        return np.concatenate(_take_audio_tail(chunks, take))
 
     def quench(self, duration: float = 0.45):
         """Suppresses incoming audio for duration seconds to let room reflections and speaker audio decay."""

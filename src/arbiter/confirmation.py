@@ -93,9 +93,15 @@ class TriStateConfirmationManager:
         print(f"[Adam] Response: {spoken_prompt}", flush=True)
         await self.tts.speak_async(spoken_prompt)
 
-        if self.watchdog_task and not self.watchdog_task.done():
-            self.watchdog_task.cancel()
+        await self._stop_watchdog()
         self.watchdog_task = asyncio.create_task(self._expiry_watchdog(self.timeout_seconds))
+
+    async def _stop_watchdog(self):
+        task = self.watchdog_task
+        self.watchdog_task = None
+        if task and task is not asyncio.current_task() and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def _expiry_watchdog(self, duration: float):
         """Active timer that breaks state deadlocks if the user says nothing."""
@@ -115,8 +121,7 @@ class TriStateConfirmationManager:
 
         # 1. Negative triggers evaluated FIRST (prevents 'no, do not do it' being affirmed by 'do it')
         if self.DENY_REGEX.search(text):
-            if self.watchdog_task:
-                self.watchdog_task.cancel()
+            await self._stop_watchdog()
             self.pending_action = None
             await self._cancel_confirmation("Action cancelled.")
 
@@ -126,8 +131,7 @@ class TriStateConfirmationManager:
 
         # 2. Affirmative triggers (guaranteed no negation words present)
         if self.AFFIRM_REGEX.search(text):
-            if self.watchdog_task:
-                self.watchdog_task.cancel()
+            await self._stop_watchdog()
             self.last_confirmed_action = self.pending_action
             self.pending_action = None
             await self.arbiter.set_state("PROCESSING_REACT")
@@ -135,8 +139,7 @@ class TriStateConfirmationManager:
 
         # 3. Explicit clarification request
         if self.CLARIFY_REGEX.search(text):
-            if self.watchdog_task:
-                self.watchdog_task.cancel()
+            await self._stop_watchdog()
             self.watchdog_task = asyncio.create_task(self._expiry_watchdog(self.timeout_seconds))
             
             explanation = f"I am waiting to execute: {self.pending_action.get('summary', 'this command')}. Should I proceed?"
@@ -147,8 +150,7 @@ class TriStateConfirmationManager:
         # 4. If the user spoke a multi-word phrase that isn't a yes/no answer, treat it as a new command!
         words = text.split()
         if len(words) >= 3:
-            if self.watchdog_task:
-                self.watchdog_task.cancel()
+            await self._stop_watchdog()
             self.pending_action = None
             print(f"[Confirmation] User interrupted with new command: '{text}'", flush=True)
             await self.arbiter.set_state("IDLE_LISTENING")

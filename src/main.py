@@ -3,9 +3,11 @@ os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 import sys
 import time
 import re
+import json
 import difflib
 import signal
 import asyncio
+import threading
 import wave
 from datetime import datetime
 import numpy as np
@@ -14,11 +16,14 @@ from pathlib import Path
 from src.config import load_config
 from src.audio.earcon import RobustEarconEngine
 from src.audio.stream import AudioStreamManager
+from src.audio.meeting import MeetingSession
 from src.tts.streaming import StreamingVoiceSynthesizer
 from src.wake.engine import WakeWordDetector
 from src.stt.transcriber import WhisperTranscriber, create_transcriber
 from src.stt.speaker import SpeakerVerifier
-from src.stt.diarizer import NemotronDiarizer
+from src.stt.diarizer import NemotronDiarizer, SpeakerSpan
+from src.stt.meeting_speakers import MeetingSpeakerRegistry
+from src.stt.target_separator import TargetSpeakerSeparator
 from src.arbiter.arbiter import PriorityAudioArbiter, SystemState
 from src.arbiter.confirmation import TriStateConfirmationManager
 from src.execution.probe import HardwareEncoderProbe
@@ -69,6 +74,32 @@ def merge_overlapping_transcripts(p: str, s: str) -> str:
         return p + " " + " ".join(s_words[max_overlap:])
 
     return f"{p} {s}"
+
+
+def meeting_command_kind(command: str) -> str | None:
+    """Match concise voice controls without sending them to the agent LLM."""
+    normalized = re.sub(r"[^a-z0-9']+", " ", (command or "").lower()).strip()
+    normalized = re.sub(r"^(please|could you|can you|let's|lets)\s+", "", normalized)
+    if re.fullmatch(r"(meeting mode|start meeting|start meeting mode|begin meeting|begin meeting mode)", normalized):
+        return "start"
+    if re.fullmatch(
+        r"(meeting over|meeting is over|meeting ended|meeting has ended|end meeting|end meeting mode|stop meeting|stop meeting mode|finish meeting|finish meeting mode|that's all for the meeting|that is all for the meeting)",
+        normalized,
+    ):
+        return "stop"
+    return None
+
+
+class _LockedTranscriber:
+    """Share the STT backend safely between meeting and barge-in workers."""
+
+    def __init__(self, transcriber, lock: threading.Lock):
+        self._transcriber = transcriber
+        self._lock = lock
+
+    def transcribe(self, audio: np.ndarray) -> str:
+        with self._lock:
+            return self._transcriber.transcribe(audio)
 
 class AdamDaemon:
     """Master orchestrator for the Adam Voice Terminal Agent."""
@@ -129,6 +160,7 @@ class AdamDaemon:
         stt_label = self.config.stt.cloud_model if self.config.stt.provider == "openai" else self.config.stt.model_size
         print(f"[Init] Initializing Speech-to-Text engine ({self.config.stt.provider}: {stt_label})...")
         self.stt = create_transcriber(self.config.stt, shared_api_key=self.config.llm.api_key)
+        self._stt_lock = threading.Lock()
         self.wake_spotter = None
 
         speaker_cfg = self.config.speaker_verification
@@ -150,25 +182,21 @@ class AdamDaemon:
         self.speaker_diarizer = None
         diarization_cfg = self.config.speaker_diarization
         if diarization_cfg.enabled:
-            if self.speaker_verifier is None:
-                print("[Diarization] Configured, but inactive until a speaker profile is enrolled.")
-            else:
-                candidate_diarizer = NemotronDiarizer(
-                    executable=diarization_cfg.executable,
-                    model=diarization_cfg.model,
-                    device=diarization_cfg.device,
-                    timeout=diarization_cfg.timeout_seconds,
+            candidate_diarizer = NemotronDiarizer(
+                executable=diarization_cfg.executable,
+                model=diarization_cfg.model,
+                device=diarization_cfg.device,
+                timeout=diarization_cfg.timeout_seconds,
+            )
+            if not candidate_diarizer.available:
+                print("[Diarization] Transformers runtime is missing; run setup with Nemotron diarization enabled.")
+            elif not candidate_diarizer.supports_model():
+                print(
+                    f"[Diarization] No Nemotron model is configured ({diarization_cfg.model!r})."
                 )
-                if not candidate_diarizer.available:
-                    print(f"[Diarization] {diarization_cfg.executable} not found; using the existing whole-utterance speaker check.")
-                elif not candidate_diarizer.supports_model():
-                    print(
-                        f"[Diarization] Installed nemo-speech does not include {diarization_cfg.model}; "
-                        "install a build whose model index includes Nemotron-3-Diarization."
-                    )
-                else:
-                    self.speaker_diarizer = candidate_diarizer
-                    print(f"[Diarization] Nemotron enabled via {diarization_cfg.executable} ({diarization_cfg.device}).")
+            else:
+                self.speaker_diarizer = candidate_diarizer
+                print(f"[Diarization] Nemotron enabled via Transformers ({diarization_cfg.device}); model loads on first use.")
 
         print("[Init] Initializing openWakeWord Detector...")
         self.wake = WakeWordDetector(
@@ -196,7 +224,25 @@ class AdamDaemon:
             sample_rate=16000,
             chunk_size=self.config.audio.chunk_size
         )
-        self.tts.set_audio_context(self.stream, self.wake, self.earcon, stt=self.stt)
+        meeting_cfg = self.config.meeting
+        profile_path = self.config.speaker_verification.profile_path or None
+        self.meeting_voice_encoder = self.speaker_verifier or SpeakerVerifier(profile_path=profile_path)
+        self.meeting_speaker_registry = None
+        self.meeting_session = MeetingSession(
+            root=meeting_cfg.output_dir,
+            sample_rate=self.stream.sample_rate,
+            max_duration_seconds=meeting_cfg.max_duration_hours * 60.0 * 60.0,
+            silence_duration=meeting_cfg.silence_duration,
+            speech_threshold=self.config.audio.vad_threshold_idle,
+            max_segment_seconds=meeting_cfg.max_segment_seconds,
+            process_segment=self._process_meeting_segment,
+        )
+        self.stream.set_audio_tap(self.meeting_session.enqueue_audio)
+        self.target_speaker_separator = None
+        self.tts.set_audio_context(
+            self.stream, self.wake, self.earcon,
+            stt=_LockedTranscriber(self.stt, self._stt_lock),
+        )
 
         # 4. Tiered Speech Architecture (Semantic Endpointing & Speculative Tool Pre-flight)
         print("[Init] Initializing SemanticEndpointer & SpeculativeRouter...")
@@ -229,6 +275,66 @@ class AdamDaemon:
 
         self.running = False
         self._is_shutting_down = False
+        self._active_heard_capture_id = None
+
+    async def _record_utterance(self, **kwargs) -> np.ndarray:
+        """Record and archive each finalized mic utterance, including rejected speech."""
+        audio_data = await asyncio.to_thread(self.stream.record_utterance, **kwargs)
+        self._active_heard_capture_id = self._save_heard_capture(audio_data)
+        return audio_data
+
+    def _save_heard_capture(self, audio_data: np.ndarray) -> str | None:
+        """Save a private WAV and transcript sidecar for every finalized mic capture."""
+        if audio_data is None or len(audio_data) == 0:
+            return None
+        try:
+            state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+            output_dir = state_home / "adam" / "heard-captures"
+            output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(output_dir, 0o700)
+            capture_id = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+            output_path = output_dir / f"heard-{capture_id}.wav"
+            pcm = (
+                np.clip(np.asarray(audio_data, dtype=np.float32).reshape(-1), -1.0, 1.0) * 32767
+            ).astype(np.int16)
+            with wave.open(str(output_path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(self.stream.sample_rate)
+                wav_file.writeframes(pcm.tobytes())
+            os.chmod(output_path, 0o600)
+
+            metadata_path = output_path.with_suffix(".json")
+            metadata_path.write_text(json.dumps({
+                "capture_id": capture_id,
+                "captured_at": datetime.now().astimezone().isoformat(),
+                "sample_rate": self.stream.sample_rate,
+                "duration_seconds": len(pcm) / self.stream.sample_rate,
+                "transcripts": [],
+            }, indent=2) + "\n", encoding="utf-8")
+            os.chmod(metadata_path, 0o600)
+            print(f"[HeardCapture] Saved mic audio: {output_path}", flush=True)
+            return capture_id
+        except Exception as exc:
+            print(f"[HeardCapture] Could not save mic audio ({exc}).", flush=True)
+            return None
+
+    def _log_heard_transcript(self, capture_id: str | None, text: str | None, stage: str) -> None:
+        if not capture_id:
+            return
+        try:
+            state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+            metadata_path = state_home / "adam" / "heard-captures" / f"heard-{capture_id}.json"
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["transcripts"].append({
+                "stage": stage,
+                "logged_at": datetime.now().astimezone().isoformat(),
+                "text": text or "",
+            })
+            metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+            os.chmod(metadata_path, 0o600)
+        except Exception as exc:
+            print(f"[HeardCapture] Could not save transcript ({exc}).", flush=True)
 
     async def _speaker_allowed(self, audio_data) -> bool:
         """Fail closed on a failed or non-matching speaker check when enrolled."""
@@ -238,9 +344,17 @@ class AdamDaemon:
             matched, score = await asyncio.to_thread(self.speaker_verifier.verify, audio_data)
         except Exception as exc:
             print(f"[Speaker] Verification unavailable; ignoring utterance ({exc}).", flush=True)
+            capture_id = getattr(self, "_active_heard_capture_id", None)
+            if capture_id:
+                transcript = await asyncio.to_thread(self._transcribe_wake_candidate, audio_data)
+                self._log_heard_transcript(capture_id, transcript, "speaker-check-error")
             return False
         if not matched:
             print(f"[Speaker] Utterance did not match enrolled voice (score={score:.3f}); ignoring.", flush=True)
+            capture_id = getattr(self, "_active_heard_capture_id", None)
+            if capture_id:
+                transcript = await asyncio.to_thread(self._transcribe_wake_candidate, audio_data)
+                self._log_heard_transcript(capture_id, transcript, "speaker-rejected")
         else:
             print(f"[Speaker] Enrolled voice matched (score={score:.3f}).", flush=True)
         return matched
@@ -271,7 +385,7 @@ class AdamDaemon:
         """Use local ASR for custom wake spotting; reserve cloud ASR for wake candidates."""
         provider = str(getattr(self.config.stt, "provider", "local")).lower()
         if provider not in ("openai", "openrouter", "custom"):
-            return self.stt.transcribe(audio_data)
+            return self._transcribe_stt(audio_data)
 
         if self.wake_spotter is None:
             cfg = self.config.stt
@@ -286,6 +400,140 @@ class AdamDaemon:
                 compute_type=cfg.fallback_compute_type,
             )
         return self.wake_spotter.transcribe(audio_data)
+
+    def _transcribe_stt(self, audio_data: np.ndarray) -> str:
+        """Serialize local/cloud STT calls shared by commands and meeting worker."""
+        with self._stt_lock:
+            return self.stt.transcribe(audio_data)
+
+    def _separate_enrolled_speaker(self, audio_data: np.ndarray) -> np.ndarray | None:
+        if self.speaker_verifier is None or not self.speaker_verifier.enrolled:
+            return None
+        try:
+            if self.target_speaker_separator is None:
+                cache = Path.home() / ".cache" / "adam" / "sepformer-libri2mix"
+                self.target_speaker_separator = TargetSpeakerSeparator(
+                    self.speaker_verifier, model_dir=str(cache)
+                )
+            result = self.target_speaker_separator.isolate(
+                audio_data, sample_rate=self.stream.sample_rate
+            )
+            if result is None:
+                return None
+            print(
+                f"[Separation] Enrolled voice selected source {result.source_index} "
+                f"(score={result.score:.3f}).",
+                flush=True,
+            )
+            return result.audio
+        except Exception as exc:
+            print(f"[Separation] Target voice isolation failed ({exc}).", flush=True)
+            return None
+
+    def _process_meeting_segment(
+        self, audio: np.ndarray, context: np.ndarray, start_seconds: float, end_seconds: float
+    ) -> None:
+        """Transcribe a VAD segment and attribute speech to stable meeting labels."""
+        session = self.meeting_session
+        if session.session_dir is None:
+            return
+        registry = self.meeting_speaker_registry
+        turns = []
+        if self.speaker_diarizer is not None:
+            context = np.asarray(context, dtype=np.float32).reshape(-1)
+            context_samples = len(context)
+            combined = np.concatenate((context, audio)) if context_samples else audio
+            try:
+                spans = self.speaker_diarizer.diarize(combined)
+                if context_samples:
+                    offset = context_samples / self.stream.sample_rate
+                    spans = [
+                        SpeakerSpan(
+                            speaker=span.speaker,
+                            start=max(0.0, span.start - offset),
+                            end=span.end - offset,
+                        )
+                        for span in spans
+                        if span.end > offset
+                    ]
+                turns = self.speaker_diarizer.speaker_turns(
+                    audio, spans, sample_rate=self.stream.sample_rate
+                )
+            except Exception as exc:
+                print(f"[Meeting] Diarization failed for a speech segment ({exc}).", flush=True)
+
+        if turns:
+            # Learn stable participant labels from natural diarized turns, then
+            # transcribe intact time crops from the original audio mix. No
+            # samples are masked or source-separated in meeting mode.
+            speaker_labels: dict[str, tuple[str, float | None]] = {}
+            for turn in turns:
+                if (
+                    len(turn.speakers) == 1
+                    and len(turn.audio) >= int(0.5 * self.stream.sample_rate)
+                    and turn.speakers[0] not in speaker_labels
+                ):
+                    speaker_labels[turn.speakers[0]] = (
+                        registry.label(turn.audio) if registry else ("Unknown", None)
+                    )
+
+            for turn in turns:
+                participants = [speaker_labels.get(speaker) for speaker in turn.speakers]
+                known = [item for item in participants if item is not None]
+                if len(turn.speakers) == 1 and known:
+                    label, score = known[0]
+                elif len(turn.speakers) > 1 and len(known) == len(turn.speakers):
+                    label = " + ".join(dict.fromkeys(item[0] for item in known))
+                    score = None
+                elif len(turn.speakers) > 1:
+                    label, score = "Overlapping speakers", None
+                else:
+                    label, score = "Unknown", None
+
+                text = self._transcribe_stt(turn.audio).strip()
+                if text:
+                    turn_start = start_seconds + turn.start
+                    turn_end = min(end_seconds, start_seconds + turn.end)
+                    session.append_turn(label, text, turn_start, turn_end)
+                    score_text = f" (voice score={score:.3f})" if score is not None else ""
+                    print(f"[Meeting] {label}{score_text}: {text}", flush=True)
+            return
+
+        # When diarization is unavailable, retain the entire mixed segment and
+        # mark it with the best voice-profile/cluster match we can make.
+        text = self._transcribe_stt(audio).strip()
+        if text:
+            label, score = registry.label(audio) if registry else ("Unknown", None)
+            session.append_turn(label, text, start_seconds, end_seconds)
+            score_text = f" (voice score={score:.3f})" if score is not None else ""
+            print(f"[Meeting] {label}{score_text}: {text}", flush=True)
+
+    async def _start_meeting(self) -> None:
+        if self.meeting_session.active:
+            await self.tts.speak_async("Meeting mode is already on.")
+            return
+        self.meeting_speaker_registry = MeetingSpeakerRegistry(
+            self.meeting_voice_encoder,
+            enrolled_verifier=self.speaker_verifier,
+            similarity_threshold=self.config.meeting.speaker_similarity_threshold,
+        )
+        # Speak before capture starts so Adam's acknowledgement is not stored
+        # as a meeting participant turn.
+        await self.tts.speak_async("Meeting mode is on. Recording now.")
+        directory = self.meeting_session.start()
+        self.conversation_deadline = 0.0
+        print(f"[Meeting] Recording and transcription started: {directory}", flush=True)
+        if self.speaker_diarizer is None:
+            print("[Meeting] Speaker diarization is unavailable; turns will be labeled Unknown or by voice similarity.", flush=True)
+
+    async def _stop_meeting(self, reason: str = "voice command") -> None:
+        if not self.meeting_session.active:
+            return
+        directory = await asyncio.to_thread(self.meeting_session.stop, reason)
+        self.conversation_deadline = 0.0
+        self.meeting_speaker_registry = None
+        print(f"[Meeting] Recording stopped ({reason}). Files saved in {directory}", flush=True)
+        await self.tts.speak_async(f"Meeting mode is off. I saved the recording and transcript in {directory}.")
 
     def _contains_registered_voice(self, audio_data: np.ndarray) -> bool:
         """Check short windows so background-only utterances never reach ASR."""
@@ -324,14 +572,35 @@ class AdamDaemon:
         )
         return False
 
-    def _registered_speaker_audio(self, audio_data: np.ndarray) -> np.ndarray | None:
-        """Keep only the enrolled speaker's non-overlapping audio timeline."""
+    def _registered_speaker_audio(
+        self, audio_data: np.ndarray, context_audio: np.ndarray | None = None
+    ) -> np.ndarray | None:
+        """Diarize with recent context, then keep the enrolled voice from this utterance."""
         if self.speaker_diarizer is None or self.speaker_verifier is None:
             return None
+        utterance = np.asarray(audio_data, dtype=np.float32).reshape(-1)
+        context = (
+            np.asarray(context_audio, dtype=np.float32).reshape(-1)
+            if context_audio is not None
+            else np.zeros(0, dtype=np.float32)
+        )
+        context_samples = len(context)
         try:
-            spans = self.speaker_diarizer.diarize(audio_data)
+            diarization_audio = np.concatenate((context, utterance)) if context_samples else utterance
+            spans = self.speaker_diarizer.diarize(diarization_audio)
+            if context_samples:
+                context_seconds = context_samples / self.stream.sample_rate
+                spans = [
+                    SpeakerSpan(
+                        speaker=span.speaker,
+                        start=max(0.0, span.start - context_seconds),
+                        end=span.end - context_seconds,
+                    )
+                    for span in spans
+                    if span.end > context_seconds
+                ]
             speaker_audio = self.speaker_diarizer.exclusive_speaker_audio(
-                audio_data, spans, sample_rate=self.stream.sample_rate
+                utterance, spans, sample_rate=self.stream.sample_rate
             )
         except Exception as exc:
             print(f"[Diarization] Failed; rejecting this utterance ({exc}).", flush=True)
@@ -380,7 +649,7 @@ class AdamDaemon:
                     pass
 
             try:
-                partial_text = self.stt.transcribe(audio_chunk)
+                partial_text = self._transcribe_stt(audio_chunk)
                 if not partial_text:
                     return None
 
@@ -468,9 +737,16 @@ class AdamDaemon:
         while self.running:
             state = self.arbiter.current_state
 
+            if self.meeting_session.max_duration_reached:
+                await self._stop_meeting("four-hour limit")
+                state = self.arbiter.current_state
+
             # ---------------- STATE 1: IDLE_LISTENING ----------------
             if state == SystemState.IDLE_LISTENING:
-                is_in_followup = time.time() < self.conversation_deadline
+                is_in_followup = (
+                    not self.meeting_session.active
+                    and time.time() < self.conversation_deadline
+                )
                 if not is_in_followup and self.conversation_deadline > 0.0:
                     self.conversation_deadline = 0.0
                     print("[Follow-up] Conversation window closed. Returning to standby.", flush=True)
@@ -481,6 +757,9 @@ class AdamDaemon:
                     barge_audio = getattr(self.tts, "pending_barge_in_audio", None)
                     self.tts.pending_barge_in_text = None
                     self.tts.pending_barge_in_audio = None
+                    barge_capture_id = self._save_heard_capture(barge_audio)
+                    self._log_heard_transcript(barge_capture_id, barge_cmd, "barge-in-transcript")
+                    self._active_heard_capture_id = barge_capture_id
 
                     if barge_audio is not None and not await self._speaker_allowed(barge_audio):
                         self.stream.flush()
@@ -488,8 +767,7 @@ class AdamDaemon:
                         continue
 
                     # If user is still speaking, capture remainder of speech until natural pause
-                    trailing_audio = await asyncio.to_thread(
-                        self.stream.record_utterance,
+                    trailing_audio = await self._record_utterance(
                         silence_duration=self.config.audio.vad_silence_duration,
                         max_duration=45.0,
                         idle_threshold=self.config.audio.vad_threshold_idle,
@@ -506,7 +784,10 @@ class AdamDaemon:
                             barge_audio = np.concatenate((barge_audio, trailing_audio))
                         else:
                             barge_audio = trailing_audio
-                        trailing_text = await asyncio.to_thread(self.stt.transcribe, trailing_audio)
+                        trailing_text = await asyncio.to_thread(self._transcribe_stt, trailing_audio)
+                        self._log_heard_transcript(
+                            self._active_heard_capture_id, trailing_text, "barge-in-trailing-audio"
+                        )
                         if trailing_text and not self.tts._is_speaker_echo(trailing_text):
                             barge_cmd = merge_overlapping_transcripts(barge_cmd, trailing_text)
 
@@ -532,8 +813,7 @@ class AdamDaemon:
                             self.earcon.play("wake")
                             await self.arbiter.set_state("USER_SPEAKING")
                             print("[Mic] Listening for command...", flush=True)
-                            prompt_audio = await asyncio.to_thread(
-                                self.stream.record_utterance,
+                            prompt_audio = await self._record_utterance(
                                 silence_duration=self.config.audio.vad_silence_duration,
                                 max_duration=45.0,
                                 idle_threshold=self.config.audio.vad_threshold_idle,
@@ -545,7 +825,10 @@ class AdamDaemon:
                                 if not await self._speaker_allowed(prompt_audio):
                                     await self.arbiter.set_state("IDLE_LISTENING")
                                     continue
-                                prompt_text = await asyncio.to_thread(self.stt.transcribe, prompt_audio)
+                                prompt_text = await asyncio.to_thread(self._transcribe_stt, prompt_audio)
+                                self._log_heard_transcript(
+                                    self._active_heard_capture_id, prompt_text, "barge-in-command"
+                                )
                                 if prompt_text:
                                     barge_cmd = prompt_text
                                 else:
@@ -595,9 +878,12 @@ class AdamDaemon:
                     )
                     if is_speech:
                         print(f"\n[Mic] Speech detected (prob={prob:.2f}). Recording utterance...", flush=True)
+                        diarization_context = self.stream.get_recent_audio(
+                            duration_s=5.0,
+                            exclude_latest_samples=len(chunk),
+                        )
                         partial_cb = self._create_partial_callback(loop, wake_word="") if is_in_followup else None
-                        audio_data = await asyncio.to_thread(
-                            self.stream.record_utterance,
+                        audio_data = await self._record_utterance(
                             silence_duration=self.config.audio.vad_silence_duration,
                             max_duration=45.0,
                             idle_threshold=self.config.audio.vad_threshold_idle,
@@ -607,6 +893,7 @@ class AdamDaemon:
                         )
                         if len(audio_data) > 0:
                             full_utterance_audio = audio_data
+                            already_isolated = False
                             # First use ASR to look for the wake phrase in the mixed
                             # microphone signal. Nemotron is more expensive and should
                             # only run after there is a wake-word candidate.
@@ -617,17 +904,81 @@ class AdamDaemon:
                                     self._contains_registered_voice, audio_data
                                 )
                                 if not has_registered_voice:
-                                    self.speculative_router.cancel_active()
-                                    continue
+                                    transcript = await asyncio.to_thread(
+                                        self._transcribe_wake_candidate, audio_data
+                                    )
+                                    self._log_heard_transcript(
+                                        self._active_heard_capture_id, transcript, "speaker-prefilter-mixed-wake-check"
+                                    )
+                                    mixed_match, _ = self.wake.match_custom_wake_word(transcript or "")
+                                    if mixed_match:
+                                        isolated = await asyncio.to_thread(
+                                            self._separate_enrolled_speaker, audio_data
+                                        )
+                                        if isolated is not None:
+                                            audio_data = full_utterance_audio = isolated
+                                            already_isolated = True
+                                        else:
+                                            self.speculative_router.cancel_active()
+                                            continue
+                                    else:
+                                        isolated = None
+                                        if self.stream.ref_monitor and self.stream.ref_monitor.is_active:
+                                            isolated = await asyncio.to_thread(
+                                                self._separate_enrolled_speaker, audio_data
+                                            )
+                                        isolated_text = (
+                                            await asyncio.to_thread(self._transcribe_wake_candidate, isolated)
+                                            if isolated is not None else ""
+                                        )
+                                        isolated_match, _ = self.wake.match_custom_wake_word(isolated_text or "")
+                                        if isolated_match:
+                                            audio_data = full_utterance_audio = isolated
+                                            already_isolated = True
+                                        else:
+                                            self.speculative_router.cancel_active()
+                                            continue
                             else:
                                 if not await self._speaker_allowed(audio_data):
-                                    self.speculative_router.cancel_active()
-                                    continue
+                                    transcript = await asyncio.to_thread(
+                                        self._transcribe_wake_candidate, audio_data
+                                    )
+                                    mixed_match, _ = self.wake.match_custom_wake_word(transcript or "")
+                                    if mixed_match:
+                                        isolated = await asyncio.to_thread(
+                                            self._separate_enrolled_speaker, audio_data
+                                        )
+                                        if isolated is not None:
+                                            audio_data = full_utterance_audio = isolated
+                                            already_isolated = True
+                                        else:
+                                            self.speculative_router.cancel_active()
+                                            continue
+                                    else:
+                                        isolated = None
+                                        if self.stream.ref_monitor and self.stream.ref_monitor.is_active:
+                                            isolated = await asyncio.to_thread(
+                                                self._separate_enrolled_speaker, audio_data
+                                            )
+                                        isolated_text = (
+                                            await asyncio.to_thread(self._transcribe_wake_candidate, isolated)
+                                            if isolated is not None else ""
+                                        )
+                                        isolated_match, _ = self.wake.match_custom_wake_word(isolated_text or "")
+                                        if isolated_match:
+                                            audio_data = full_utterance_audio = isolated
+                                            already_isolated = True
+                                        else:
+                                            self.speculative_router.cancel_active()
+                                            continue
 
                             if self.wake.is_custom_mode and not is_in_followup:
                                 text = await asyncio.to_thread(self._transcribe_wake_candidate, audio_data)
                             else:
-                                text = await asyncio.to_thread(self.stt.transcribe, audio_data)
+                                text = await asyncio.to_thread(self._transcribe_stt, audio_data)
+                            self._log_heard_transcript(
+                                self._active_heard_capture_id, text, "mixed-audio"
+                            )
                             matched, remaining_cmd = self.wake.match_custom_wake_word(text or "")
                             mixed_wake_command = remaining_cmd if matched else ""
 
@@ -644,11 +995,42 @@ class AdamDaemon:
                                 tail_text = await asyncio.to_thread(
                                     self._transcribe_wake_candidate, wake_candidate_audio
                                 )
+                                self._log_heard_transcript(
+                                    self._active_heard_capture_id, tail_text, "wake-candidate-tail"
+                                )
                                 tail_matched, tail_remaining = self.wake.match_custom_wake_word(tail_text or "")
                                 if tail_matched:
                                     text = tail_text
                                     matched, remaining_cmd = tail_matched, tail_remaining
                                     mixed_wake_command = tail_remaining
+
+                            # When desktop audio is active, try the target-source
+                            # fallback if the mixed transcript missed the wake.
+                            # This is the same CPU SepFormer/profile path exercised
+                            # in the standalone voice-isolation experiment.
+                            if (
+                                not matched
+                                and not already_isolated
+                                and not is_in_followup
+                                and self.stream.ref_monitor
+                                and self.stream.ref_monitor.is_active
+                            ):
+                                isolated = await asyncio.to_thread(
+                                    self._separate_enrolled_speaker, full_utterance_audio
+                                )
+                                if isolated is not None:
+                                    isolated_text = await asyncio.to_thread(
+                                        self._transcribe_wake_candidate, isolated
+                                    )
+                                    isolated_match, isolated_command = self.wake.match_custom_wake_word(
+                                        isolated_text or ""
+                                    )
+                                    if isolated_match:
+                                        audio_data = isolated
+                                        text = isolated_text
+                                        matched, remaining_cmd = isolated_match, isolated_command
+                                        mixed_wake_command = ""
+                                        already_isolated = True
 
                             # In standby, a local miss ends the attempt. Do not send
                             # ordinary enrolled-speaker chatter to the configured ASR.
@@ -656,28 +1038,70 @@ class AdamDaemon:
                                 self.speculative_router.cancel_active()
                                 continue
 
-                            if self.speaker_diarizer is not None and matched:
+                            if self.speaker_diarizer is not None and matched and not already_isolated:
                                 registered_audio = await asyncio.to_thread(
-                                    self._registered_speaker_audio, full_utterance_audio
+                                    self._registered_speaker_audio,
+                                    full_utterance_audio,
+                                    diarization_context,
                                 )
                                 if registered_audio is None:
-                                    self.speculative_router.cancel_active()
-                                    continue
-                                audio_data = registered_audio
-                                duration_s = len(audio_data) / self.stream.sample_rate
-                                # Require the enrolled speaker's isolated audio to
-                                # contain the wake phrase too; the mixed transcript
-                                # alone cannot establish who said it.
-                                text = await asyncio.to_thread(self.stt.transcribe, audio_data)
-                                matched, remaining_cmd = self.wake.match_custom_wake_word(text or "")
-                                if not matched:
-                                    local_text = await asyncio.to_thread(
-                                        self._transcribe_wake_candidate, audio_data
+                                    isolated = await asyncio.to_thread(
+                                        self._separate_enrolled_speaker, full_utterance_audio
                                     )
-                                    local_matched, local_remaining = self.wake.match_custom_wake_word(local_text or "")
-                                    if local_matched:
-                                        text = local_text
-                                        matched, remaining_cmd = local_matched, local_remaining
+                                    isolated_text = (
+                                        await asyncio.to_thread(self._transcribe_wake_candidate, isolated)
+                                        if isolated is not None else ""
+                                    )
+                                    isolated_match, isolated_command = self.wake.match_custom_wake_word(
+                                        isolated_text or ""
+                                    )
+                                    if not isolated_match:
+                                        self.speculative_router.cancel_active()
+                                        continue
+                                    audio_data = isolated
+                                    text = isolated_text
+                                    matched, remaining_cmd = isolated_match, isolated_command
+                                    already_isolated = True
+                                else:
+                                    audio_data = registered_audio
+                                    duration_s = len(audio_data) / self.stream.sample_rate
+                                    # Require the enrolled speaker's isolated audio to
+                                    # contain the wake phrase too; the mixed transcript
+                                    # alone cannot establish who said it.
+                                    text = await asyncio.to_thread(self._transcribe_stt, audio_data)
+                                    self._log_heard_transcript(
+                                        self._active_heard_capture_id, text, "enrolled-speaker-audio"
+                                    )
+                                    matched, remaining_cmd = self.wake.match_custom_wake_word(text or "")
+                                    if not matched:
+                                        local_text = await asyncio.to_thread(
+                                            self._transcribe_wake_candidate, audio_data
+                                        )
+                                        self._log_heard_transcript(
+                                            self._active_heard_capture_id,
+                                            local_text,
+                                            "enrolled-speaker-wake-check",
+                                        )
+                                        local_matched, local_remaining = self.wake.match_custom_wake_word(local_text or "")
+                                        if local_matched:
+                                            text = local_text
+                                            matched, remaining_cmd = local_matched, local_remaining
+                                    if not matched:
+                                        isolated = await asyncio.to_thread(
+                                            self._separate_enrolled_speaker, full_utterance_audio
+                                        )
+                                        isolated_text = (
+                                            await asyncio.to_thread(self._transcribe_wake_candidate, isolated)
+                                            if isolated is not None else ""
+                                        )
+                                        isolated_match, isolated_command = self.wake.match_custom_wake_word(
+                                            isolated_text or ""
+                                        )
+                                        if isolated_match:
+                                            audio_data = isolated
+                                            text = isolated_text
+                                            matched, remaining_cmd = isolated_match, isolated_command
+                                            already_isolated = True
                                 if not matched:
                                     print("[Diarization] Enrolled voice matched, but its isolated audio did not contain the wake phrase.", flush=True)
                                     self.speculative_router.cancel_active()
@@ -706,12 +1130,18 @@ class AdamDaemon:
                                 # Only send audio to cloud ASR after local wake spotting.
                                 # Preserve the local result if cloud transcription misses.
                                 local_text = text
-                                text = await asyncio.to_thread(self.stt.transcribe, audio_data)
+                                text = await asyncio.to_thread(self._transcribe_stt, audio_data)
+                                self._log_heard_transcript(
+                                    self._active_heard_capture_id, text, "cloud-command-transcript"
+                                )
                                 cloud_matched, cloud_remaining = self.wake.match_custom_wake_word(text or "")
                                 if cloud_matched:
                                     matched, remaining_cmd = cloud_matched, cloud_remaining
                                 else:
                                     text = local_text
+                            self._log_heard_transcript(
+                                self._active_heard_capture_id, text, "final-transcript"
+                            )
                             if text:
                                 print(f"[Speech] >>> Heard ({duration_s:.1f}s): \"{text}\" <<<", flush=True)
                             else:
@@ -745,8 +1175,7 @@ class AdamDaemon:
                                     await self.arbiter.set_state("USER_SPEAKING")
                                     print("[Mic] Listening for command...", flush=True)
                                     prompt_cb = self._create_partial_callback(loop, wake_word="")
-                                    prompt_audio = await asyncio.to_thread(
-                                        self.stream.record_utterance,
+                                    prompt_audio = await self._record_utterance(
                                         silence_duration=self.config.audio.vad_silence_duration,
                                         max_duration=45.0,
                                         idle_threshold=self.config.audio.vad_threshold_idle,
@@ -759,7 +1188,10 @@ class AdamDaemon:
                                             self.speculative_router.cancel_active()
                                             await self.arbiter.set_state("IDLE_LISTENING")
                                             continue
-                                        prompt_text = await asyncio.to_thread(self.stt.transcribe, prompt_audio)
+                                        prompt_text = await asyncio.to_thread(self._transcribe_stt, prompt_audio)
+                                        self._log_heard_transcript(
+                                            self._active_heard_capture_id, prompt_text, "wake-prompt"
+                                        )
                                         if prompt_text:
                                             print(f"[Speech] >>> Prompt: \"{prompt_text}\" <<<", flush=True)
                                             target_cmd = prompt_text
@@ -780,6 +1212,13 @@ class AdamDaemon:
                                 target_cmd = text
 
                             if target_cmd:
+                                meeting_action = meeting_command_kind(target_cmd)
+                                if meeting_action == "start":
+                                    await self._start_meeting()
+                                    continue
+                                if meeting_action == "stop" and self.meeting_session.active:
+                                    await self._stop_meeting("voice command")
+                                    continue
                                 ensure_gui_environment()
                                 self.earcon.play("captured")
                                 await self.arbiter.set_state("PROCESSING_REACT")
@@ -791,8 +1230,12 @@ class AdamDaemon:
                                         await self.arbiter.set_state("IDLE_LISTENING")
                                         self.stream.flush()
                                         self.stream.quench(duration=0.4)
-                                        self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
-                                        print(f"[Follow-up] Window open for {self.config.wake.followup_window_seconds:.1f}s (no wake word needed)...", flush=True)
+                                        if self.meeting_session.active:
+                                            self.conversation_deadline = 0.0
+                                            print("[Meeting] Returning to continuous meeting capture.", flush=True)
+                                        else:
+                                            self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
+                                            print(f"[Follow-up] Window open for {self.config.wake.followup_window_seconds:.1f}s (no wake word needed)...", flush=True)
                             else:
                                 self.speculative_router.cancel_active()
                                 if text and not is_in_followup:
@@ -811,8 +1254,7 @@ class AdamDaemon:
                         # Record utterance following wake word
                         print("[Mic] Listening for prompt...")
                         prompt_cb = self._create_partial_callback(loop, wake_word="")
-                        audio_data = await asyncio.to_thread(
-                            self.stream.record_utterance,
+                        audio_data = await self._record_utterance(
                             silence_duration=self.config.audio.vad_silence_duration,
                             max_duration=45.0,
                             idle_threshold=self.config.audio.vad_threshold_idle,
@@ -831,7 +1273,10 @@ class AdamDaemon:
                             # the saved sample includes the wake phrase itself.
                             capture_audio = np.concatenate((chunk, audio_data))
                             self._save_wake_capture(capture_audio)
-                            text = await asyncio.to_thread(self.stt.transcribe, audio_data)
+                            text = await asyncio.to_thread(self._transcribe_stt, audio_data)
+                            self._log_heard_transcript(
+                                self._active_heard_capture_id, text, "pretrained-wake-command"
+                            )
                             if text:
                                 await self.arbiter.set_state("PROCESSING_REACT")
                                 try:
@@ -860,8 +1305,7 @@ class AdamDaemon:
                     print(f"[Confirmation] Consuming barge-in answer: '{text}'", flush=True)
                 else:
                     # 2. Otherwise record verbal response from user
-                    audio_data = await asyncio.to_thread(
-                        self.stream.record_utterance,
+                    audio_data = await self._record_utterance(
                         silence_duration=self.config.audio.vad_silence_duration,
                         max_duration=30.0,
                         idle_threshold=self.config.audio.vad_threshold_idle,
@@ -871,7 +1315,10 @@ class AdamDaemon:
                     if len(audio_data) > 0:
                         # Voice filter disabled for confirmations: short answers like "yes" or "no"
                         # follow an already-verified wake-word turn and produce unreliable scores on short audio.
-                        text = await asyncio.to_thread(self.stt.transcribe, audio_data)
+                        text = await asyncio.to_thread(self._transcribe_stt, audio_data)
+                        self._log_heard_transcript(
+                            self._active_heard_capture_id, text, "confirmation-response"
+                        )
                         print(f"[Confirmation] User said: '{text}'", flush=True)
 
                 if text:

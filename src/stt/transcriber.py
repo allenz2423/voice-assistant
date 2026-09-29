@@ -81,7 +81,7 @@ class WhisperTranscriber:
 
 class Qwen3Transcriber:
     """Hardware-accelerated Speech-to-Text engine using Qwen3-ASR-1.7B via transcribe-cpp."""
-    def __init__(self, model_size="qwen3-asr-1.7b", device="Vulkan0"):
+    def __init__(self, model_size="qwen3-asr-1.7b", device="Vulkan0", language="English"):
         import transcribe_cpp
         from huggingface_hub import hf_hub_download
 
@@ -91,6 +91,7 @@ class Qwen3Transcriber:
 
         print(f"[STT] Loading Qwen3-ASR ({filename}) from HuggingFace...")
         self.model_path = hf_hub_download(repo_id=repo_id, filename=filename)
+        self.language = str(language or "").strip()
 
         backends = transcribe_cpp.backends()
         selected_dev = next((d for d in backends if d.name.lower() == str(device).lower()), None)
@@ -113,7 +114,7 @@ class Qwen3Transcriber:
             return ""
         try:
             with self.model.session() as session:
-                res = session.run(audio_data)
+                res = session.run(audio_data, language=self.language or None)
                 return res.text.strip()
         except Exception as e:
             print(f"[STT] Qwen3-ASR transcription error: {e}")
@@ -222,7 +223,11 @@ def create_transcriber(config, shared_api_key=""):
     model_name = getattr(config, "model_size", "distil-large-v3").lower()
     if "qwen" in model_name:
         device = getattr(config, "device", "Vulkan0")
-        return Qwen3Transcriber(model_size=model_name, device=device)
+        return Qwen3Transcriber(
+            model_size=model_name,
+            device=device,
+            language=getattr(config, "language", "English"),
+        )
     else:
         return WhisperTranscriber(
             model_size=config.model_size,
