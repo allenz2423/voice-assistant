@@ -151,7 +151,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="disable_silent_mode",
-        description="Restores Adam's configured text-to-speech mode after silent mode. Call only when the user explicitly asks to disable or leave silent mode, and only when the configured TTS default is not silent.",
+        description="Restores the configured silent_restore_engine after silent mode. Call only when the user explicitly asks to disable or leave silent mode.",
         parameters={"type": "object", "properties": {}}
     ),
     CanonicalTool(

@@ -37,8 +37,16 @@ class SpeakerVerificationConfig(BaseModel):
     profile_path: str = ""
     threshold: float = 0.25
 
+class SpeakerDiarizationConfig(BaseModel):
+    enabled: bool = False
+    executable: str = "nemo-speech"
+    model: str = "nvidia/Nemotron-3-Diarization"
+    device: str = "vulkan:0"
+    timeout_seconds: float = 45.0
+
 class TTSConfig(BaseModel):
     engine: str = "kokoro" # "kokoro" | "openai" | "cosyvoice" | "silent"
+    silent_restore_engine: str = "kokoro"
     model_path: str = "assets/voices/kokoro/kokoro-v1.0.onnx"
     voices_path: str = "assets/voices/kokoro/voices-v1.0.bin"
     voice: str = "af_nicole"
@@ -138,6 +146,7 @@ class AppConfig(BaseModel):
     wake: WakeConfig = Field(default_factory=WakeConfig)
     stt: STTConfig = Field(default_factory=STTConfig)
     speaker_verification: SpeakerVerificationConfig = Field(default_factory=SpeakerVerificationConfig)
+    speaker_diarization: SpeakerDiarizationConfig = Field(default_factory=SpeakerDiarizationConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)

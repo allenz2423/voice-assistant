@@ -3,8 +3,12 @@ os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 import sys
 import time
 import re
+import difflib
 import signal
 import asyncio
+import wave
+from datetime import datetime
+import numpy as np
 from pathlib import Path
 
 from src.config import load_config
@@ -14,6 +18,7 @@ from src.tts.streaming import StreamingVoiceSynthesizer
 from src.wake.engine import WakeWordDetector
 from src.stt.transcriber import WhisperTranscriber, create_transcriber
 from src.stt.speaker import SpeakerVerifier
+from src.stt.diarizer import NemotronDiarizer
 from src.arbiter.arbiter import PriorityAudioArbiter, SystemState
 from src.arbiter.confirmation import TriStateConfirmationManager
 from src.execution.probe import HardwareEncoderProbe
@@ -124,6 +129,7 @@ class AdamDaemon:
         stt_label = self.config.stt.cloud_model if self.config.stt.provider == "openai" else self.config.stt.model_size
         print(f"[Init] Initializing Speech-to-Text engine ({self.config.stt.provider}: {stt_label})...")
         self.stt = create_transcriber(self.config.stt, shared_api_key=self.config.llm.api_key)
+        self.wake_spotter = None
 
         speaker_cfg = self.config.speaker_verification
         profile_path = speaker_cfg.profile_path or None
@@ -141,12 +147,48 @@ class AdamDaemon:
         else:
             print("[Speaker] Speaker verification disabled in config.")
 
+        self.speaker_diarizer = None
+        diarization_cfg = self.config.speaker_diarization
+        if diarization_cfg.enabled:
+            if self.speaker_verifier is None:
+                print("[Diarization] Configured, but inactive until a speaker profile is enrolled.")
+            else:
+                candidate_diarizer = NemotronDiarizer(
+                    executable=diarization_cfg.executable,
+                    model=diarization_cfg.model,
+                    device=diarization_cfg.device,
+                    timeout=diarization_cfg.timeout_seconds,
+                )
+                if not candidate_diarizer.available:
+                    print(f"[Diarization] {diarization_cfg.executable} not found; using the existing whole-utterance speaker check.")
+                elif not candidate_diarizer.supports_model():
+                    print(
+                        f"[Diarization] Installed nemo-speech does not include {diarization_cfg.model}; "
+                        "install a build whose model index includes Nemotron-3-Diarization."
+                    )
+                else:
+                    self.speaker_diarizer = candidate_diarizer
+                    print(f"[Diarization] Nemotron enabled via {diarization_cfg.executable} ({diarization_cfg.device}).")
+
         print("[Init] Initializing openWakeWord Detector...")
         self.wake = WakeWordDetector(
             wake_word=self.config.wake.wake_word,
             threshold=self.config.wake.threshold,
             aliases=getattr(self.config.wake, "aliases", [])
         )
+        stt_provider = str(getattr(self.config.stt, "provider", "local")).lower()
+        if self.wake.is_custom_mode and stt_provider in ("openai", "openrouter", "custom"):
+            wake_cfg = self.config.stt
+            print(
+                f"[Wake] Preloading local '{wake_cfg.fallback_model}' model for wake spotting.",
+                flush=True,
+            )
+            self.wake_spotter = WhisperTranscriber(
+                model_size=wake_cfg.fallback_model,
+                device=wake_cfg.fallback_device,
+                device_index=wake_cfg.device_index,
+                compute_type=wake_cfg.fallback_compute_type,
+            )
 
         print("[Init] Initializing AudioStreamManager...")
         self.stream = AudioStreamManager(
@@ -202,6 +244,119 @@ class AdamDaemon:
         else:
             print(f"[Speaker] Enrolled voice matched (score={score:.3f}).", flush=True)
         return matched
+
+    def _save_wake_capture(self, audio_data: np.ndarray) -> None:
+        """Save a confirmed wake utterance as private, mono 16-bit PCM WAV."""
+        if audio_data is None or len(audio_data) == 0:
+            return
+        try:
+            state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+            output_dir = state_home / "adam" / "wake-captures"
+            output_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            os.chmod(output_dir, 0o700)
+            timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S-%f")
+            output_path = output_dir / f"wake-{timestamp}.wav"
+            pcm = (np.clip(np.asarray(audio_data, dtype=np.float32).reshape(-1), -1.0, 1.0) * 32767).astype(np.int16)
+            with wave.open(str(output_path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(self.stream.sample_rate)
+                wav_file.writeframes(pcm.tobytes())
+            os.chmod(output_path, 0o600)
+            print(f"[WakeCapture] Saved confirmed wake audio: {output_path}", flush=True)
+        except Exception as exc:
+            print(f"[WakeCapture] Could not save wake audio ({exc}).", flush=True)
+
+    def _transcribe_wake_candidate(self, audio_data: np.ndarray) -> str:
+        """Use local ASR for custom wake spotting; reserve cloud ASR for wake candidates."""
+        provider = str(getattr(self.config.stt, "provider", "local")).lower()
+        if provider not in ("openai", "openrouter", "custom"):
+            return self.stt.transcribe(audio_data)
+
+        if self.wake_spotter is None:
+            cfg = self.config.stt
+            print(
+                f"[Wake] Loading local '{cfg.fallback_model}' model for private wake spotting.",
+                flush=True,
+            )
+            self.wake_spotter = WhisperTranscriber(
+                model_size=cfg.fallback_model,
+                device=cfg.fallback_device,
+                device_index=cfg.device_index,
+                compute_type=cfg.fallback_compute_type,
+            )
+        return self.wake_spotter.transcribe(audio_data)
+
+    def _contains_registered_voice(self, audio_data: np.ndarray) -> bool:
+        """Check short windows so background-only utterances never reach ASR."""
+        if self.speaker_verifier is None:
+            return True
+        audio = np.asarray(audio_data, dtype=np.float32).reshape(-1)
+        sample_rate = self.stream.sample_rate
+        window_size = min(len(audio), int(1.2 * sample_rate))
+        if window_size < int(0.5 * sample_rate):
+            return False
+
+        step = int(0.6 * sample_rate)
+        last_start = len(audio) - window_size
+        starts = list(range(0, last_start + 1, step))
+        if not starts or starts[-1] != last_start:
+            starts.append(last_start)
+
+        best_score = float("-inf")
+        for start in starts:
+            try:
+                matched, score = self.speaker_verifier.verify(audio[start:start + window_size])
+            except Exception:
+                continue
+            best_score = max(best_score, score)
+            if matched:
+                print(
+                    f"[Speaker] Registered voice found in a short window "
+                    f"(score={score:.3f}); allowing wake-word ASR.",
+                    flush=True,
+                )
+                return True
+
+        print(
+            f"[Speaker] No registered voice found (best score={best_score:.3f}); skipping ASR.",
+            flush=True,
+        )
+        return False
+
+    def _registered_speaker_audio(self, audio_data: np.ndarray) -> np.ndarray | None:
+        """Keep only the enrolled speaker's non-overlapping audio timeline."""
+        if self.speaker_diarizer is None or self.speaker_verifier is None:
+            return None
+        try:
+            spans = self.speaker_diarizer.diarize(audio_data)
+            speaker_audio = self.speaker_diarizer.exclusive_speaker_audio(
+                audio_data, spans, sample_rate=self.stream.sample_rate
+            )
+        except Exception as exc:
+            print(f"[Diarization] Failed; rejecting this utterance ({exc}).", flush=True)
+            return None
+
+        best_audio = None
+        best_score = float("-inf")
+        best_speaker = None
+        for speaker, isolated_timeline in speaker_audio.items():
+            try:
+                matched, score = self.speaker_verifier.verify(isolated_timeline)
+            except Exception:
+                continue
+            if not matched or score <= best_score:
+                continue
+            best_audio, best_score, best_speaker = isolated_timeline, score, speaker
+        if best_audio is not None:
+            print(
+                f"[Diarization] Best enrolled-speaker match is {best_speaker} "
+                f"(voice score={best_score:.3f}).",
+                flush=True,
+            )
+            return best_audio
+        print("[Diarization] No non-overlapping segment matched the enrolled voice.", flush=True)
+        return None
 
     def _create_partial_callback(self, loop: asyncio.AbstractEventLoop, wake_word: str = ""):
         """Returns a non-blocking callback invoked on streaming partial audio chunks.
@@ -317,6 +472,7 @@ class AdamDaemon:
                     # Strip wake word if user included it
                     matched, rem = self.wake.match_custom_wake_word(barge_cmd)
                     if matched:
+                        self._save_wake_capture(barge_audio)
                         if rem:
                             barge_cmd = rem
                         else:
@@ -398,11 +554,112 @@ class AdamDaemon:
                             on_partial_audio=partial_cb
                         )
                         if len(audio_data) > 0:
-                            if not await self._speaker_allowed(audio_data):
+                            full_utterance_audio = audio_data
+                            # First use ASR to look for the wake phrase in the mixed
+                            # microphone signal. Nemotron is more expensive and should
+                            # only run after there is a wake-word candidate.
+                            wake_candidate_audio = audio_data
+                            duration_s = len(audio_data) / self.stream.sample_rate
+                            if self.speaker_diarizer is not None:
+                                has_registered_voice = await asyncio.to_thread(
+                                    self._contains_registered_voice, audio_data
+                                )
+                                if not has_registered_voice:
+                                    self.speculative_router.cancel_active()
+                                    continue
+                            else:
+                                if not await self._speaker_allowed(audio_data):
+                                    self.speculative_router.cancel_active()
+                                    continue
+
+                            if self.wake.is_custom_mode and not is_in_followup:
+                                text = await asyncio.to_thread(self._transcribe_wake_candidate, audio_data)
+                            else:
+                                text = await asyncio.to_thread(self.stt.transcribe, audio_data)
+                            matched, remaining_cmd = self.wake.match_custom_wake_word(text or "")
+                            mixed_wake_command = remaining_cmd if matched else ""
+
+                            # If the full utterance was not recognized as a wake, retry
+                            # the most recent five seconds. This catches a wake phrase
+                            # obscured by speech earlier in a long utterance.
+                            if (
+                                not matched
+                                and not is_in_followup
+                                and self.speaker_diarizer is not None
+                                and duration_s > 5.0
+                            ):
+                                wake_candidate_audio = audio_data[-int(5.0 * self.stream.sample_rate):]
+                                tail_text = await asyncio.to_thread(
+                                    self._transcribe_wake_candidate, wake_candidate_audio
+                                )
+                                tail_matched, tail_remaining = self.wake.match_custom_wake_word(tail_text or "")
+                                if tail_matched:
+                                    text = tail_text
+                                    matched, remaining_cmd = tail_matched, tail_remaining
+                                    mixed_wake_command = tail_remaining
+
+                            # In standby, a local miss ends the attempt. Do not send
+                            # ordinary enrolled-speaker chatter to the configured ASR.
+                            if self.wake.is_custom_mode and not is_in_followup and not matched:
                                 self.speculative_router.cancel_active()
                                 continue
-                            duration_s = len(audio_data) / self.stream.sample_rate
-                            text = await asyncio.to_thread(self.stt.transcribe, audio_data)
+
+                            if self.speaker_diarizer is not None and matched:
+                                registered_audio = await asyncio.to_thread(
+                                    self._registered_speaker_audio, full_utterance_audio
+                                )
+                                if registered_audio is None:
+                                    self.speculative_router.cancel_active()
+                                    continue
+                                audio_data = registered_audio
+                                duration_s = len(audio_data) / self.stream.sample_rate
+                                # Require the enrolled speaker's isolated audio to
+                                # contain the wake phrase too; the mixed transcript
+                                # alone cannot establish who said it.
+                                text = await asyncio.to_thread(self.stt.transcribe, audio_data)
+                                matched, remaining_cmd = self.wake.match_custom_wake_word(text or "")
+                                if not matched:
+                                    local_text = await asyncio.to_thread(
+                                        self._transcribe_wake_candidate, audio_data
+                                    )
+                                    local_matched, local_remaining = self.wake.match_custom_wake_word(local_text or "")
+                                    if local_matched:
+                                        text = local_text
+                                        matched, remaining_cmd = local_matched, local_remaining
+                                if not matched:
+                                    print("[Diarization] Enrolled voice matched, but its isolated audio did not contain the wake phrase.", flush=True)
+                                    self.speculative_router.cancel_active()
+                                    continue
+                                if mixed_wake_command and remaining_cmd:
+                                    mixed_words = re.findall(r"[a-z0-9]+", mixed_wake_command.lower())
+                                    isolated_words = re.findall(r"[a-z0-9]+", remaining_cmd.lower())
+                                    agreement = difflib.SequenceMatcher(
+                                        None, mixed_words, isolated_words, autojunk=False
+                                    ).ratio()
+                                    if agreement < 0.65:
+                                        print(
+                                            f"[Diarization] Mixed and enrolled-speaker commands disagree "
+                                            f"(agreement={agreement:.2f}); rejecting ambiguous command.",
+                                            flush=True,
+                                        )
+                                        self.speculative_router.cancel_active()
+                                        continue
+                            elif (
+                                self.speaker_diarizer is None
+                                and matched
+                                and self.wake.is_custom_mode
+                                and not is_in_followup
+                                and str(self.config.stt.provider).lower() in ("openai", "openrouter", "custom")
+                            ):
+                                # Only send audio to cloud ASR after local wake spotting.
+                                # Preserve the local result if cloud transcription misses.
+                                local_text = text
+                                text = await asyncio.to_thread(self.stt.transcribe, audio_data)
+                                cloud_matched, cloud_remaining = self.wake.match_custom_wake_word(text or "")
+                                if cloud_matched:
+                                    matched, remaining_cmd = cloud_matched, cloud_remaining
+                                else:
+                                    text = local_text
                             if text:
                                 print(f"[Speech] >>> Heard ({duration_s:.1f}s): \"{text}\" <<<", flush=True)
                             else:
@@ -423,6 +680,10 @@ class AdamDaemon:
                             target_cmd = None
 
                             if matched:
+                                # At this point the wake was confirmed, and when
+                                # diarization is active audio_data is the isolated
+                                # enrolled-speaker track for the full utterance.
+                                self._save_wake_capture(audio_data)
                                 print(f"[Wake] >>> MATCHED WAKE WORD '{self.wake.raw_wake_word}'! Command: \"{remaining_cmd}\" <<<", flush=True)
                                 if remaining_cmd:
                                     target_cmd = remaining_cmd
@@ -514,6 +775,10 @@ class AdamDaemon:
                                 self.speculative_router.cancel_active()
                                 self.wake.reset()
                                 continue
+                            # The detector fires on the live chunk; prepend it so
+                            # the saved sample includes the wake phrase itself.
+                            capture_audio = np.concatenate((chunk, audio_data))
+                            self._save_wake_capture(capture_audio)
                             text = await asyncio.to_thread(self.stt.transcribe, audio_data)
                             if text:
                                 await self.arbiter.set_state("PROCESSING_REACT")
