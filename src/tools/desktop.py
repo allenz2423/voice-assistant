@@ -258,6 +258,14 @@ def _scan_desktop_entries() -> dict[str, dict]:
 APPLICATION_ALIASES: dict[str, list[str]] = {}
 WINDOW_ALIASES: dict[str, list[str]] = {}
 DESKTOP_MACROS: dict[str, Any] = {}
+UNIVERSAL_SYSTEM_MACROS: dict[str, str] = {
+    "lock": "loginctl lock-session",
+    "suspend": "systemctl suspend",
+    "reboot": "systemctl reboot",
+    "restart": "systemctl reboot",
+    "poweroff": "systemctl poweroff",
+    "shutdown": "systemctl poweroff",
+}
 DEFAULT_BROWSER: str = "microsoft-edge-stable"
 _DISABLED_CAPABILITIES: set[str] = set()
 _DISABLED_TOOLS: set[str] = set()
@@ -610,7 +618,7 @@ class BaseDesktopBackend:
         raise RuntimeError(f"Screenshot capture is not supported on {self.name}.")
 
     def get_default_macros(self) -> dict[str, str]:
-        return {"lock": "loginctl lock-session"}
+        return dict(UNIVERSAL_SYSTEM_MACROS)
 
 
 class HyprlandBackend(BaseDesktopBackend):
@@ -2262,7 +2270,7 @@ def execute_desktop_macro(macro_name: str) -> str:
 
     backend = get_active_backend()
     default_macros = backend.get_default_macros()
-    all_macros = {**default_macros, **DESKTOP_MACROS}
+    all_macros = {**UNIVERSAL_SYSTEM_MACROS, **default_macros, **DESKTOP_MACROS}
 
     if name not in all_macros:
         avail = ", ".join(sorted(all_macros.keys()))
@@ -2285,7 +2293,7 @@ def execute_desktop_macro(macro_name: str) -> str:
 
     for cmd in commands:
         try:
-            if isinstance(backend, HyprlandBackend) and name in default_macros and name != "lock":
+            if isinstance(backend, HyprlandBackend) and name in default_macros and name not in {"lock", "suspend", "reboot", "restart", "poweroff", "shutdown"}:
                 lua_macros = {
                     "toggle_floating": "hl.dsp.window.float()",
                     "fullscreen": 'hl.dsp.window.fullscreen({ mode = "maximized" })',
@@ -2313,7 +2321,7 @@ def list_desktop_macros() -> dict[str, str]:
     backend = get_active_backend()
     default_macros = backend.get_default_macros()
     result = {}
-    for k, v in {**default_macros, **DESKTOP_MACROS}.items():
+    for k, v in {**UNIVERSAL_SYSTEM_MACROS, **default_macros, **DESKTOP_MACROS}.items():
         if isinstance(v, str):
             result[k] = v
         elif isinstance(v, dict):

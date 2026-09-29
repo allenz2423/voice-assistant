@@ -164,6 +164,63 @@ async def test_show_desktop_notification_tool():
     assert isinstance(res, str)
 
 
+def test_universal_desktop_macros_and_power_controls():
+    from src.tools.desktop import list_desktop_macros, UNIVERSAL_SYSTEM_MACROS
+    macros = list_desktop_macros()
+    assert "reboot" in macros
+    assert "restart" in macros
+    assert "poweroff" in macros
+    assert "shutdown" in macros
+    assert "suspend" in macros
+    assert "lock" in macros
+    assert "systemctl reboot" in macros["reboot"]
+    assert "systemctl poweroff" in macros["poweroff"]
+
+
+def test_ask_user_confirmation_tool_schema():
+    from src.llm.tools import ADAM_TOOLS
+    tool = next(t for t in ADAM_TOOLS if t.name == "ask_user_confirmation")
+    assert "command" in tool.parameters["required"]
+    assert "question" in tool.parameters["required"]
+    assert "summary" in tool.parameters["required"]
+
+
+@pytest.mark.asyncio
+async def test_execute_confirmed_command_power_and_tools():
+    from src.main import AdamDaemon
+    tts = MockTTS()
+    arbiter = PriorityAudioArbiter(tts, None)
+
+    assistant = object.__new__(AdamDaemon)
+    assistant.tts = tts
+    assistant.arbiter = arbiter
+
+    executed_tools = []
+    class FakeBrain:
+        def get_tools(self):
+            from src.llm.tools import ADAM_TOOLS
+            return ADAM_TOOLS
+        async def _execute_tool(self, name, args):
+            executed_tools.append((name, args))
+            return "ok"
+
+    assistant.brain = FakeBrain()
+
+    # 1. Normalization of sudo reboot -> systemctl reboot and pre-speech
+    await assistant._execute_confirmed_command("sudo reboot", "Restart computer")
+    assert len(tts.spoken) == 1
+    assert "Restart computer now." in tts.spoken[0]
+    assert executed_tools[0] == ("run_bash_command", {"command": "systemctl reboot"})
+
+    # 2. Tool invocation execution
+    executed_tools.clear()
+    tts.spoken.clear()
+    await assistant._execute_confirmed_command('kill_process target="Alacritty" force=true', "Kill terminal")
+    assert executed_tools[0] == ("kill_process", {"target": "Alacritty", "force": True})
+    assert len(tts.spoken) == 1
+    assert "Kill terminal completed." in tts.spoken[0]
+
+
 
 # ==============================================================================
 # 3. WORLD TIMEZONE & CLOCK TESTS
@@ -595,6 +652,6 @@ def test_cosyvoice_config_and_fallback():
         voice="am_adam",
         cosyvoice_api_url="http://127.0.0.1:59999"
     )
-    # Must have initialized Kokoro as active standby fallback
-    assert tts.kokoro is not None
+    # Cosyvoice engine is exclusive — no Kokoro fallback initialized
+    assert tts.kokoro is None
 

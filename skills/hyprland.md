@@ -54,7 +54,12 @@ Execute via `hyprctl dispatch`:
 ### 4. Compositor & Notification Controls
 - Post compositor notification: `hyprctl notify <icon_0_to_5> <time_ms> <color_hex> <message>`
 - Reload configuration: `hyprctl reload`
+
+### 5. Session & Power Controls
 - Lock session: `hyprlock` (or `loginctl lock-session`)
+- Suspend system: `systemctl suspend`
+- Reboot / Restart system: `systemctl reboot`
+- Power off / Shutdown system: `systemctl poweroff`
 
 ## STRICT EXECUTION RULES & SYNTAX
 1. **Targeted Window Moving (`movetoworkspacesilent <workspace>,<window>`)**:

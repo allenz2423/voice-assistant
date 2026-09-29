@@ -42,7 +42,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="run_bash_command",
-        description="Executes a quick, synchronous shell command inside an isolated container (e.g. ls, du, file inspection).",
+        description="Executes a quick, synchronous shell command on the host system (e.g. systemctl reboot, system commands, cli utilities, file operations).",
         parameters={
             "type": "object",
             "properties": {
@@ -104,16 +104,16 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="ask_user_confirmation",
-        description="Stops execution and asks the user for explicit verbal confirmation before running heavy or destructive tasks (like file deletion or killing processes). Spoken question MUST be ultra-concise (under 10 words, no technical dumps or hex addresses). Technical details, process lists, or file paths are flashed on screen as a desktop notification instead of spoken.",
+        description="Stops execution and asks the user for explicit verbal confirmation before running heavy or destructive tasks (like rebooting, shutting down, deleting files, or killing processes). Spoken question MUST be ultra-concise (under 10 words, no technical dumps or hex addresses). Technical details, process lists, or file paths are flashed on screen as a desktop notification instead of spoken. The command parameter is the exact shell command that will automatically be executed upon confirmation.",
         parameters={
             "type": "object",
             "properties": {
-                "question": {"type": "string", "description": "Ultra-concise spoken verbal question under 10 words (e.g. 'Kill 5 Alacritty processes?'). NEVER include hex addresses (0x...), PIDs, or technical dumps in the spoken question."},
-                "summary": {"type": "string", "description": "Brief summary of the pending action (e.g. 'Kill all Alacritty terminal processes')"},
+                "question": {"type": "string", "description": "Ultra-concise spoken verbal question under 10 words (e.g. 'Restart computer now?' or 'Kill 5 Alacritty processes?'). NEVER include hex addresses (0x...), PIDs, or technical dumps in the spoken question."},
+                "summary": {"type": "string", "description": "Brief summary of the pending action (e.g. 'Restart computer' or 'Kill Alacritty terminal processes')"},
                 "details": {"type": "string", "description": "Optional technical details, hex addresses, process lists, or file paths to flash on screen as a desktop notification instead of speaking aloud"},
-                "command": {"type": "string", "description": "The exact shell command to run automatically once the user says yes (e.g. 'kill_process target=\"Alacritty\" force=true')"}
+                "command": {"type": "string", "description": "The exact shell command to run automatically once the user says yes (e.g. 'systemctl reboot' for restart, 'systemctl poweroff' for shutdown, 'pkill -9 alacritty' for killing processes)"}
             },
-            "required": ["question", "summary"]
+            "required": ["question", "summary", "command"]
         }
     ),
     CanonicalTool(
@@ -288,13 +288,13 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="desktop_macro",
-        description="Executes a desktop environment or window manager macro or action (e.g. 'overview', 'show_desktop', 'grid', 'toggle_floating', 'fullscreen', 'lock', 'night_mode', or user-defined custom macros).",
+        description="Executes a desktop environment or window manager macro or action (e.g. 'overview', 'show_desktop', 'grid', 'toggle_floating', 'fullscreen', 'lock', 'reboot', 'restart', 'shutdown', 'poweroff', 'suspend', 'night_mode', or user-defined custom macros).",
         parameters={
             "type": "object",
             "properties": {
                 "macro": {
                     "type": "string",
-                    "description": "Name of the desktop macro to execute (e.g. 'overview', 'show_desktop', 'grid', 'toggle_floating', 'fullscreen', 'lock', 'night_mode', or user-defined macro name)"
+                    "description": "Name of the desktop macro to execute (e.g. 'overview', 'show_desktop', 'grid', 'toggle_floating', 'fullscreen', 'lock', 'reboot', 'restart', 'shutdown', 'poweroff', 'suspend', 'night_mode', or user-defined macro name)"
                 }
             },
             "required": ["macro"]

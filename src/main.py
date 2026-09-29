@@ -245,6 +245,58 @@ class AdamDaemon:
 
         return on_partial
 
+    async def _execute_confirmed_command(self, cmd: str, summary: str):
+        cmd = cmd.strip()
+        # Normalization for common power commands
+        if cmd in ["sudo reboot", "reboot"]:
+            cmd = "systemctl reboot"
+        elif cmd in ["sudo poweroff", "poweroff", "shutdown", "shutdown -h now", "sudo shutdown -h now"]:
+            cmd = "systemctl poweroff"
+
+        is_shutdown_reboot = any(term in cmd for term in ["reboot", "poweroff", "shutdown", "halt"])
+        if is_shutdown_reboot:
+            msg = f"{summary} now." if summary else "Restarting now."
+            await self.tts.speak_async(msg)
+
+        tool_executed = False
+        tool_names = {t.name for t in self.brain.get_tools()}
+        first_token = re.split(r"[\s(]", cmd, maxsplit=1)[0].strip()
+        if first_token in tool_names:
+            import ast
+            args = {}
+            if "(" in cmd and cmd.endswith(")"):
+                call_str = cmd[len(first_token):].strip()
+                try:
+                    tree = ast.parse(f"dummy{call_str}").body[0].value
+                    for kw in getattr(tree, "keywords", []):
+                        args[kw.arg] = ast.literal_eval(kw.value)
+                except Exception:
+                    pass
+            if not args:
+                for match in re.finditer(r'(\w+)=(?:"([^"]*)"|\'([^\']*)\'|(\S+))', cmd):
+                    k = match.group(1)
+                    v = match.group(2) or match.group(3) or match.group(4)
+                    if v.lower() == "true":
+                        v = True
+                    elif v.lower() == "false":
+                        v = False
+                    args[k] = v
+
+            if args or "(" in cmd:
+                print(f"[Confirmation] Executing confirmed tool: {first_token}({args})")
+                out = await self.brain._execute_tool(first_token, args)
+                print(f"[Confirmation] Tool output: {out}")
+                tool_executed = True
+
+        if not tool_executed:
+            print(f"[Confirmation] Executing confirmed shell command: {cmd}")
+            out = await self.brain._execute_tool("run_bash_command", {"command": cmd})
+            print(f"[Confirmation] Command output: {out}")
+
+        if not is_shutdown_reboot:
+            action_summary = summary or "Action"
+            await self.tts.speak_async(f"{action_summary} completed.")
+
     async def run(self):
         """Main non-blocking asynchronous event loop."""
         self.running = True
@@ -535,11 +587,9 @@ class AdamDaemon:
             # ---------------- STATE 2: AWAITING_CONFIRMATION ----------------
             elif state == SystemState.AWAITING_CONFIRMATION:
                 text = None
-                confirmation_audio = None
                 # 1. Immediately consume pending barge-in answer if user spoke while prompt was being asked
                 if getattr(self.tts, "pending_barge_in_text", None):
                     text = self.tts.pending_barge_in_text
-                    confirmation_audio = getattr(self.tts, "pending_barge_in_audio", None)
                     self.tts.pending_barge_in_text = None
                     self.tts.pending_barge_in_audio = None
                     print(f"[Confirmation] Consuming barge-in answer: '{text}'", flush=True)
@@ -554,16 +604,11 @@ class AdamDaemon:
                         on_partial_audio=self._create_partial_callback(loop, wake_word="")
                     )
                     if len(audio_data) > 0:
-                        confirmation_audio = audio_data
-                        if await self._speaker_allowed(audio_data):
-                            text = await asyncio.to_thread(self.stt.transcribe, audio_data)
-                        else:
-                            text = None
+                        # Voice filter disabled for confirmations: short answers like "yes" or "no"
+                        # follow an already-verified wake-word turn and produce unreliable scores on short audio.
+                        text = await asyncio.to_thread(self.stt.transcribe, audio_data)
                         print(f"[Confirmation] User said: '{text}'", flush=True)
 
-                if text:
-                    if confirmation_audio is not None and not await self._speaker_allowed(confirmation_audio):
-                        text = None
                 if text:
                     res = await self.confirmation.evaluate_response(text)
                     result, subsequent_cmd = res if isinstance(res, tuple) else (res, None)
@@ -617,20 +662,18 @@ class AdamDaemon:
                                     )
                                     await self.tts.speak_async(f"Started background transcoding with PID {pid}. I'll alert you when it's done.")
                             elif action.get("command"):
-                                cmd = action.get("command")
-                                print(f"[Confirmation] Executing confirmed command: {cmd}")
-                                out = await self.brain._execute_tool("run_bash_command", {"command": cmd})
-                                print(f"[Confirmation] Command output: {out}")
+                                cmd = str(action.get("command", "")).strip()
                                 summary = action.get("summary", "Action completed")
-                                await self.tts.speak_async(f"{summary} completed.")
+                                await self._execute_confirmed_command(cmd, summary)
                             else:
                                 summary = action.get("summary", "the requested action")
                                 print(f"[Confirmation] Resuming brain with user affirmation: {summary}")
                                 await self.brain.process_user_utterance(f"User confirmed: proceed with {summary}")
 
-                        await self.arbiter.set_state("IDLE_LISTENING")
-                        self.stream.flush()
-                        self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
+                        if self.arbiter.state != SystemState.AWAITING_CONFIRMATION:
+                            await self.arbiter.set_state("IDLE_LISTENING")
+                            self.stream.flush()
+                            self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
                     elif result == "DENY":
                         await self.arbiter.set_state("IDLE_LISTENING")
                         self.stream.flush()
