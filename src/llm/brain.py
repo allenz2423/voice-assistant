@@ -165,6 +165,53 @@ class AdamBrain:
     async def process_user_utterance(self, user_text: str):
         """Processes a transcribed user prompt through the autonomous ReAct cycle."""
         print(f"\n[Adam] User said: \"{user_text}\"")
+
+        # Mode changes must not depend on the LLM choosing the right tool. Handle
+        # explicit requests deterministically before the general agent loop.
+        mode_text = user_text.strip()
+        negated_mode_request = re.search(
+            r"\b(?:don't|do not|never|shouldn't|should not)\b[^.!?\n]{0,50}"
+            r"\b(?:turn|switch|set|put|enable|activate)\b[^.!?\n]{0,40}"
+            r"\b(?:silent|notification)\s+mode\b",
+            mode_text,
+            re.IGNORECASE,
+        )
+        disable_silent = re.search(
+            r"\b(?:turn|switch)\s+off\b[^.!?\n]{0,30}\b(?:silent|notification)\s+mode\b|"
+            r"\b(?:disable|deactivate|leave|exit)\b[^.!?\n]{0,30}\b(?:silent|notification)\s+mode\b",
+            mode_text,
+            re.IGNORECASE,
+        )
+        enable_silent = re.search(
+            r"\b(?:turn|switch|set|put|enable|activate)\b[^.!?\n]{0,30}"
+            r"\b(?:silent|notification)\s+mode\b|"
+            r"\b(?:silent|notification)\s+mode\s+on\b",
+            mode_text,
+            re.IGNORECASE,
+        )
+        if not negated_mode_request and (disable_silent or enable_silent):
+            if disable_silent:
+                restore_engine = str(
+                    getattr(self.config.tts, "silent_restore_engine", "kokoro")
+                ).lower()
+                if restore_engine == "silent":
+                    message = "Silent mode is configured as the default and cannot be turned off."
+                else:
+                    self.tts.engine = restore_engine
+                    print(f"[TTS] Silent mode disabled; restored '{restore_engine}'.", flush=True)
+                    message = "Silent mode disabled. Spoken responses are restored."
+            else:
+                was_silent = self.tts.engine == "silent"
+                self.tts.engine = "silent"
+                if was_silent:
+                    print("[TTS] Silent mode was already enabled.", flush=True)
+                    message = "Silent mode is already enabled."
+                else:
+                    print("[TTS] Silent mode enabled by explicit voice command.", flush=True)
+                    message = "Silent mode enabled. Future responses will appear as desktop notifications."
+            await self.tts.speak_async(message)
+            return
+
         import datetime
         now_local = datetime.datetime.now().astimezone()
         now_str = now_local.strftime("%I:%M %p %Z (UTC%z) on %A, %B %d, %Y")
@@ -771,11 +818,13 @@ class AdamBrain:
             return "Silent mode enabled. Future responses will appear as desktop notifications."
 
         elif name == "disable_silent_mode":
-            configured_engine = getattr(getattr(self.config, "tts", None), "engine", "silent")
-            if str(configured_engine).lower() == "silent":
-                return "Silent mode is the configured default, so it cannot be disabled by voice command."
-            self.tts.engine = configured_engine
-            print(f"[TTS] Silent mode disabled; restored configured engine '{configured_engine}'.", flush=True)
+            restore_engine = str(
+                getattr(getattr(self.config, "tts", None), "silent_restore_engine", "kokoro")
+            ).lower()
+            if restore_engine == "silent":
+                return "Silent mode is configured as the default and cannot be turned off."
+            self.tts.engine = restore_engine
+            print(f"[TTS] Silent mode disabled; restored '{restore_engine}'.", flush=True)
             return "Silent mode disabled. Spoken responses are restored."
 
         elif name == "get_current_time":

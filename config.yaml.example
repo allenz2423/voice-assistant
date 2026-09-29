@@ -31,8 +31,16 @@ speaker_verification:
   enabled: true # Activates only after a local voice profile is enrolled
   threshold: 0.25
 
+speaker_diarization:
+  enabled: false # Optional; install NVIDIA NeMo-Speech.cpp with Vulkan support to enable
+  executable: "nemo-speech"
+  model: "nvidia/Nemotron-3-Diarization"
+  device: "vulkan:0"
+  timeout_seconds: 45.0
+
 tts:
   engine: "kokoro"             # "kokoro" | "openai" (cloud speech) | "silent" (desktop notifications)
+  silent_restore_engine: "kokoro" # Engine restored when silent mode is explicitly disabled
   model_path: "assets/voices/kokoro/kokoro-v1.0.onnx"
   voices_path: "assets/voices/kokoro/voices-v1.0.bin"
   voice: "af_nicole"             # Natural studio-quality voice matching wake word 'Hey Adam'
