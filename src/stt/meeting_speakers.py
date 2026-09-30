@@ -22,9 +22,14 @@ class MeetingSpeakerRegistry:
         """Return a stable speaker label and the best relevant cosine score."""
         if self.enrolled_verifier is not None and self.enrolled_verifier.enrolled:
             try:
-                matched, score = self.enrolled_verifier.verify(audio)
-                if matched:
-                    return "You", float(score)
+                if hasattr(self.enrolled_verifier, "identify"):
+                    user_name, score = self.enrolled_verifier.identify(audio)
+                    if user_name is not None:
+                        return str(user_name), float(score)
+                else:
+                    matched, score = self.enrolled_verifier.verify(audio)
+                    if matched:
+                        return "You", float(score)
             except Exception:
                 pass
         try:

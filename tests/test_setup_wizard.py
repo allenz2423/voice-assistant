@@ -22,5 +22,5 @@ def test_setup_can_select_exact_cuda_device(monkeypatch):
     ) == "1"
 
 
-def test_qwen_defaults_to_english_language_hint():
-    assert STTConfig().language == "English"
+def test_qwen_defaults_to_automatic_language_detection():
+    assert STTConfig().language == ""

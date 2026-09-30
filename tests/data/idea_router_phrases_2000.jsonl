@@ -1,0 +1,2000 @@
+{"id": 1, "text": "Open Spotify.", "expected": "direct_action"}
+{"id": 2, "text": "Launch Spotify.", "expected": "direct_action"}
+{"id": 3, "text": "Start Spotify.", "expected": "direct_action"}
+{"id": 4, "text": "Could you open Spotify?", "expected": "direct_action"}
+{"id": 5, "text": "Please launch Spotify.", "expected": "direct_action"}
+{"id": 6, "text": "Adam, open Spotify.", "expected": "direct_action"}
+{"id": 7, "text": "Switch to Spotify.", "expected": "direct_action"}
+{"id": 8, "text": "Bring up Spotify for me.", "expected": "direct_action"}
+{"id": 9, "text": "Can you start Spotify?", "expected": "direct_action"}
+{"id": 10, "text": "I want you to open Spotify.", "expected": "direct_action"}
+{"id": 11, "text": "Go to Spotify.", "expected": "direct_action"}
+{"id": 12, "text": "Run Spotify.", "expected": "direct_action"}
+{"id": 13, "text": "Open Discord.", "expected": "direct_action"}
+{"id": 14, "text": "Launch Discord.", "expected": "direct_action"}
+{"id": 15, "text": "Start Discord.", "expected": "direct_action"}
+{"id": 16, "text": "Could you open Discord?", "expected": "direct_action"}
+{"id": 17, "text": "Please launch Discord.", "expected": "direct_action"}
+{"id": 18, "text": "Adam, open Discord.", "expected": "direct_action"}
+{"id": 19, "text": "Switch to Discord.", "expected": "direct_action"}
+{"id": 20, "text": "Bring up Discord for me.", "expected": "direct_action"}
+{"id": 21, "text": "Can you start Discord?", "expected": "direct_action"}
+{"id": 22, "text": "I want you to open Discord.", "expected": "direct_action"}
+{"id": 23, "text": "Go to Discord.", "expected": "direct_action"}
+{"id": 24, "text": "Run Discord.", "expected": "direct_action"}
+{"id": 25, "text": "Open Firefox.", "expected": "direct_action"}
+{"id": 26, "text": "Launch Firefox.", "expected": "direct_action"}
+{"id": 27, "text": "Start Firefox.", "expected": "direct_action"}
+{"id": 28, "text": "Could you open Firefox?", "expected": "direct_action"}
+{"id": 29, "text": "Please launch Firefox.", "expected": "direct_action"}
+{"id": 30, "text": "Adam, open Firefox.", "expected": "direct_action"}
+{"id": 31, "text": "Switch to Firefox.", "expected": "direct_action"}
+{"id": 32, "text": "Bring up Firefox for me.", "expected": "direct_action"}
+{"id": 33, "text": "Can you start Firefox?", "expected": "direct_action"}
+{"id": 34, "text": "I want you to open Firefox.", "expected": "direct_action"}
+{"id": 35, "text": "Go to Firefox.", "expected": "direct_action"}
+{"id": 36, "text": "Run Firefox.", "expected": "direct_action"}
+{"id": 37, "text": "Open Chrome.", "expected": "direct_action"}
+{"id": 38, "text": "Launch Chrome.", "expected": "direct_action"}
+{"id": 39, "text": "Start Chrome.", "expected": "direct_action"}
+{"id": 40, "text": "Could you open Chrome?", "expected": "direct_action"}
+{"id": 41, "text": "Please launch Chrome.", "expected": "direct_action"}
+{"id": 42, "text": "Adam, open Chrome.", "expected": "direct_action"}
+{"id": 43, "text": "Switch to Chrome.", "expected": "direct_action"}
+{"id": 44, "text": "Bring up Chrome for me.", "expected": "direct_action"}
+{"id": 45, "text": "Can you start Chrome?", "expected": "direct_action"}
+{"id": 46, "text": "I want you to open Chrome.", "expected": "direct_action"}
+{"id": 47, "text": "Go to Chrome.", "expected": "direct_action"}
+{"id": 48, "text": "Run Chrome.", "expected": "direct_action"}
+{"id": 49, "text": "Open Edge.", "expected": "direct_action"}
+{"id": 50, "text": "Launch Edge.", "expected": "direct_action"}
+{"id": 51, "text": "Start Edge.", "expected": "direct_action"}
+{"id": 52, "text": "Could you open Edge?", "expected": "direct_action"}
+{"id": 53, "text": "Please launch Edge.", "expected": "direct_action"}
+{"id": 54, "text": "Adam, open Edge.", "expected": "direct_action"}
+{"id": 55, "text": "Switch to Edge.", "expected": "direct_action"}
+{"id": 56, "text": "Bring up Edge for me.", "expected": "direct_action"}
+{"id": 57, "text": "Can you start Edge?", "expected": "direct_action"}
+{"id": 58, "text": "I want you to open Edge.", "expected": "direct_action"}
+{"id": 59, "text": "Go to Edge.", "expected": "direct_action"}
+{"id": 60, "text": "Run Edge.", "expected": "direct_action"}
+{"id": 61, "text": "Open Steam.", "expected": "direct_action"}
+{"id": 62, "text": "Launch Steam.", "expected": "direct_action"}
+{"id": 63, "text": "Start Steam.", "expected": "direct_action"}
+{"id": 64, "text": "Could you open Steam?", "expected": "direct_action"}
+{"id": 65, "text": "Please launch Steam.", "expected": "direct_action"}
+{"id": 66, "text": "Adam, open Steam.", "expected": "direct_action"}
+{"id": 67, "text": "Switch to Steam.", "expected": "direct_action"}
+{"id": 68, "text": "Bring up Steam for me.", "expected": "direct_action"}
+{"id": 69, "text": "Can you start Steam?", "expected": "direct_action"}
+{"id": 70, "text": "I want you to open Steam.", "expected": "direct_action"}
+{"id": 71, "text": "Go to Steam.", "expected": "direct_action"}
+{"id": 72, "text": "Run Steam.", "expected": "direct_action"}
+{"id": 73, "text": "Open OBS.", "expected": "direct_action"}
+{"id": 74, "text": "Launch OBS.", "expected": "direct_action"}
+{"id": 75, "text": "Start OBS.", "expected": "direct_action"}
+{"id": 76, "text": "Could you open OBS?", "expected": "direct_action"}
+{"id": 77, "text": "Please launch OBS.", "expected": "direct_action"}
+{"id": 78, "text": "Adam, open OBS.", "expected": "direct_action"}
+{"id": 79, "text": "Switch to OBS.", "expected": "direct_action"}
+{"id": 80, "text": "Bring up OBS for me.", "expected": "direct_action"}
+{"id": 81, "text": "Can you start OBS?", "expected": "direct_action"}
+{"id": 82, "text": "I want you to open OBS.", "expected": "direct_action"}
+{"id": 83, "text": "Go to OBS.", "expected": "direct_action"}
+{"id": 84, "text": "Run OBS.", "expected": "direct_action"}
+{"id": 85, "text": "Open the terminal.", "expected": "direct_action"}
+{"id": 86, "text": "Launch the terminal.", "expected": "direct_action"}
+{"id": 87, "text": "Start the terminal.", "expected": "direct_action"}
+{"id": 88, "text": "Could you open the terminal?", "expected": "direct_action"}
+{"id": 89, "text": "Please launch the terminal.", "expected": "direct_action"}
+{"id": 90, "text": "Adam, open the terminal.", "expected": "direct_action"}
+{"id": 91, "text": "Switch to the terminal.", "expected": "direct_action"}
+{"id": 92, "text": "Bring up the terminal for me.", "expected": "direct_action"}
+{"id": 93, "text": "Can you start the terminal?", "expected": "direct_action"}
+{"id": 94, "text": "I want you to open the terminal.", "expected": "direct_action"}
+{"id": 95, "text": "Go to the terminal.", "expected": "direct_action"}
+{"id": 96, "text": "Run the terminal.", "expected": "direct_action"}
+{"id": 97, "text": "Open my browser.", "expected": "direct_action"}
+{"id": 98, "text": "Launch my browser.", "expected": "direct_action"}
+{"id": 99, "text": "Start my browser.", "expected": "direct_action"}
+{"id": 100, "text": "Could you open my browser?", "expected": "direct_action"}
+{"id": 101, "text": "Please launch my browser.", "expected": "direct_action"}
+{"id": 102, "text": "Adam, open my browser.", "expected": "direct_action"}
+{"id": 103, "text": "Switch to my browser.", "expected": "direct_action"}
+{"id": 104, "text": "Bring up my browser for me.", "expected": "direct_action"}
+{"id": 105, "text": "Can you start my browser?", "expected": "direct_action"}
+{"id": 106, "text": "I want you to open my browser.", "expected": "direct_action"}
+{"id": 107, "text": "Go to my browser.", "expected": "direct_action"}
+{"id": 108, "text": "Run my browser.", "expected": "direct_action"}
+{"id": 109, "text": "Open the file manager.", "expected": "direct_action"}
+{"id": 110, "text": "Launch the file manager.", "expected": "direct_action"}
+{"id": 111, "text": "Start the file manager.", "expected": "direct_action"}
+{"id": 112, "text": "Could you open the file manager?", "expected": "direct_action"}
+{"id": 113, "text": "Please launch the file manager.", "expected": "direct_action"}
+{"id": 114, "text": "Adam, open the file manager.", "expected": "direct_action"}
+{"id": 115, "text": "Switch to the file manager.", "expected": "direct_action"}
+{"id": 116, "text": "Bring up the file manager for me.", "expected": "direct_action"}
+{"id": 117, "text": "Can you start the file manager?", "expected": "direct_action"}
+{"id": 118, "text": "I want you to open the file manager.", "expected": "direct_action"}
+{"id": 119, "text": "Go to the file manager.", "expected": "direct_action"}
+{"id": 120, "text": "Run the file manager.", "expected": "direct_action"}
+{"id": 121, "text": "Open VS Code.", "expected": "direct_action"}
+{"id": 122, "text": "Launch VS Code.", "expected": "direct_action"}
+{"id": 123, "text": "Start VS Code.", "expected": "direct_action"}
+{"id": 124, "text": "Could you open VS Code?", "expected": "direct_action"}
+{"id": 125, "text": "Please launch VS Code.", "expected": "direct_action"}
+{"id": 126, "text": "Adam, open VS Code.", "expected": "direct_action"}
+{"id": 127, "text": "Switch to VS Code.", "expected": "direct_action"}
+{"id": 128, "text": "Bring up VS Code for me.", "expected": "direct_action"}
+{"id": 129, "text": "Can you start VS Code?", "expected": "direct_action"}
+{"id": 130, "text": "I want you to open VS Code.", "expected": "direct_action"}
+{"id": 131, "text": "Go to VS Code.", "expected": "direct_action"}
+{"id": 132, "text": "Run VS Code.", "expected": "direct_action"}
+{"id": 133, "text": "Open Zed.", "expected": "direct_action"}
+{"id": 134, "text": "Launch Zed.", "expected": "direct_action"}
+{"id": 135, "text": "Start Zed.", "expected": "direct_action"}
+{"id": 136, "text": "Could you open Zed?", "expected": "direct_action"}
+{"id": 137, "text": "Please launch Zed.", "expected": "direct_action"}
+{"id": 138, "text": "Adam, open Zed.", "expected": "direct_action"}
+{"id": 139, "text": "Switch to Zed.", "expected": "direct_action"}
+{"id": 140, "text": "Bring up Zed for me.", "expected": "direct_action"}
+{"id": 141, "text": "Can you start Zed?", "expected": "direct_action"}
+{"id": 142, "text": "I want you to open Zed.", "expected": "direct_action"}
+{"id": 143, "text": "Go to Zed.", "expected": "direct_action"}
+{"id": 144, "text": "Run Zed.", "expected": "direct_action"}
+{"id": 145, "text": "Open Telegram.", "expected": "direct_action"}
+{"id": 146, "text": "Launch Telegram.", "expected": "direct_action"}
+{"id": 147, "text": "Start Telegram.", "expected": "direct_action"}
+{"id": 148, "text": "Could you open Telegram?", "expected": "direct_action"}
+{"id": 149, "text": "Please launch Telegram.", "expected": "direct_action"}
+{"id": 150, "text": "Adam, open Telegram.", "expected": "direct_action"}
+{"id": 151, "text": "Switch to Telegram.", "expected": "direct_action"}
+{"id": 152, "text": "Bring up Telegram for me.", "expected": "direct_action"}
+{"id": 153, "text": "Can you start Telegram?", "expected": "direct_action"}
+{"id": 154, "text": "I want you to open Telegram.", "expected": "direct_action"}
+{"id": 155, "text": "Go to Telegram.", "expected": "direct_action"}
+{"id": 156, "text": "Run Telegram.", "expected": "direct_action"}
+{"id": 157, "text": "Open Signal.", "expected": "direct_action"}
+{"id": 158, "text": "Launch Signal.", "expected": "direct_action"}
+{"id": 159, "text": "Start Signal.", "expected": "direct_action"}
+{"id": 160, "text": "Could you open Signal?", "expected": "direct_action"}
+{"id": 161, "text": "Please launch Signal.", "expected": "direct_action"}
+{"id": 162, "text": "Adam, open Signal.", "expected": "direct_action"}
+{"id": 163, "text": "Switch to Signal.", "expected": "direct_action"}
+{"id": 164, "text": "Bring up Signal for me.", "expected": "direct_action"}
+{"id": 165, "text": "Can you start Signal?", "expected": "direct_action"}
+{"id": 166, "text": "I want you to open Signal.", "expected": "direct_action"}
+{"id": 167, "text": "Go to Signal.", "expected": "direct_action"}
+{"id": 168, "text": "Run Signal.", "expected": "direct_action"}
+{"id": 169, "text": "Open Slack.", "expected": "direct_action"}
+{"id": 170, "text": "Launch Slack.", "expected": "direct_action"}
+{"id": 171, "text": "Start Slack.", "expected": "direct_action"}
+{"id": 172, "text": "Could you open Slack?", "expected": "direct_action"}
+{"id": 173, "text": "Please launch Slack.", "expected": "direct_action"}
+{"id": 174, "text": "Adam, open Slack.", "expected": "direct_action"}
+{"id": 175, "text": "Switch to Slack.", "expected": "direct_action"}
+{"id": 176, "text": "Bring up Slack for me.", "expected": "direct_action"}
+{"id": 177, "text": "Can you start Slack?", "expected": "direct_action"}
+{"id": 178, "text": "I want you to open Slack.", "expected": "direct_action"}
+{"id": 179, "text": "Go to Slack.", "expected": "direct_action"}
+{"id": 180, "text": "Run Slack.", "expected": "direct_action"}
+{"id": 181, "text": "Open YouTube Music.", "expected": "direct_action"}
+{"id": 182, "text": "Launch YouTube Music.", "expected": "direct_action"}
+{"id": 183, "text": "Start YouTube Music.", "expected": "direct_action"}
+{"id": 184, "text": "Could you open YouTube Music?", "expected": "direct_action"}
+{"id": 185, "text": "Please launch YouTube Music.", "expected": "direct_action"}
+{"id": 186, "text": "Adam, open YouTube Music.", "expected": "direct_action"}
+{"id": 187, "text": "Switch to YouTube Music.", "expected": "direct_action"}
+{"id": 188, "text": "Bring up YouTube Music for me.", "expected": "direct_action"}
+{"id": 189, "text": "Can you start YouTube Music?", "expected": "direct_action"}
+{"id": 190, "text": "I want you to open YouTube Music.", "expected": "direct_action"}
+{"id": 191, "text": "Go to YouTube Music.", "expected": "direct_action"}
+{"id": 192, "text": "Run YouTube Music.", "expected": "direct_action"}
+{"id": 193, "text": "Open VLC.", "expected": "direct_action"}
+{"id": 194, "text": "Launch VLC.", "expected": "direct_action"}
+{"id": 195, "text": "Start VLC.", "expected": "direct_action"}
+{"id": 196, "text": "Could you open VLC?", "expected": "direct_action"}
+{"id": 197, "text": "Please launch VLC.", "expected": "direct_action"}
+{"id": 198, "text": "Adam, open VLC.", "expected": "direct_action"}
+{"id": 199, "text": "Switch to VLC.", "expected": "direct_action"}
+{"id": 200, "text": "Bring up VLC for me.", "expected": "direct_action"}
+{"id": 201, "text": "Can you start VLC?", "expected": "direct_action"}
+{"id": 202, "text": "I want you to open VLC.", "expected": "direct_action"}
+{"id": 203, "text": "Go to VLC.", "expected": "direct_action"}
+{"id": 204, "text": "Run VLC.", "expected": "direct_action"}
+{"id": 205, "text": "Open the calculator.", "expected": "direct_action"}
+{"id": 206, "text": "Launch the calculator.", "expected": "direct_action"}
+{"id": 207, "text": "Start the calculator.", "expected": "direct_action"}
+{"id": 208, "text": "Could you open the calculator?", "expected": "direct_action"}
+{"id": 209, "text": "Please launch the calculator.", "expected": "direct_action"}
+{"id": 210, "text": "Adam, open the calculator.", "expected": "direct_action"}
+{"id": 211, "text": "Switch to the calculator.", "expected": "direct_action"}
+{"id": 212, "text": "Bring up the calculator for me.", "expected": "direct_action"}
+{"id": 213, "text": "Can you start the calculator?", "expected": "direct_action"}
+{"id": 214, "text": "I want you to open the calculator.", "expected": "direct_action"}
+{"id": 215, "text": "Go to the calculator.", "expected": "direct_action"}
+{"id": 216, "text": "Run the calculator.", "expected": "direct_action"}
+{"id": 217, "text": "Open Settings.", "expected": "direct_action"}
+{"id": 218, "text": "Launch Settings.", "expected": "direct_action"}
+{"id": 219, "text": "Start Settings.", "expected": "direct_action"}
+{"id": 220, "text": "Could you open Settings?", "expected": "direct_action"}
+{"id": 221, "text": "Please launch Settings.", "expected": "direct_action"}
+{"id": 222, "text": "Adam, open Settings.", "expected": "direct_action"}
+{"id": 223, "text": "Switch to Settings.", "expected": "direct_action"}
+{"id": 224, "text": "Bring up Settings for me.", "expected": "direct_action"}
+{"id": 225, "text": "Can you start Settings?", "expected": "direct_action"}
+{"id": 226, "text": "I want you to open Settings.", "expected": "direct_action"}
+{"id": 227, "text": "Go to Settings.", "expected": "direct_action"}
+{"id": 228, "text": "Run Settings.", "expected": "direct_action"}
+{"id": 229, "text": "Open the music player.", "expected": "direct_action"}
+{"id": 230, "text": "Launch the music player.", "expected": "direct_action"}
+{"id": 231, "text": "Start the music player.", "expected": "direct_action"}
+{"id": 232, "text": "Could you open the music player?", "expected": "direct_action"}
+{"id": 233, "text": "Please launch the music player.", "expected": "direct_action"}
+{"id": 234, "text": "Adam, open the music player.", "expected": "direct_action"}
+{"id": 235, "text": "Switch to the music player.", "expected": "direct_action"}
+{"id": 236, "text": "Bring up the music player for me.", "expected": "direct_action"}
+{"id": 237, "text": "Can you start the music player?", "expected": "direct_action"}
+{"id": 238, "text": "I want you to open the music player.", "expected": "direct_action"}
+{"id": 239, "text": "Go to the music player.", "expected": "direct_action"}
+{"id": 240, "text": "Run the music player.", "expected": "direct_action"}
+{"id": 241, "text": "Open the downloads folder.", "expected": "direct_action"}
+{"id": 242, "text": "Launch the downloads folder.", "expected": "direct_action"}
+{"id": 243, "text": "Start the downloads folder.", "expected": "direct_action"}
+{"id": 244, "text": "Could you open the downloads folder?", "expected": "direct_action"}
+{"id": 245, "text": "Please launch the downloads folder.", "expected": "direct_action"}
+{"id": 246, "text": "Adam, open the downloads folder.", "expected": "direct_action"}
+{"id": 247, "text": "Switch to the downloads folder.", "expected": "direct_action"}
+{"id": 248, "text": "Bring up the downloads folder for me.", "expected": "direct_action"}
+{"id": 249, "text": "Can you start the downloads folder?", "expected": "direct_action"}
+{"id": 250, "text": "I want you to open the downloads folder.", "expected": "direct_action"}
+{"id": 251, "text": "Focus my browser.", "expected": "direct_action"}
+{"id": 252, "text": "Focus my browser please.", "expected": "direct_action"}
+{"id": 253, "text": "Focus my browser for me.", "expected": "direct_action"}
+{"id": 254, "text": "Focus my browser right now.", "expected": "direct_action"}
+{"id": 255, "text": "Focus my browser when you can.", "expected": "direct_action"}
+{"id": 256, "text": "Focus my browser", "expected": "direct_action"}
+{"id": 257, "text": "Focus the Spotify window.", "expected": "direct_action"}
+{"id": 258, "text": "Focus the Spotify window please.", "expected": "direct_action"}
+{"id": 259, "text": "Focus the Spotify window for me.", "expected": "direct_action"}
+{"id": 260, "text": "Focus the Spotify window right now.", "expected": "direct_action"}
+{"id": 261, "text": "Focus the Spotify window when you can.", "expected": "direct_action"}
+{"id": 262, "text": "Focus the Spotify window", "expected": "direct_action"}
+{"id": 263, "text": "Switch my browser to the front.", "expected": "direct_action"}
+{"id": 264, "text": "Switch my browser to the front please.", "expected": "direct_action"}
+{"id": 265, "text": "Switch my browser to the front for me.", "expected": "direct_action"}
+{"id": 266, "text": "Switch my browser to the front right now.", "expected": "direct_action"}
+{"id": 267, "text": "Switch my browser to the front when you can.", "expected": "direct_action"}
+{"id": 268, "text": "Switch my browser to the front", "expected": "direct_action"}
+{"id": 269, "text": "Play my music.", "expected": "direct_action"}
+{"id": 270, "text": "Play my music please.", "expected": "direct_action"}
+{"id": 271, "text": "Play my music for me.", "expected": "direct_action"}
+{"id": 272, "text": "Play my music right now.", "expected": "direct_action"}
+{"id": 273, "text": "Play my music when you can.", "expected": "direct_action"}
+{"id": 274, "text": "Play my music", "expected": "direct_action"}
+{"id": 275, "text": "Pause the video.", "expected": "direct_action"}
+{"id": 276, "text": "Pause the video please.", "expected": "direct_action"}
+{"id": 277, "text": "Pause the video for me.", "expected": "direct_action"}
+{"id": 278, "text": "Pause the video right now.", "expected": "direct_action"}
+{"id": 279, "text": "Pause the video when you can.", "expected": "direct_action"}
+{"id": 280, "text": "Pause the video", "expected": "direct_action"}
+{"id": 281, "text": "Skip this song.", "expected": "direct_action"}
+{"id": 282, "text": "Skip this song please.", "expected": "direct_action"}
+{"id": 283, "text": "Skip this song for me.", "expected": "direct_action"}
+{"id": 284, "text": "Skip this song right now.", "expected": "direct_action"}
+{"id": 285, "text": "Skip this song when you can.", "expected": "direct_action"}
+{"id": 286, "text": "Skip this song", "expected": "direct_action"}
+{"id": 287, "text": "Turn the volume down.", "expected": "direct_action"}
+{"id": 288, "text": "Turn the volume down please.", "expected": "direct_action"}
+{"id": 289, "text": "Turn the volume down for me.", "expected": "direct_action"}
+{"id": 290, "text": "Turn the volume down right now.", "expected": "direct_action"}
+{"id": 291, "text": "Turn the volume down when you can.", "expected": "direct_action"}
+{"id": 292, "text": "Turn the volume down", "expected": "direct_action"}
+{"id": 293, "text": "Turn up the volume.", "expected": "direct_action"}
+{"id": 294, "text": "Turn up the volume please.", "expected": "direct_action"}
+{"id": 295, "text": "Turn up the volume for me.", "expected": "direct_action"}
+{"id": 296, "text": "Turn up the volume right now.", "expected": "direct_action"}
+{"id": 297, "text": "Turn up the volume when you can.", "expected": "direct_action"}
+{"id": 298, "text": "Turn up the volume", "expected": "direct_action"}
+{"id": 299, "text": "Set a timer for ten minutes.", "expected": "direct_action"}
+{"id": 300, "text": "Set a timer for ten minutes please.", "expected": "direct_action"}
+{"id": 301, "text": "Set a timer for ten minutes for me.", "expected": "direct_action"}
+{"id": 302, "text": "Set a timer for ten minutes right now.", "expected": "direct_action"}
+{"id": 303, "text": "Set a timer for ten minutes when you can.", "expected": "direct_action"}
+{"id": 304, "text": "Set a timer for ten minutes", "expected": "direct_action"}
+{"id": 305, "text": "Remind me to call Alex at 4.", "expected": "direct_action"}
+{"id": 306, "text": "Remind me to call Alex at 4 please.", "expected": "direct_action"}
+{"id": 307, "text": "Remind me to call Alex at 4 for me.", "expected": "direct_action"}
+{"id": 308, "text": "Remind me to call Alex at 4 right now.", "expected": "direct_action"}
+{"id": 309, "text": "Remind me to call Alex at 4 when you can.", "expected": "direct_action"}
+{"id": 310, "text": "Remind me to call Alex at 4", "expected": "direct_action"}
+{"id": 311, "text": "What time is it?", "expected": "direct_action"}
+{"id": 312, "text": "What's the weather tomorrow?", "expected": "direct_action"}
+{"id": 313, "text": "Show my upcoming calendar events.", "expected": "direct_action"}
+{"id": 314, "text": "Show my upcoming calendar events please.", "expected": "direct_action"}
+{"id": 315, "text": "Show my upcoming calendar events for me.", "expected": "direct_action"}
+{"id": 316, "text": "Show my upcoming calendar events right now.", "expected": "direct_action"}
+{"id": 317, "text": "Show my upcoming calendar events when you can.", "expected": "direct_action"}
+{"id": 318, "text": "Show my upcoming calendar events", "expected": "direct_action"}
+{"id": 319, "text": "Take a screenshot.", "expected": "direct_action"}
+{"id": 320, "text": "Take a screenshot please.", "expected": "direct_action"}
+{"id": 321, "text": "Take a screenshot for me.", "expected": "direct_action"}
+{"id": 322, "text": "Take a screenshot right now.", "expected": "direct_action"}
+{"id": 323, "text": "Take a screenshot when you can.", "expected": "direct_action"}
+{"id": 324, "text": "Take a screenshot", "expected": "direct_action"}
+{"id": 325, "text": "Show the open windows.", "expected": "direct_action"}
+{"id": 326, "text": "Show the open windows please.", "expected": "direct_action"}
+{"id": 327, "text": "Show the open windows for me.", "expected": "direct_action"}
+{"id": 328, "text": "Show the open windows right now.", "expected": "direct_action"}
+{"id": 329, "text": "Show the open windows when you can.", "expected": "direct_action"}
+{"id": 330, "text": "Show the open windows", "expected": "direct_action"}
+{"id": 331, "text": "Find my latest download.", "expected": "direct_action"}
+{"id": 332, "text": "Find my latest download please.", "expected": "direct_action"}
+{"id": 333, "text": "Find my latest download for me.", "expected": "direct_action"}
+{"id": 334, "text": "Find my latest download right now.", "expected": "direct_action"}
+{"id": 335, "text": "Find my latest download when you can.", "expected": "direct_action"}
+{"id": 336, "text": "Find my latest download", "expected": "direct_action"}
+{"id": 337, "text": "Search the web for the release date.", "expected": "direct_action"}
+{"id": 338, "text": "Search the web for the release date please.", "expected": "direct_action"}
+{"id": 339, "text": "Search the web for the release date for me.", "expected": "direct_action"}
+{"id": 340, "text": "Search the web for the release date right now.", "expected": "direct_action"}
+{"id": 341, "text": "Search the web for the release date when you can.", "expected": "direct_action"}
+{"id": 342, "text": "Search the web for the release date", "expected": "direct_action"}
+{"id": 343, "text": "Put this window on workspace two.", "expected": "direct_action"}
+{"id": 344, "text": "Put this window on workspace two please.", "expected": "direct_action"}
+{"id": 345, "text": "Put this window on workspace two for me.", "expected": "direct_action"}
+{"id": 346, "text": "Put this window on workspace two right now.", "expected": "direct_action"}
+{"id": 347, "text": "Put this window on workspace two when you can.", "expected": "direct_action"}
+{"id": 348, "text": "Put this window on workspace two", "expected": "direct_action"}
+{"id": 349, "text": "Mute my microphone.", "expected": "direct_action"}
+{"id": 350, "text": "Mute my microphone please.", "expected": "direct_action"}
+{"id": 351, "text": "Mute my microphone for me.", "expected": "direct_action"}
+{"id": 352, "text": "Mute my microphone right now.", "expected": "direct_action"}
+{"id": 353, "text": "Mute my microphone when you can.", "expected": "direct_action"}
+{"id": 354, "text": "Mute my microphone", "expected": "direct_action"}
+{"id": 355, "text": "Copy that text.", "expected": "direct_action"}
+{"id": 356, "text": "Copy that text please.", "expected": "direct_action"}
+{"id": 357, "text": "Copy that text for me.", "expected": "direct_action"}
+{"id": 358, "text": "Copy that text right now.", "expected": "direct_action"}
+{"id": 359, "text": "Copy that text when you can.", "expected": "direct_action"}
+{"id": 360, "text": "Copy that text", "expected": "direct_action"}
+{"id": 361, "text": "Open a new browser tab.", "expected": "direct_action"}
+{"id": 362, "text": "Open a new browser tab please.", "expected": "direct_action"}
+{"id": 363, "text": "Open a new browser tab for me.", "expected": "direct_action"}
+{"id": 364, "text": "Open a new browser tab right now.", "expected": "direct_action"}
+{"id": 365, "text": "Open a new browser tab when you can.", "expected": "direct_action"}
+{"id": 366, "text": "Open a new browser tab", "expected": "direct_action"}
+{"id": 367, "text": "Close this window.", "expected": "direct_action"}
+{"id": 368, "text": "Close this window please.", "expected": "direct_action"}
+{"id": 369, "text": "Close this window for me.", "expected": "direct_action"}
+{"id": 370, "text": "Close this window right now.", "expected": "direct_action"}
+{"id": 371, "text": "Close this window when you can.", "expected": "direct_action"}
+{"id": 372, "text": "Close this window", "expected": "direct_action"}
+{"id": 373, "text": "Tell me the current CPU temperature.", "expected": "direct_action"}
+{"id": 374, "text": "Tell me the current CPU temperature please.", "expected": "direct_action"}
+{"id": 375, "text": "Tell me the current CPU temperature for me.", "expected": "direct_action"}
+{"id": 376, "text": "Tell me the current CPU temperature right now.", "expected": "direct_action"}
+{"id": 377, "text": "Tell me the current CPU temperature when you can.", "expected": "direct_action"}
+{"id": 378, "text": "Tell me the current CPU temperature", "expected": "direct_action"}
+{"id": 379, "text": "Check whether the service is running.", "expected": "direct_action"}
+{"id": 380, "text": "Check whether the service is running please.", "expected": "direct_action"}
+{"id": 381, "text": "Check whether the service is running for me.", "expected": "direct_action"}
+{"id": 382, "text": "Check whether the service is running right now.", "expected": "direct_action"}
+{"id": 383, "text": "Check whether the service is running when you can.", "expected": "direct_action"}
+{"id": 384, "text": "Check whether the service is running", "expected": "direct_action"}
+{"id": 385, "text": "Create a note called shopping.", "expected": "direct_action"}
+{"id": 386, "text": "Create a note called shopping please.", "expected": "direct_action"}
+{"id": 387, "text": "Create a note called shopping for me.", "expected": "direct_action"}
+{"id": 388, "text": "Create a note called shopping right now.", "expected": "direct_action"}
+{"id": 389, "text": "Create a note called shopping when you can.", "expected": "direct_action"}
+{"id": 390, "text": "Create a note called shopping", "expected": "direct_action"}
+{"id": 391, "text": "Add milk to my shopping note.", "expected": "direct_action"}
+{"id": 392, "text": "Add milk to my shopping note please.", "expected": "direct_action"}
+{"id": 393, "text": "Add milk to my shopping note for me.", "expected": "direct_action"}
+{"id": 394, "text": "Add milk to my shopping note right now.", "expected": "direct_action"}
+{"id": 395, "text": "Add milk to my shopping note when you can.", "expected": "direct_action"}
+{"id": 396, "text": "Add milk to my shopping note", "expected": "direct_action"}
+{"id": 397, "text": "Play the next episode.", "expected": "direct_action"}
+{"id": 398, "text": "Play the next episode please.", "expected": "direct_action"}
+{"id": 399, "text": "Play the next episode for me.", "expected": "direct_action"}
+{"id": 400, "text": "Play the next episode right now.", "expected": "direct_action"}
+{"id": 401, "text": "Play the next episode when you can.", "expected": "direct_action"}
+{"id": 402, "text": "Play the next episode", "expected": "direct_action"}
+{"id": 403, "text": "Set a reminder for tomorrow morning.", "expected": "direct_action"}
+{"id": 404, "text": "Set a reminder for tomorrow morning please.", "expected": "direct_action"}
+{"id": 405, "text": "Set a reminder for tomorrow morning for me.", "expected": "direct_action"}
+{"id": 406, "text": "Set a reminder for tomorrow morning right now.", "expected": "direct_action"}
+{"id": 407, "text": "Set a reminder for tomorrow morning when you can.", "expected": "direct_action"}
+{"id": 408, "text": "Set a reminder for tomorrow morning", "expected": "direct_action"}
+{"id": 409, "text": "What's playing right now?", "expected": "direct_action"}
+{"id": 410, "text": "Show my battery level.", "expected": "direct_action"}
+{"id": 411, "text": "Show my battery level please.", "expected": "direct_action"}
+{"id": 412, "text": "Show my battery level for me.", "expected": "direct_action"}
+{"id": 413, "text": "Show my battery level right now.", "expected": "direct_action"}
+{"id": 414, "text": "Show my battery level when you can.", "expected": "direct_action"}
+{"id": 415, "text": "Show my battery level", "expected": "direct_action"}
+{"id": 416, "text": "Hey Adam, focus my browser.", "expected": "direct_action"}
+{"id": 417, "text": "Please, focus my browser.", "expected": "direct_action"}
+{"id": 418, "text": "When you can, focus my browser.", "expected": "direct_action"}
+{"id": 419, "text": "Hey Adam, focus my browser please.", "expected": "direct_action"}
+{"id": 420, "text": "Please, focus my browser please.", "expected": "direct_action"}
+{"id": 421, "text": "When you can, focus my browser please.", "expected": "direct_action"}
+{"id": 422, "text": "Hey Adam, focus my browser for me.", "expected": "direct_action"}
+{"id": 423, "text": "Please, focus my browser for me.", "expected": "direct_action"}
+{"id": 424, "text": "When you can, focus my browser for me.", "expected": "direct_action"}
+{"id": 425, "text": "Hey Adam, focus my browser right now.", "expected": "direct_action"}
+{"id": 426, "text": "Please, focus my browser right now.", "expected": "direct_action"}
+{"id": 427, "text": "When you can, focus my browser right now.", "expected": "direct_action"}
+{"id": 428, "text": "Hey Adam, focus my browser when you can.", "expected": "direct_action"}
+{"id": 429, "text": "Please, focus my browser when you can.", "expected": "direct_action"}
+{"id": 430, "text": "When you can, focus my browser when you can.", "expected": "direct_action"}
+{"id": 431, "text": "Hey Adam, focus my browser", "expected": "direct_action"}
+{"id": 432, "text": "Please, focus my browser", "expected": "direct_action"}
+{"id": 433, "text": "When you can, focus my browser", "expected": "direct_action"}
+{"id": 434, "text": "Hey Adam, focus the Spotify window.", "expected": "direct_action"}
+{"id": 435, "text": "Please, focus the Spotify window.", "expected": "direct_action"}
+{"id": 436, "text": "When you can, focus the Spotify window.", "expected": "direct_action"}
+{"id": 437, "text": "Hey Adam, focus the Spotify window please.", "expected": "direct_action"}
+{"id": 438, "text": "Please, focus the Spotify window please.", "expected": "direct_action"}
+{"id": 439, "text": "When you can, focus the Spotify window please.", "expected": "direct_action"}
+{"id": 440, "text": "Hey Adam, focus the Spotify window for me.", "expected": "direct_action"}
+{"id": 441, "text": "Please, focus the Spotify window for me.", "expected": "direct_action"}
+{"id": 442, "text": "When you can, focus the Spotify window for me.", "expected": "direct_action"}
+{"id": 443, "text": "Hey Adam, focus the Spotify window right now.", "expected": "direct_action"}
+{"id": 444, "text": "Please, focus the Spotify window right now.", "expected": "direct_action"}
+{"id": 445, "text": "When you can, focus the Spotify window right now.", "expected": "direct_action"}
+{"id": 446, "text": "Hey Adam, focus the Spotify window when you can.", "expected": "direct_action"}
+{"id": 447, "text": "Please, focus the Spotify window when you can.", "expected": "direct_action"}
+{"id": 448, "text": "When you can, focus the Spotify window when you can.", "expected": "direct_action"}
+{"id": 449, "text": "Hey Adam, focus the Spotify window", "expected": "direct_action"}
+{"id": 450, "text": "Please, focus the Spotify window", "expected": "direct_action"}
+{"id": 451, "text": "When you can, focus the Spotify window", "expected": "direct_action"}
+{"id": 452, "text": "Hey Adam, switch my browser to the front.", "expected": "direct_action"}
+{"id": 453, "text": "Please, switch my browser to the front.", "expected": "direct_action"}
+{"id": 454, "text": "When you can, switch my browser to the front.", "expected": "direct_action"}
+{"id": 455, "text": "Hey Adam, switch my browser to the front please.", "expected": "direct_action"}
+{"id": 456, "text": "Please, switch my browser to the front please.", "expected": "direct_action"}
+{"id": 457, "text": "When you can, switch my browser to the front please.", "expected": "direct_action"}
+{"id": 458, "text": "Hey Adam, switch my browser to the front for me.", "expected": "direct_action"}
+{"id": 459, "text": "Please, switch my browser to the front for me.", "expected": "direct_action"}
+{"id": 460, "text": "When you can, switch my browser to the front for me.", "expected": "direct_action"}
+{"id": 461, "text": "Hey Adam, switch my browser to the front right now.", "expected": "direct_action"}
+{"id": 462, "text": "Please, switch my browser to the front right now.", "expected": "direct_action"}
+{"id": 463, "text": "When you can, switch my browser to the front right now.", "expected": "direct_action"}
+{"id": 464, "text": "Hey Adam, switch my browser to the front when you can.", "expected": "direct_action"}
+{"id": 465, "text": "Please, switch my browser to the front when you can.", "expected": "direct_action"}
+{"id": 466, "text": "When you can, switch my browser to the front when you can.", "expected": "direct_action"}
+{"id": 467, "text": "Hey Adam, switch my browser to the front", "expected": "direct_action"}
+{"id": 468, "text": "Please, switch my browser to the front", "expected": "direct_action"}
+{"id": 469, "text": "When you can, switch my browser to the front", "expected": "direct_action"}
+{"id": 470, "text": "Hey Adam, play my music.", "expected": "direct_action"}
+{"id": 471, "text": "Please, play my music.", "expected": "direct_action"}
+{"id": 472, "text": "When you can, play my music.", "expected": "direct_action"}
+{"id": 473, "text": "Hey Adam, play my music please.", "expected": "direct_action"}
+{"id": 474, "text": "Please, play my music please.", "expected": "direct_action"}
+{"id": 475, "text": "When you can, play my music please.", "expected": "direct_action"}
+{"id": 476, "text": "Hey Adam, play my music for me.", "expected": "direct_action"}
+{"id": 477, "text": "Please, play my music for me.", "expected": "direct_action"}
+{"id": 478, "text": "When you can, play my music for me.", "expected": "direct_action"}
+{"id": 479, "text": "Hey Adam, play my music right now.", "expected": "direct_action"}
+{"id": 480, "text": "Please, play my music right now.", "expected": "direct_action"}
+{"id": 481, "text": "When you can, play my music right now.", "expected": "direct_action"}
+{"id": 482, "text": "Hey Adam, play my music when you can.", "expected": "direct_action"}
+{"id": 483, "text": "Please, play my music when you can.", "expected": "direct_action"}
+{"id": 484, "text": "When you can, play my music when you can.", "expected": "direct_action"}
+{"id": 485, "text": "Hey Adam, play my music", "expected": "direct_action"}
+{"id": 486, "text": "Please, play my music", "expected": "direct_action"}
+{"id": 487, "text": "When you can, play my music", "expected": "direct_action"}
+{"id": 488, "text": "Hey Adam, pause the video.", "expected": "direct_action"}
+{"id": 489, "text": "Please, pause the video.", "expected": "direct_action"}
+{"id": 490, "text": "When you can, pause the video.", "expected": "direct_action"}
+{"id": 491, "text": "Hey Adam, pause the video please.", "expected": "direct_action"}
+{"id": 492, "text": "Please, pause the video please.", "expected": "direct_action"}
+{"id": 493, "text": "When you can, pause the video please.", "expected": "direct_action"}
+{"id": 494, "text": "Hey Adam, pause the video for me.", "expected": "direct_action"}
+{"id": 495, "text": "Please, pause the video for me.", "expected": "direct_action"}
+{"id": 496, "text": "When you can, pause the video for me.", "expected": "direct_action"}
+{"id": 497, "text": "Hey Adam, pause the video right now.", "expected": "direct_action"}
+{"id": 498, "text": "Please, pause the video right now.", "expected": "direct_action"}
+{"id": 499, "text": "When you can, pause the video right now.", "expected": "direct_action"}
+{"id": 500, "text": "Hey Adam, pause the video when you can.", "expected": "direct_action"}
+{"id": 501, "text": "I have a meeting tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 502, "text": "I've got a meeting tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 503, "text": "My a meeting is tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 504, "text": "I'm scheduled for a meeting tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 505, "text": "I am going to a meeting tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 506, "text": "There's a meeting on my schedule tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 507, "text": "I will be at a meeting tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 508, "text": "I'm booked for a meeting tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 509, "text": "Put this in my plans: a meeting tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 510, "text": "I need to remember that I have a meeting tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 511, "text": "I have a meeting tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 512, "text": "I've got a meeting tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 513, "text": "My a meeting is tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 514, "text": "I'm scheduled for a meeting tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 515, "text": "I am going to a meeting tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 516, "text": "There's a meeting on my schedule tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 517, "text": "I will be at a meeting tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 518, "text": "I'm booked for a meeting tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 519, "text": "Put this in my plans: a meeting tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 520, "text": "I need to remember that I have a meeting tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 521, "text": "I have a meeting tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 522, "text": "I've got a meeting tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 523, "text": "My a meeting is tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 524, "text": "I'm scheduled for a meeting tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 525, "text": "I am going to a meeting tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 526, "text": "There's a meeting on my schedule tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 527, "text": "I will be at a meeting tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 528, "text": "I'm booked for a meeting tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 529, "text": "Put this in my plans: a meeting tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 530, "text": "I need to remember that I have a meeting tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 531, "text": "I have a meeting this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 532, "text": "I've got a meeting this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 533, "text": "My a meeting is this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 534, "text": "I'm scheduled for a meeting this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 535, "text": "I am going to a meeting this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 536, "text": "There's a meeting on my schedule this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 537, "text": "I will be at a meeting this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 538, "text": "I'm booked for a meeting this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 539, "text": "Put this in my plans: a meeting this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 540, "text": "I need to remember that I have a meeting this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 541, "text": "I have a meeting Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 542, "text": "I've got a meeting Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 543, "text": "My a meeting is Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 544, "text": "I'm scheduled for a meeting Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 545, "text": "I am going to a meeting Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 546, "text": "There's a meeting on my schedule Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 547, "text": "I will be at a meeting Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 548, "text": "I'm booked for a meeting Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 549, "text": "Put this in my plans: a meeting Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 550, "text": "I need to remember that I have a meeting Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 551, "text": "I have a meeting next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 552, "text": "I've got a meeting next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 553, "text": "My a meeting is next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 554, "text": "I'm scheduled for a meeting next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 555, "text": "I am going to a meeting next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 556, "text": "There's a meeting on my schedule next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 557, "text": "I will be at a meeting next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 558, "text": "I'm booked for a meeting next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 559, "text": "Put this in my plans: a meeting next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 560, "text": "I need to remember that I have a meeting next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 561, "text": "I have a meeting next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 562, "text": "I've got a meeting next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 563, "text": "My a meeting is next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 564, "text": "I'm scheduled for a meeting next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 565, "text": "I am going to a meeting next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 566, "text": "There's a meeting on my schedule next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 567, "text": "I will be at a meeting next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 568, "text": "I'm booked for a meeting next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 569, "text": "Put this in my plans: a meeting next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 570, "text": "I need to remember that I have a meeting next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 571, "text": "I have a meeting on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 572, "text": "I've got a meeting on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 573, "text": "My a meeting is on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 574, "text": "I'm scheduled for a meeting on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 575, "text": "I am going to a meeting on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 576, "text": "There's a meeting on my schedule on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 577, "text": "I will be at a meeting on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 578, "text": "I'm booked for a meeting on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 579, "text": "Put this in my plans: a meeting on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 580, "text": "I need to remember that I have a meeting on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 581, "text": "I have a meeting in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 582, "text": "I've got a meeting in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 583, "text": "My a meeting is in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 584, "text": "I'm scheduled for a meeting in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 585, "text": "I am going to a meeting in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 586, "text": "There's a meeting on my schedule in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 587, "text": "I will be at a meeting in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 588, "text": "I'm booked for a meeting in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 589, "text": "Put this in my plans: a meeting in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 590, "text": "I need to remember that I have a meeting in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 591, "text": "I have a meeting later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 592, "text": "I've got a meeting later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 593, "text": "My a meeting is later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 594, "text": "I'm scheduled for a meeting later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 595, "text": "I am going to a meeting later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 596, "text": "There's a meeting on my schedule later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 597, "text": "I will be at a meeting later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 598, "text": "I'm booked for a meeting later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 599, "text": "Put this in my plans: a meeting later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 600, "text": "I need to remember that I have a meeting later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 601, "text": "I have a meeting the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 602, "text": "I've got a meeting the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 603, "text": "My a meeting is the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 604, "text": "I'm scheduled for a meeting the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 605, "text": "I am going to a meeting the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 606, "text": "There's a meeting on my schedule the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 607, "text": "I will be at a meeting the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 608, "text": "I'm booked for a meeting the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 609, "text": "Put this in my plans: a meeting the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 610, "text": "I need to remember that I have a meeting the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 611, "text": "I have a meeting next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 612, "text": "I've got a meeting next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 613, "text": "My a meeting is next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 614, "text": "I'm scheduled for a meeting next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 615, "text": "I am going to a meeting next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 616, "text": "There's a meeting on my schedule next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 617, "text": "I will be at a meeting next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 618, "text": "I'm booked for a meeting next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 619, "text": "Put this in my plans: a meeting next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 620, "text": "I need to remember that I have a meeting next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 621, "text": "I have a meeting this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 622, "text": "I've got a meeting this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 623, "text": "My a meeting is this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 624, "text": "I'm scheduled for a meeting this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 625, "text": "I am going to a meeting this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 626, "text": "There's a meeting on my schedule this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 627, "text": "I will be at a meeting this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 628, "text": "I'm booked for a meeting this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 629, "text": "Put this in my plans: a meeting this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 630, "text": "I need to remember that I have a meeting this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 631, "text": "I have a meeting Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 632, "text": "I've got a meeting Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 633, "text": "My a meeting is Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 634, "text": "I'm scheduled for a meeting Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 635, "text": "I am going to a meeting Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 636, "text": "There's a meeting on my schedule Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 637, "text": "I will be at a meeting Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 638, "text": "I'm booked for a meeting Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 639, "text": "Put this in my plans: a meeting Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 640, "text": "I need to remember that I have a meeting Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 641, "text": "I have a meeting on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 642, "text": "I've got a meeting on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 643, "text": "My a meeting is on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 644, "text": "I'm scheduled for a meeting on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 645, "text": "I am going to a meeting on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 646, "text": "There's a meeting on my schedule on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 647, "text": "I will be at a meeting on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 648, "text": "I'm booked for a meeting on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 649, "text": "Put this in my plans: a meeting on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 650, "text": "I need to remember that I have a meeting on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 651, "text": "I have a meeting in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 652, "text": "I've got a meeting in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 653, "text": "My a meeting is in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 654, "text": "I'm scheduled for a meeting in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 655, "text": "I am going to a meeting in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 656, "text": "There's a meeting on my schedule in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 657, "text": "I will be at a meeting in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 658, "text": "I'm booked for a meeting in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 659, "text": "Put this in my plans: a meeting in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 660, "text": "I need to remember that I have a meeting in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 661, "text": "I have a meeting next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 662, "text": "I've got a meeting next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 663, "text": "My a meeting is next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 664, "text": "I'm scheduled for a meeting next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 665, "text": "I am going to a meeting next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 666, "text": "There's a meeting on my schedule next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 667, "text": "I will be at a meeting next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 668, "text": "I'm booked for a meeting next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 669, "text": "Put this in my plans: a meeting next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 670, "text": "I need to remember that I have a meeting next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 671, "text": "I have a meeting at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 672, "text": "I've got a meeting at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 673, "text": "My a meeting is at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 674, "text": "I'm scheduled for a meeting at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 675, "text": "I am going to a meeting at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 676, "text": "There's a meeting on my schedule at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 677, "text": "I will be at a meeting at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 678, "text": "I'm booked for a meeting at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 679, "text": "Put this in my plans: a meeting at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 680, "text": "I need to remember that I have a meeting at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 681, "text": "I have a meeting on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 682, "text": "I've got a meeting on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 683, "text": "My a meeting is on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 684, "text": "I'm scheduled for a meeting on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 685, "text": "I am going to a meeting on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 686, "text": "There's a meeting on my schedule on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 687, "text": "I will be at a meeting on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 688, "text": "I'm booked for a meeting on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 689, "text": "Put this in my plans: a meeting on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 690, "text": "I need to remember that I have a meeting on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 691, "text": "I have a meeting Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 692, "text": "I've got a meeting Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 693, "text": "My a meeting is Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 694, "text": "I'm scheduled for a meeting Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 695, "text": "I am going to a meeting Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 696, "text": "There's a meeting on my schedule Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 697, "text": "I will be at a meeting Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 698, "text": "I'm booked for a meeting Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 699, "text": "Put this in my plans: a meeting Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 700, "text": "I need to remember that I have a meeting Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 701, "text": "I have a doctor appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 702, "text": "I've got a doctor appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 703, "text": "My a doctor appointment is tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 704, "text": "I'm scheduled for a doctor appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 705, "text": "I am going to a doctor appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 706, "text": "There's a doctor appointment on my schedule tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 707, "text": "I will be at a doctor appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 708, "text": "I'm booked for a doctor appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 709, "text": "Put this in my plans: a doctor appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 710, "text": "I need to remember that I have a doctor appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 711, "text": "I have a doctor appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 712, "text": "I've got a doctor appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 713, "text": "My a doctor appointment is tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 714, "text": "I'm scheduled for a doctor appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 715, "text": "I am going to a doctor appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 716, "text": "There's a doctor appointment on my schedule tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 717, "text": "I will be at a doctor appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 718, "text": "I'm booked for a doctor appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 719, "text": "Put this in my plans: a doctor appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 720, "text": "I need to remember that I have a doctor appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 721, "text": "I have a doctor appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 722, "text": "I've got a doctor appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 723, "text": "My a doctor appointment is tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 724, "text": "I'm scheduled for a doctor appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 725, "text": "I am going to a doctor appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 726, "text": "There's a doctor appointment on my schedule tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 727, "text": "I will be at a doctor appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 728, "text": "I'm booked for a doctor appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 729, "text": "Put this in my plans: a doctor appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 730, "text": "I need to remember that I have a doctor appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 731, "text": "I have a doctor appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 732, "text": "I've got a doctor appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 733, "text": "My a doctor appointment is this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 734, "text": "I'm scheduled for a doctor appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 735, "text": "I am going to a doctor appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 736, "text": "There's a doctor appointment on my schedule this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 737, "text": "I will be at a doctor appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 738, "text": "I'm booked for a doctor appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 739, "text": "Put this in my plans: a doctor appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 740, "text": "I need to remember that I have a doctor appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 741, "text": "I have a doctor appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 742, "text": "I've got a doctor appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 743, "text": "My a doctor appointment is Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 744, "text": "I'm scheduled for a doctor appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 745, "text": "I am going to a doctor appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 746, "text": "There's a doctor appointment on my schedule Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 747, "text": "I will be at a doctor appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 748, "text": "I'm booked for a doctor appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 749, "text": "Put this in my plans: a doctor appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 750, "text": "I need to remember that I have a doctor appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 751, "text": "I have a doctor appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 752, "text": "I've got a doctor appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 753, "text": "My a doctor appointment is next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 754, "text": "I'm scheduled for a doctor appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 755, "text": "I am going to a doctor appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 756, "text": "There's a doctor appointment on my schedule next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 757, "text": "I will be at a doctor appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 758, "text": "I'm booked for a doctor appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 759, "text": "Put this in my plans: a doctor appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 760, "text": "I need to remember that I have a doctor appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 761, "text": "I have a doctor appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 762, "text": "I've got a doctor appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 763, "text": "My a doctor appointment is next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 764, "text": "I'm scheduled for a doctor appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 765, "text": "I am going to a doctor appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 766, "text": "There's a doctor appointment on my schedule next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 767, "text": "I will be at a doctor appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 768, "text": "I'm booked for a doctor appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 769, "text": "Put this in my plans: a doctor appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 770, "text": "I need to remember that I have a doctor appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 771, "text": "I have a doctor appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 772, "text": "I've got a doctor appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 773, "text": "My a doctor appointment is on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 774, "text": "I'm scheduled for a doctor appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 775, "text": "I am going to a doctor appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 776, "text": "There's a doctor appointment on my schedule on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 777, "text": "I will be at a doctor appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 778, "text": "I'm booked for a doctor appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 779, "text": "Put this in my plans: a doctor appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 780, "text": "I need to remember that I have a doctor appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 781, "text": "I have a doctor appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 782, "text": "I've got a doctor appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 783, "text": "My a doctor appointment is in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 784, "text": "I'm scheduled for a doctor appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 785, "text": "I am going to a doctor appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 786, "text": "There's a doctor appointment on my schedule in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 787, "text": "I will be at a doctor appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 788, "text": "I'm booked for a doctor appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 789, "text": "Put this in my plans: a doctor appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 790, "text": "I need to remember that I have a doctor appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 791, "text": "I have a doctor appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 792, "text": "I've got a doctor appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 793, "text": "My a doctor appointment is later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 794, "text": "I'm scheduled for a doctor appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 795, "text": "I am going to a doctor appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 796, "text": "There's a doctor appointment on my schedule later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 797, "text": "I will be at a doctor appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 798, "text": "I'm booked for a doctor appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 799, "text": "Put this in my plans: a doctor appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 800, "text": "I need to remember that I have a doctor appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 801, "text": "I have a doctor appointment the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 802, "text": "I've got a doctor appointment the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 803, "text": "My a doctor appointment is the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 804, "text": "I'm scheduled for a doctor appointment the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 805, "text": "I am going to a doctor appointment the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 806, "text": "There's a doctor appointment on my schedule the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 807, "text": "I will be at a doctor appointment the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 808, "text": "I'm booked for a doctor appointment the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 809, "text": "Put this in my plans: a doctor appointment the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 810, "text": "I need to remember that I have a doctor appointment the day after tomorrow at 4:15.", "expected": "personal_calendar_commitment"}
+{"id": 811, "text": "I have a doctor appointment next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 812, "text": "I've got a doctor appointment next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 813, "text": "My a doctor appointment is next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 814, "text": "I'm scheduled for a doctor appointment next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 815, "text": "I am going to a doctor appointment next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 816, "text": "There's a doctor appointment on my schedule next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 817, "text": "I will be at a doctor appointment next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 818, "text": "I'm booked for a doctor appointment next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 819, "text": "Put this in my plans: a doctor appointment next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 820, "text": "I need to remember that I have a doctor appointment next month on the 5th.", "expected": "personal_calendar_commitment"}
+{"id": 821, "text": "I have a doctor appointment this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 822, "text": "I've got a doctor appointment this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 823, "text": "My a doctor appointment is this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 824, "text": "I'm scheduled for a doctor appointment this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 825, "text": "I am going to a doctor appointment this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 826, "text": "There's a doctor appointment on my schedule this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 827, "text": "I will be at a doctor appointment this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 828, "text": "I'm booked for a doctor appointment this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 829, "text": "Put this in my plans: a doctor appointment this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 830, "text": "I need to remember that I have a doctor appointment this Wednesday morning.", "expected": "personal_calendar_commitment"}
+{"id": 831, "text": "I have a doctor appointment Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 832, "text": "I've got a doctor appointment Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 833, "text": "My a doctor appointment is Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 834, "text": "I'm scheduled for a doctor appointment Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 835, "text": "I am going to a doctor appointment Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 836, "text": "There's a doctor appointment on my schedule Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 837, "text": "I will be at a doctor appointment Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 838, "text": "I'm booked for a doctor appointment Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 839, "text": "Put this in my plans: a doctor appointment Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 840, "text": "I need to remember that I have a doctor appointment Saturday at 6 pm.", "expected": "personal_calendar_commitment"}
+{"id": 841, "text": "I have a doctor appointment on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 842, "text": "I've got a doctor appointment on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 843, "text": "My a doctor appointment is on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 844, "text": "I'm scheduled for a doctor appointment on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 845, "text": "I am going to a doctor appointment on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 846, "text": "There's a doctor appointment on my schedule on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 847, "text": "I will be at a doctor appointment on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 848, "text": "I'm booked for a doctor appointment on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 849, "text": "Put this in my plans: a doctor appointment on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 850, "text": "I need to remember that I have a doctor appointment on November 3.", "expected": "personal_calendar_commitment"}
+{"id": 851, "text": "I have a doctor appointment in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 852, "text": "I've got a doctor appointment in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 853, "text": "My a doctor appointment is in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 854, "text": "I'm scheduled for a doctor appointment in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 855, "text": "I am going to a doctor appointment in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 856, "text": "There's a doctor appointment on my schedule in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 857, "text": "I will be at a doctor appointment in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 858, "text": "I'm booked for a doctor appointment in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 859, "text": "Put this in my plans: a doctor appointment in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 860, "text": "I need to remember that I have a doctor appointment in three weeks.", "expected": "personal_calendar_commitment"}
+{"id": 861, "text": "I have a doctor appointment next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 862, "text": "I've got a doctor appointment next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 863, "text": "My a doctor appointment is next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 864, "text": "I'm scheduled for a doctor appointment next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 865, "text": "I am going to a doctor appointment next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 866, "text": "There's a doctor appointment on my schedule next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 867, "text": "I will be at a doctor appointment next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 868, "text": "I'm booked for a doctor appointment next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 869, "text": "Put this in my plans: a doctor appointment next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 870, "text": "I need to remember that I have a doctor appointment next Thursday at 1:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 871, "text": "I have a doctor appointment at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 872, "text": "I've got a doctor appointment at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 873, "text": "My a doctor appointment is at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 874, "text": "I'm scheduled for a doctor appointment at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 875, "text": "I am going to a doctor appointment at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 876, "text": "There's a doctor appointment on my schedule at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 877, "text": "I will be at a doctor appointment at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 878, "text": "I'm booked for a doctor appointment at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 879, "text": "Put this in my plans: a doctor appointment at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 880, "text": "I need to remember that I have a doctor appointment at 10 am tomorrow.", "expected": "personal_calendar_commitment"}
+{"id": 881, "text": "I have a doctor appointment on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 882, "text": "I've got a doctor appointment on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 883, "text": "My a doctor appointment is on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 884, "text": "I'm scheduled for a doctor appointment on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 885, "text": "I am going to a doctor appointment on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 886, "text": "There's a doctor appointment on my schedule on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 887, "text": "I will be at a doctor appointment on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 888, "text": "I'm booked for a doctor appointment on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 889, "text": "Put this in my plans: a doctor appointment on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 890, "text": "I need to remember that I have a doctor appointment on the 20th at noon.", "expected": "personal_calendar_commitment"}
+{"id": 891, "text": "I have a doctor appointment Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 892, "text": "I've got a doctor appointment Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 893, "text": "My a doctor appointment is Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 894, "text": "I'm scheduled for a doctor appointment Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 895, "text": "I am going to a doctor appointment Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 896, "text": "There's a doctor appointment on my schedule Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 897, "text": "I will be at a doctor appointment Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 898, "text": "I'm booked for a doctor appointment Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 899, "text": "Put this in my plans: a doctor appointment Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 900, "text": "I need to remember that I have a doctor appointment Monday after lunch.", "expected": "personal_calendar_commitment"}
+{"id": 901, "text": "I have a dentist appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 902, "text": "I've got a dentist appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 903, "text": "My a dentist appointment is tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 904, "text": "I'm scheduled for a dentist appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 905, "text": "I am going to a dentist appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 906, "text": "There's a dentist appointment on my schedule tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 907, "text": "I will be at a dentist appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 908, "text": "I'm booked for a dentist appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 909, "text": "Put this in my plans: a dentist appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 910, "text": "I need to remember that I have a dentist appointment tomorrow at 3:30 pm.", "expected": "personal_calendar_commitment"}
+{"id": 911, "text": "I have a dentist appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 912, "text": "I've got a dentist appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 913, "text": "My a dentist appointment is tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 914, "text": "I'm scheduled for a dentist appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 915, "text": "I am going to a dentist appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 916, "text": "There's a dentist appointment on my schedule tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 917, "text": "I will be at a dentist appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 918, "text": "I'm booked for a dentist appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 919, "text": "Put this in my plans: a dentist appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 920, "text": "I need to remember that I have a dentist appointment tomorrow morning.", "expected": "personal_calendar_commitment"}
+{"id": 921, "text": "I have a dentist appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 922, "text": "I've got a dentist appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 923, "text": "My a dentist appointment is tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 924, "text": "I'm scheduled for a dentist appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 925, "text": "I am going to a dentist appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 926, "text": "There's a dentist appointment on my schedule tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 927, "text": "I will be at a dentist appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 928, "text": "I'm booked for a dentist appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 929, "text": "Put this in my plans: a dentist appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 930, "text": "I need to remember that I have a dentist appointment tomorrow afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 931, "text": "I have a dentist appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 932, "text": "I've got a dentist appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 933, "text": "My a dentist appointment is this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 934, "text": "I'm scheduled for a dentist appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 935, "text": "I am going to a dentist appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 936, "text": "There's a dentist appointment on my schedule this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 937, "text": "I will be at a dentist appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 938, "text": "I'm booked for a dentist appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 939, "text": "Put this in my plans: a dentist appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 940, "text": "I need to remember that I have a dentist appointment this Friday at noon.", "expected": "personal_calendar_commitment"}
+{"id": 941, "text": "I have a dentist appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 942, "text": "I've got a dentist appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 943, "text": "My a dentist appointment is Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 944, "text": "I'm scheduled for a dentist appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 945, "text": "I am going to a dentist appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 946, "text": "There's a dentist appointment on my schedule Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 947, "text": "I will be at a dentist appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 948, "text": "I'm booked for a dentist appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 949, "text": "Put this in my plans: a dentist appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 950, "text": "I need to remember that I have a dentist appointment Friday evening.", "expected": "personal_calendar_commitment"}
+{"id": 951, "text": "I have a dentist appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 952, "text": "I've got a dentist appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 953, "text": "My a dentist appointment is next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 954, "text": "I'm scheduled for a dentist appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 955, "text": "I am going to a dentist appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 956, "text": "There's a dentist appointment on my schedule next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 957, "text": "I will be at a dentist appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 958, "text": "I'm booked for a dentist appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 959, "text": "Put this in my plans: a dentist appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 960, "text": "I need to remember that I have a dentist appointment next Monday at 9 am.", "expected": "personal_calendar_commitment"}
+{"id": 961, "text": "I have a dentist appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 962, "text": "I've got a dentist appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 963, "text": "My a dentist appointment is next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 964, "text": "I'm scheduled for a dentist appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 965, "text": "I am going to a dentist appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 966, "text": "There's a dentist appointment on my schedule next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 967, "text": "I will be at a dentist appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 968, "text": "I'm booked for a dentist appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 969, "text": "Put this in my plans: a dentist appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 970, "text": "I need to remember that I have a dentist appointment next week on Tuesday.", "expected": "personal_calendar_commitment"}
+{"id": 971, "text": "I have a dentist appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 972, "text": "I've got a dentist appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 973, "text": "My a dentist appointment is on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 974, "text": "I'm scheduled for a dentist appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 975, "text": "I am going to a dentist appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 976, "text": "There's a dentist appointment on my schedule on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 977, "text": "I will be at a dentist appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 978, "text": "I'm booked for a dentist appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 979, "text": "Put this in my plans: a dentist appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 980, "text": "I need to remember that I have a dentist appointment on October 14 at 2 pm.", "expected": "personal_calendar_commitment"}
+{"id": 981, "text": "I have a dentist appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 982, "text": "I've got a dentist appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 983, "text": "My a dentist appointment is in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 984, "text": "I'm scheduled for a dentist appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 985, "text": "I am going to a dentist appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 986, "text": "There's a dentist appointment on my schedule in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 987, "text": "I will be at a dentist appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 988, "text": "I'm booked for a dentist appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 989, "text": "Put this in my plans: a dentist appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 990, "text": "I need to remember that I have a dentist appointment in two days at 11.", "expected": "personal_calendar_commitment"}
+{"id": 991, "text": "I have a dentist appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 992, "text": "I've got a dentist appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 993, "text": "My a dentist appointment is later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 994, "text": "I'm scheduled for a dentist appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 995, "text": "I am going to a dentist appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 996, "text": "There's a dentist appointment on my schedule later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 997, "text": "I will be at a dentist appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 998, "text": "I'm booked for a dentist appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 999, "text": "Put this in my plans: a dentist appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 1000, "text": "I need to remember that I have a dentist appointment later this afternoon.", "expected": "personal_calendar_commitment"}
+{"id": 1001, "text": "I had a meeting yesterday.", "expected": "none"}
+{"id": 1002, "text": "My a meeting was yesterday.", "expected": "none"}
+{"id": 1003, "text": "Yesterday I went to a meeting.", "expected": "none"}
+{"id": 1004, "text": "I finished a meeting earlier today.", "expected": "none"}
+{"id": 1005, "text": "Last week I had a meeting.", "expected": "none"}
+{"id": 1006, "text": "I had a meeting last Friday.", "expected": "none"}
+{"id": 1007, "text": "My a meeting was last Friday.", "expected": "none"}
+{"id": 1008, "text": "I had a meeting this morning.", "expected": "none"}
+{"id": 1009, "text": "My a meeting was this morning.", "expected": "none"}
+{"id": 1010, "text": "I had a meeting two days ago.", "expected": "none"}
+{"id": 1011, "text": "My a meeting was two days ago.", "expected": "none"}
+{"id": 1012, "text": "I had a meeting last month.", "expected": "none"}
+{"id": 1013, "text": "My a meeting was last month.", "expected": "none"}
+{"id": 1014, "text": "I had a meeting earlier today.", "expected": "none"}
+{"id": 1015, "text": "My a meeting was earlier today.", "expected": "none"}
+{"id": 1016, "text": "I had a doctor appointment yesterday.", "expected": "none"}
+{"id": 1017, "text": "My a doctor appointment was yesterday.", "expected": "none"}
+{"id": 1018, "text": "Yesterday I went to a doctor appointment.", "expected": "none"}
+{"id": 1019, "text": "I finished a doctor appointment earlier today.", "expected": "none"}
+{"id": 1020, "text": "Last week I had a doctor appointment.", "expected": "none"}
+{"id": 1021, "text": "I had a doctor appointment last Friday.", "expected": "none"}
+{"id": 1022, "text": "My a doctor appointment was last Friday.", "expected": "none"}
+{"id": 1023, "text": "I had a doctor appointment this morning.", "expected": "none"}
+{"id": 1024, "text": "My a doctor appointment was this morning.", "expected": "none"}
+{"id": 1025, "text": "I had a doctor appointment two days ago.", "expected": "none"}
+{"id": 1026, "text": "My a doctor appointment was two days ago.", "expected": "none"}
+{"id": 1027, "text": "I had a doctor appointment last month.", "expected": "none"}
+{"id": 1028, "text": "My a doctor appointment was last month.", "expected": "none"}
+{"id": 1029, "text": "I had a doctor appointment earlier today.", "expected": "none"}
+{"id": 1030, "text": "My a doctor appointment was earlier today.", "expected": "none"}
+{"id": 1031, "text": "I had a dentist appointment yesterday.", "expected": "none"}
+{"id": 1032, "text": "My a dentist appointment was yesterday.", "expected": "none"}
+{"id": 1033, "text": "Yesterday I went to a dentist appointment.", "expected": "none"}
+{"id": 1034, "text": "I finished a dentist appointment earlier today.", "expected": "none"}
+{"id": 1035, "text": "Last week I had a dentist appointment.", "expected": "none"}
+{"id": 1036, "text": "I had a dentist appointment last Friday.", "expected": "none"}
+{"id": 1037, "text": "My a dentist appointment was last Friday.", "expected": "none"}
+{"id": 1038, "text": "I had a dentist appointment this morning.", "expected": "none"}
+{"id": 1039, "text": "My a dentist appointment was this morning.", "expected": "none"}
+{"id": 1040, "text": "I had a dentist appointment two days ago.", "expected": "none"}
+{"id": 1041, "text": "My a dentist appointment was two days ago.", "expected": "none"}
+{"id": 1042, "text": "I had a dentist appointment last month.", "expected": "none"}
+{"id": 1043, "text": "My a dentist appointment was last month.", "expected": "none"}
+{"id": 1044, "text": "I had a dentist appointment earlier today.", "expected": "none"}
+{"id": 1045, "text": "My a dentist appointment was earlier today.", "expected": "none"}
+{"id": 1046, "text": "I had a call with my manager yesterday.", "expected": "none"}
+{"id": 1047, "text": "My a call with my manager was yesterday.", "expected": "none"}
+{"id": 1048, "text": "Yesterday I went to a call with my manager.", "expected": "none"}
+{"id": 1049, "text": "I finished a call with my manager earlier today.", "expected": "none"}
+{"id": 1050, "text": "Last week I had a call with my manager.", "expected": "none"}
+{"id": 1051, "text": "I had a call with my manager last Friday.", "expected": "none"}
+{"id": 1052, "text": "My a call with my manager was last Friday.", "expected": "none"}
+{"id": 1053, "text": "I had a call with my manager this morning.", "expected": "none"}
+{"id": 1054, "text": "My a call with my manager was this morning.", "expected": "none"}
+{"id": 1055, "text": "I had a call with my manager two days ago.", "expected": "none"}
+{"id": 1056, "text": "My a call with my manager was two days ago.", "expected": "none"}
+{"id": 1057, "text": "I had a call with my manager last month.", "expected": "none"}
+{"id": 1058, "text": "My a call with my manager was last month.", "expected": "none"}
+{"id": 1059, "text": "I had a call with my manager earlier today.", "expected": "none"}
+{"id": 1060, "text": "My a call with my manager was earlier today.", "expected": "none"}
+{"id": 1061, "text": "I had lunch with Jordan yesterday.", "expected": "none"}
+{"id": 1062, "text": "My lunch with Jordan was yesterday.", "expected": "none"}
+{"id": 1063, "text": "Yesterday I went to lunch with Jordan.", "expected": "none"}
+{"id": 1064, "text": "I finished lunch with Jordan earlier today.", "expected": "none"}
+{"id": 1065, "text": "Last week I had lunch with Jordan.", "expected": "none"}
+{"id": 1066, "text": "I had lunch with Jordan last Friday.", "expected": "none"}
+{"id": 1067, "text": "My lunch with Jordan was last Friday.", "expected": "none"}
+{"id": 1068, "text": "I had lunch with Jordan this morning.", "expected": "none"}
+{"id": 1069, "text": "My lunch with Jordan was this morning.", "expected": "none"}
+{"id": 1070, "text": "I had lunch with Jordan two days ago.", "expected": "none"}
+{"id": 1071, "text": "My lunch with Jordan was two days ago.", "expected": "none"}
+{"id": 1072, "text": "I had lunch with Jordan last month.", "expected": "none"}
+{"id": 1073, "text": "My lunch with Jordan was last month.", "expected": "none"}
+{"id": 1074, "text": "I had lunch with Jordan earlier today.", "expected": "none"}
+{"id": 1075, "text": "My lunch with Jordan was earlier today.", "expected": "none"}
+{"id": 1076, "text": "I had a job interview yesterday.", "expected": "none"}
+{"id": 1077, "text": "My a job interview was yesterday.", "expected": "none"}
+{"id": 1078, "text": "Yesterday I went to a job interview.", "expected": "none"}
+{"id": 1079, "text": "I finished a job interview earlier today.", "expected": "none"}
+{"id": 1080, "text": "Last week I had a job interview.", "expected": "none"}
+{"id": 1081, "text": "I had a job interview last Friday.", "expected": "none"}
+{"id": 1082, "text": "My a job interview was last Friday.", "expected": "none"}
+{"id": 1083, "text": "I had a job interview this morning.", "expected": "none"}
+{"id": 1084, "text": "My a job interview was this morning.", "expected": "none"}
+{"id": 1085, "text": "I had a job interview two days ago.", "expected": "none"}
+{"id": 1086, "text": "My a job interview was two days ago.", "expected": "none"}
+{"id": 1087, "text": "I had a job interview last month.", "expected": "none"}
+{"id": 1088, "text": "My a job interview was last month.", "expected": "none"}
+{"id": 1089, "text": "I had a job interview earlier today.", "expected": "none"}
+{"id": 1090, "text": "My a job interview was earlier today.", "expected": "none"}
+{"id": 1091, "text": "I had a class yesterday.", "expected": "none"}
+{"id": 1092, "text": "My a class was yesterday.", "expected": "none"}
+{"id": 1093, "text": "Yesterday I went to a class.", "expected": "none"}
+{"id": 1094, "text": "I finished a class earlier today.", "expected": "none"}
+{"id": 1095, "text": "Last week I had a class.", "expected": "none"}
+{"id": 1096, "text": "I had a class last Friday.", "expected": "none"}
+{"id": 1097, "text": "My a class was last Friday.", "expected": "none"}
+{"id": 1098, "text": "I had a class this morning.", "expected": "none"}
+{"id": 1099, "text": "My a class was this morning.", "expected": "none"}
+{"id": 1100, "text": "I had a class two days ago.", "expected": "none"}
+{"id": 1101, "text": "My a class was two days ago.", "expected": "none"}
+{"id": 1102, "text": "I had a class last month.", "expected": "none"}
+{"id": 1103, "text": "My a class was last month.", "expected": "none"}
+{"id": 1104, "text": "I had a class earlier today.", "expected": "none"}
+{"id": 1105, "text": "My a class was earlier today.", "expected": "none"}
+{"id": 1106, "text": "I had a therapy session yesterday.", "expected": "none"}
+{"id": 1107, "text": "My a therapy session was yesterday.", "expected": "none"}
+{"id": 1108, "text": "Yesterday I went to a therapy session.", "expected": "none"}
+{"id": 1109, "text": "I finished a therapy session earlier today.", "expected": "none"}
+{"id": 1110, "text": "Last week I had a therapy session.", "expected": "none"}
+{"id": 1111, "text": "I had a therapy session last Friday.", "expected": "none"}
+{"id": 1112, "text": "My a therapy session was last Friday.", "expected": "none"}
+{"id": 1113, "text": "I had a therapy session this morning.", "expected": "none"}
+{"id": 1114, "text": "My a therapy session was this morning.", "expected": "none"}
+{"id": 1115, "text": "I had a therapy session two days ago.", "expected": "none"}
+{"id": 1116, "text": "My a therapy session was two days ago.", "expected": "none"}
+{"id": 1117, "text": "I had a therapy session last month.", "expected": "none"}
+{"id": 1118, "text": "My a therapy session was last month.", "expected": "none"}
+{"id": 1119, "text": "I had a therapy session earlier today.", "expected": "none"}
+{"id": 1120, "text": "My a therapy session was earlier today.", "expected": "none"}
+{"id": 1121, "text": "I had a flight yesterday.", "expected": "none"}
+{"id": 1122, "text": "My a flight was yesterday.", "expected": "none"}
+{"id": 1123, "text": "Yesterday I went to a flight.", "expected": "none"}
+{"id": 1124, "text": "I finished a flight earlier today.", "expected": "none"}
+{"id": 1125, "text": "Last week I had a flight.", "expected": "none"}
+{"id": 1126, "text": "I had a flight last Friday.", "expected": "none"}
+{"id": 1127, "text": "My a flight was last Friday.", "expected": "none"}
+{"id": 1128, "text": "I had a flight this morning.", "expected": "none"}
+{"id": 1129, "text": "My a flight was this morning.", "expected": "none"}
+{"id": 1130, "text": "I had a flight two days ago.", "expected": "none"}
+{"id": 1131, "text": "My a flight was two days ago.", "expected": "none"}
+{"id": 1132, "text": "I had a flight last month.", "expected": "none"}
+{"id": 1133, "text": "My a flight was last month.", "expected": "none"}
+{"id": 1134, "text": "I had a flight earlier today.", "expected": "none"}
+{"id": 1135, "text": "My a flight was earlier today.", "expected": "none"}
+{"id": 1136, "text": "I had a project review yesterday.", "expected": "none"}
+{"id": 1137, "text": "My a project review was yesterday.", "expected": "none"}
+{"id": 1138, "text": "Yesterday I went to a project review.", "expected": "none"}
+{"id": 1139, "text": "I finished a project review earlier today.", "expected": "none"}
+{"id": 1140, "text": "Last week I had a project review.", "expected": "none"}
+{"id": 1141, "text": "I had a project review last Friday.", "expected": "none"}
+{"id": 1142, "text": "My a project review was last Friday.", "expected": "none"}
+{"id": 1143, "text": "I had a project review this morning.", "expected": "none"}
+{"id": 1144, "text": "My a project review was this morning.", "expected": "none"}
+{"id": 1145, "text": "I had a project review two days ago.", "expected": "none"}
+{"id": 1146, "text": "My a project review was two days ago.", "expected": "none"}
+{"id": 1147, "text": "I had a project review last month.", "expected": "none"}
+{"id": 1148, "text": "My a project review was last month.", "expected": "none"}
+{"id": 1149, "text": "I had a project review earlier today.", "expected": "none"}
+{"id": 1150, "text": "My a project review was earlier today.", "expected": "none"}
+{"id": 1151, "text": "I had a parent-teacher conference yesterday.", "expected": "none"}
+{"id": 1152, "text": "My a parent-teacher conference was yesterday.", "expected": "none"}
+{"id": 1153, "text": "Yesterday I went to a parent-teacher conference.", "expected": "none"}
+{"id": 1154, "text": "I finished a parent-teacher conference earlier today.", "expected": "none"}
+{"id": 1155, "text": "Last week I had a parent-teacher conference.", "expected": "none"}
+{"id": 1156, "text": "I had a parent-teacher conference last Friday.", "expected": "none"}
+{"id": 1157, "text": "My a parent-teacher conference was last Friday.", "expected": "none"}
+{"id": 1158, "text": "I had a parent-teacher conference this morning.", "expected": "none"}
+{"id": 1159, "text": "My a parent-teacher conference was this morning.", "expected": "none"}
+{"id": 1160, "text": "I had a parent-teacher conference two days ago.", "expected": "none"}
+{"id": 1161, "text": "My a parent-teacher conference was two days ago.", "expected": "none"}
+{"id": 1162, "text": "I had a parent-teacher conference last month.", "expected": "none"}
+{"id": 1163, "text": "My a parent-teacher conference was last month.", "expected": "none"}
+{"id": 1164, "text": "I had a parent-teacher conference earlier today.", "expected": "none"}
+{"id": 1165, "text": "My a parent-teacher conference was earlier today.", "expected": "none"}
+{"id": 1166, "text": "I had a work presentation yesterday.", "expected": "none"}
+{"id": 1167, "text": "My a work presentation was yesterday.", "expected": "none"}
+{"id": 1168, "text": "Yesterday I went to a work presentation.", "expected": "none"}
+{"id": 1169, "text": "I finished a work presentation earlier today.", "expected": "none"}
+{"id": 1170, "text": "Last week I had a work presentation.", "expected": "none"}
+{"id": 1171, "text": "I had a work presentation last Friday.", "expected": "none"}
+{"id": 1172, "text": "My a work presentation was last Friday.", "expected": "none"}
+{"id": 1173, "text": "I had a work presentation this morning.", "expected": "none"}
+{"id": 1174, "text": "My a work presentation was this morning.", "expected": "none"}
+{"id": 1175, "text": "I had a work presentation two days ago.", "expected": "none"}
+{"id": 1176, "text": "My a work presentation was two days ago.", "expected": "none"}
+{"id": 1177, "text": "I had a work presentation last month.", "expected": "none"}
+{"id": 1178, "text": "My a work presentation was last month.", "expected": "none"}
+{"id": 1179, "text": "I had a work presentation earlier today.", "expected": "none"}
+{"id": 1180, "text": "My a work presentation was earlier today.", "expected": "none"}
+{"id": 1181, "text": "I had a vet appointment yesterday.", "expected": "none"}
+{"id": 1182, "text": "My a vet appointment was yesterday.", "expected": "none"}
+{"id": 1183, "text": "Yesterday I went to a vet appointment.", "expected": "none"}
+{"id": 1184, "text": "I finished a vet appointment earlier today.", "expected": "none"}
+{"id": 1185, "text": "Last week I had a vet appointment.", "expected": "none"}
+{"id": 1186, "text": "I had a vet appointment last Friday.", "expected": "none"}
+{"id": 1187, "text": "My a vet appointment was last Friday.", "expected": "none"}
+{"id": 1188, "text": "I had a vet appointment this morning.", "expected": "none"}
+{"id": 1189, "text": "My a vet appointment was this morning.", "expected": "none"}
+{"id": 1190, "text": "I had a vet appointment two days ago.", "expected": "none"}
+{"id": 1191, "text": "My a vet appointment was two days ago.", "expected": "none"}
+{"id": 1192, "text": "I had a vet appointment last month.", "expected": "none"}
+{"id": 1193, "text": "My a vet appointment was last month.", "expected": "none"}
+{"id": 1194, "text": "I had a vet appointment earlier today.", "expected": "none"}
+{"id": 1195, "text": "My a vet appointment was earlier today.", "expected": "none"}
+{"id": 1196, "text": "I had a phone interview yesterday.", "expected": "none"}
+{"id": 1197, "text": "My a phone interview was yesterday.", "expected": "none"}
+{"id": 1198, "text": "Yesterday I went to a phone interview.", "expected": "none"}
+{"id": 1199, "text": "I finished a phone interview earlier today.", "expected": "none"}
+{"id": 1200, "text": "Last week I had a phone interview.", "expected": "none"}
+{"id": 1201, "text": "I had a video call yesterday.", "expected": "none"}
+{"id": 1202, "text": "My a video call was yesterday.", "expected": "none"}
+{"id": 1203, "text": "Yesterday I went to a video call.", "expected": "none"}
+{"id": 1204, "text": "I finished a video call earlier today.", "expected": "none"}
+{"id": 1205, "text": "Last week I had a video call.", "expected": "none"}
+{"id": 1206, "text": "I had a video call last Friday.", "expected": "none"}
+{"id": 1207, "text": "My a video call was last Friday.", "expected": "none"}
+{"id": 1208, "text": "I had a video call this morning.", "expected": "none"}
+{"id": 1209, "text": "My a video call was this morning.", "expected": "none"}
+{"id": 1210, "text": "I had a video call two days ago.", "expected": "none"}
+{"id": 1211, "text": "My a video call was two days ago.", "expected": "none"}
+{"id": 1212, "text": "I had a video call last month.", "expected": "none"}
+{"id": 1213, "text": "My a video call was last month.", "expected": "none"}
+{"id": 1214, "text": "I had a video call earlier today.", "expected": "none"}
+{"id": 1215, "text": "My a video call was earlier today.", "expected": "none"}
+{"id": 1216, "text": "Maybe I should schedule a meeting tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1217, "text": "I might have a meeting tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1218, "text": "If I have a meeting tomorrow at 3:30 pm, I'll let you know.", "expected": "none"}
+{"id": 1219, "text": "I wonder whether I should book a meeting tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1220, "text": "Could be nice to plan a meeting tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1221, "text": "I don't know if I'll have a meeting tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1222, "text": "Maybe I should schedule a meeting tomorrow morning.", "expected": "none"}
+{"id": 1223, "text": "I might have a meeting tomorrow morning.", "expected": "none"}
+{"id": 1224, "text": "If I have a meeting tomorrow morning, I'll let you know.", "expected": "none"}
+{"id": 1225, "text": "I wonder whether I should book a meeting tomorrow morning.", "expected": "none"}
+{"id": 1226, "text": "Could be nice to plan a meeting tomorrow morning.", "expected": "none"}
+{"id": 1227, "text": "I don't know if I'll have a meeting tomorrow morning.", "expected": "none"}
+{"id": 1228, "text": "Maybe I should schedule a meeting tomorrow afternoon.", "expected": "none"}
+{"id": 1229, "text": "I might have a meeting tomorrow afternoon.", "expected": "none"}
+{"id": 1230, "text": "If I have a meeting tomorrow afternoon, I'll let you know.", "expected": "none"}
+{"id": 1231, "text": "I wonder whether I should book a meeting tomorrow afternoon.", "expected": "none"}
+{"id": 1232, "text": "Could be nice to plan a meeting tomorrow afternoon.", "expected": "none"}
+{"id": 1233, "text": "I don't know if I'll have a meeting tomorrow afternoon.", "expected": "none"}
+{"id": 1234, "text": "Maybe I should schedule a meeting this Friday at noon.", "expected": "none"}
+{"id": 1235, "text": "I might have a meeting this Friday at noon.", "expected": "none"}
+{"id": 1236, "text": "If I have a meeting this Friday at noon, I'll let you know.", "expected": "none"}
+{"id": 1237, "text": "I wonder whether I should book a meeting this Friday at noon.", "expected": "none"}
+{"id": 1238, "text": "Could be nice to plan a meeting this Friday at noon.", "expected": "none"}
+{"id": 1239, "text": "I don't know if I'll have a meeting this Friday at noon.", "expected": "none"}
+{"id": 1240, "text": "Maybe I should schedule a meeting Friday evening.", "expected": "none"}
+{"id": 1241, "text": "I might have a meeting Friday evening.", "expected": "none"}
+{"id": 1242, "text": "If I have a meeting Friday evening, I'll let you know.", "expected": "none"}
+{"id": 1243, "text": "I wonder whether I should book a meeting Friday evening.", "expected": "none"}
+{"id": 1244, "text": "Could be nice to plan a meeting Friday evening.", "expected": "none"}
+{"id": 1245, "text": "I don't know if I'll have a meeting Friday evening.", "expected": "none"}
+{"id": 1246, "text": "Maybe I should schedule a meeting next Monday at 9 am.", "expected": "none"}
+{"id": 1247, "text": "I might have a meeting next Monday at 9 am.", "expected": "none"}
+{"id": 1248, "text": "If I have a meeting next Monday at 9 am, I'll let you know.", "expected": "none"}
+{"id": 1249, "text": "I wonder whether I should book a meeting next Monday at 9 am.", "expected": "none"}
+{"id": 1250, "text": "Could be nice to plan a meeting next Monday at 9 am.", "expected": "none"}
+{"id": 1251, "text": "I don't know if I'll have a meeting next Monday at 9 am.", "expected": "none"}
+{"id": 1252, "text": "Maybe I should schedule a meeting next week on Tuesday.", "expected": "none"}
+{"id": 1253, "text": "I might have a meeting next week on Tuesday.", "expected": "none"}
+{"id": 1254, "text": "If I have a meeting next week on Tuesday, I'll let you know.", "expected": "none"}
+{"id": 1255, "text": "I wonder whether I should book a meeting next week on Tuesday.", "expected": "none"}
+{"id": 1256, "text": "Could be nice to plan a meeting next week on Tuesday.", "expected": "none"}
+{"id": 1257, "text": "I don't know if I'll have a meeting next week on Tuesday.", "expected": "none"}
+{"id": 1258, "text": "Maybe I should schedule a meeting on October 14 at 2 pm.", "expected": "none"}
+{"id": 1259, "text": "I might have a meeting on October 14 at 2 pm.", "expected": "none"}
+{"id": 1260, "text": "If I have a meeting on October 14 at 2 pm, I'll let you know.", "expected": "none"}
+{"id": 1261, "text": "I wonder whether I should book a meeting on October 14 at 2 pm.", "expected": "none"}
+{"id": 1262, "text": "Could be nice to plan a meeting on October 14 at 2 pm.", "expected": "none"}
+{"id": 1263, "text": "I don't know if I'll have a meeting on October 14 at 2 pm.", "expected": "none"}
+{"id": 1264, "text": "Maybe I should schedule a meeting in two days at 11.", "expected": "none"}
+{"id": 1265, "text": "I might have a meeting in two days at 11.", "expected": "none"}
+{"id": 1266, "text": "If I have a meeting in two days at 11, I'll let you know.", "expected": "none"}
+{"id": 1267, "text": "I wonder whether I should book a meeting in two days at 11.", "expected": "none"}
+{"id": 1268, "text": "Could be nice to plan a meeting in two days at 11.", "expected": "none"}
+{"id": 1269, "text": "I don't know if I'll have a meeting in two days at 11.", "expected": "none"}
+{"id": 1270, "text": "Maybe I should schedule a meeting later this afternoon.", "expected": "none"}
+{"id": 1271, "text": "I might have a meeting later this afternoon.", "expected": "none"}
+{"id": 1272, "text": "If I have a meeting later this afternoon, I'll let you know.", "expected": "none"}
+{"id": 1273, "text": "I wonder whether I should book a meeting later this afternoon.", "expected": "none"}
+{"id": 1274, "text": "Could be nice to plan a meeting later this afternoon.", "expected": "none"}
+{"id": 1275, "text": "I don't know if I'll have a meeting later this afternoon.", "expected": "none"}
+{"id": 1276, "text": "Maybe I should schedule a meeting the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1277, "text": "I might have a meeting the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1278, "text": "If I have a meeting the day after tomorrow at 4:15, I'll let you know.", "expected": "none"}
+{"id": 1279, "text": "I wonder whether I should book a meeting the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1280, "text": "Could be nice to plan a meeting the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1281, "text": "I don't know if I'll have a meeting the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1282, "text": "Maybe I should schedule a meeting next month on the 5th.", "expected": "none"}
+{"id": 1283, "text": "I might have a meeting next month on the 5th.", "expected": "none"}
+{"id": 1284, "text": "If I have a meeting next month on the 5th, I'll let you know.", "expected": "none"}
+{"id": 1285, "text": "I wonder whether I should book a meeting next month on the 5th.", "expected": "none"}
+{"id": 1286, "text": "Could be nice to plan a meeting next month on the 5th.", "expected": "none"}
+{"id": 1287, "text": "I don't know if I'll have a meeting next month on the 5th.", "expected": "none"}
+{"id": 1288, "text": "Maybe I should schedule a meeting this Wednesday morning.", "expected": "none"}
+{"id": 1289, "text": "I might have a meeting this Wednesday morning.", "expected": "none"}
+{"id": 1290, "text": "If I have a meeting this Wednesday morning, I'll let you know.", "expected": "none"}
+{"id": 1291, "text": "I wonder whether I should book a meeting this Wednesday morning.", "expected": "none"}
+{"id": 1292, "text": "Could be nice to plan a meeting this Wednesday morning.", "expected": "none"}
+{"id": 1293, "text": "I don't know if I'll have a meeting this Wednesday morning.", "expected": "none"}
+{"id": 1294, "text": "Maybe I should schedule a meeting Saturday at 6 pm.", "expected": "none"}
+{"id": 1295, "text": "I might have a meeting Saturday at 6 pm.", "expected": "none"}
+{"id": 1296, "text": "If I have a meeting Saturday at 6 pm, I'll let you know.", "expected": "none"}
+{"id": 1297, "text": "I wonder whether I should book a meeting Saturday at 6 pm.", "expected": "none"}
+{"id": 1298, "text": "Could be nice to plan a meeting Saturday at 6 pm.", "expected": "none"}
+{"id": 1299, "text": "I don't know if I'll have a meeting Saturday at 6 pm.", "expected": "none"}
+{"id": 1300, "text": "Maybe I should schedule a meeting on November 3.", "expected": "none"}
+{"id": 1301, "text": "I might have a meeting on November 3.", "expected": "none"}
+{"id": 1302, "text": "If I have a meeting on November 3, I'll let you know.", "expected": "none"}
+{"id": 1303, "text": "I wonder whether I should book a meeting on November 3.", "expected": "none"}
+{"id": 1304, "text": "Could be nice to plan a meeting on November 3.", "expected": "none"}
+{"id": 1305, "text": "I don't know if I'll have a meeting on November 3.", "expected": "none"}
+{"id": 1306, "text": "Maybe I should schedule a meeting in three weeks.", "expected": "none"}
+{"id": 1307, "text": "I might have a meeting in three weeks.", "expected": "none"}
+{"id": 1308, "text": "If I have a meeting in three weeks, I'll let you know.", "expected": "none"}
+{"id": 1309, "text": "I wonder whether I should book a meeting in three weeks.", "expected": "none"}
+{"id": 1310, "text": "Could be nice to plan a meeting in three weeks.", "expected": "none"}
+{"id": 1311, "text": "I don't know if I'll have a meeting in three weeks.", "expected": "none"}
+{"id": 1312, "text": "Maybe I should schedule a meeting next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1313, "text": "I might have a meeting next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1314, "text": "If I have a meeting next Thursday at 1:30 pm, I'll let you know.", "expected": "none"}
+{"id": 1315, "text": "I wonder whether I should book a meeting next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1316, "text": "Could be nice to plan a meeting next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1317, "text": "I don't know if I'll have a meeting next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1318, "text": "Maybe I should schedule a meeting at 10 am tomorrow.", "expected": "none"}
+{"id": 1319, "text": "I might have a meeting at 10 am tomorrow.", "expected": "none"}
+{"id": 1320, "text": "If I have a meeting at 10 am tomorrow, I'll let you know.", "expected": "none"}
+{"id": 1321, "text": "I wonder whether I should book a meeting at 10 am tomorrow.", "expected": "none"}
+{"id": 1322, "text": "Could be nice to plan a meeting at 10 am tomorrow.", "expected": "none"}
+{"id": 1323, "text": "I don't know if I'll have a meeting at 10 am tomorrow.", "expected": "none"}
+{"id": 1324, "text": "Maybe I should schedule a meeting on the 20th at noon.", "expected": "none"}
+{"id": 1325, "text": "I might have a meeting on the 20th at noon.", "expected": "none"}
+{"id": 1326, "text": "If I have a meeting on the 20th at noon, I'll let you know.", "expected": "none"}
+{"id": 1327, "text": "I wonder whether I should book a meeting on the 20th at noon.", "expected": "none"}
+{"id": 1328, "text": "Could be nice to plan a meeting on the 20th at noon.", "expected": "none"}
+{"id": 1329, "text": "I don't know if I'll have a meeting on the 20th at noon.", "expected": "none"}
+{"id": 1330, "text": "Maybe I should schedule a meeting Monday after lunch.", "expected": "none"}
+{"id": 1331, "text": "I might have a meeting Monday after lunch.", "expected": "none"}
+{"id": 1332, "text": "If I have a meeting Monday after lunch, I'll let you know.", "expected": "none"}
+{"id": 1333, "text": "I wonder whether I should book a meeting Monday after lunch.", "expected": "none"}
+{"id": 1334, "text": "Could be nice to plan a meeting Monday after lunch.", "expected": "none"}
+{"id": 1335, "text": "I don't know if I'll have a meeting Monday after lunch.", "expected": "none"}
+{"id": 1336, "text": "Maybe I should schedule a doctor appointment tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1337, "text": "I might have a doctor appointment tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1338, "text": "If I have a doctor appointment tomorrow at 3:30 pm, I'll let you know.", "expected": "none"}
+{"id": 1339, "text": "I wonder whether I should book a doctor appointment tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1340, "text": "Could be nice to plan a doctor appointment tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1341, "text": "I don't know if I'll have a doctor appointment tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1342, "text": "Maybe I should schedule a doctor appointment tomorrow morning.", "expected": "none"}
+{"id": 1343, "text": "I might have a doctor appointment tomorrow morning.", "expected": "none"}
+{"id": 1344, "text": "If I have a doctor appointment tomorrow morning, I'll let you know.", "expected": "none"}
+{"id": 1345, "text": "I wonder whether I should book a doctor appointment tomorrow morning.", "expected": "none"}
+{"id": 1346, "text": "Could be nice to plan a doctor appointment tomorrow morning.", "expected": "none"}
+{"id": 1347, "text": "I don't know if I'll have a doctor appointment tomorrow morning.", "expected": "none"}
+{"id": 1348, "text": "Maybe I should schedule a doctor appointment tomorrow afternoon.", "expected": "none"}
+{"id": 1349, "text": "I might have a doctor appointment tomorrow afternoon.", "expected": "none"}
+{"id": 1350, "text": "If I have a doctor appointment tomorrow afternoon, I'll let you know.", "expected": "none"}
+{"id": 1351, "text": "I wonder whether I should book a doctor appointment tomorrow afternoon.", "expected": "none"}
+{"id": 1352, "text": "Could be nice to plan a doctor appointment tomorrow afternoon.", "expected": "none"}
+{"id": 1353, "text": "I don't know if I'll have a doctor appointment tomorrow afternoon.", "expected": "none"}
+{"id": 1354, "text": "Maybe I should schedule a doctor appointment this Friday at noon.", "expected": "none"}
+{"id": 1355, "text": "I might have a doctor appointment this Friday at noon.", "expected": "none"}
+{"id": 1356, "text": "If I have a doctor appointment this Friday at noon, I'll let you know.", "expected": "none"}
+{"id": 1357, "text": "I wonder whether I should book a doctor appointment this Friday at noon.", "expected": "none"}
+{"id": 1358, "text": "Could be nice to plan a doctor appointment this Friday at noon.", "expected": "none"}
+{"id": 1359, "text": "I don't know if I'll have a doctor appointment this Friday at noon.", "expected": "none"}
+{"id": 1360, "text": "Maybe I should schedule a doctor appointment Friday evening.", "expected": "none"}
+{"id": 1361, "text": "I might have a doctor appointment Friday evening.", "expected": "none"}
+{"id": 1362, "text": "If I have a doctor appointment Friday evening, I'll let you know.", "expected": "none"}
+{"id": 1363, "text": "I wonder whether I should book a doctor appointment Friday evening.", "expected": "none"}
+{"id": 1364, "text": "Could be nice to plan a doctor appointment Friday evening.", "expected": "none"}
+{"id": 1365, "text": "I don't know if I'll have a doctor appointment Friday evening.", "expected": "none"}
+{"id": 1366, "text": "Maybe I should schedule a doctor appointment next Monday at 9 am.", "expected": "none"}
+{"id": 1367, "text": "I might have a doctor appointment next Monday at 9 am.", "expected": "none"}
+{"id": 1368, "text": "If I have a doctor appointment next Monday at 9 am, I'll let you know.", "expected": "none"}
+{"id": 1369, "text": "I wonder whether I should book a doctor appointment next Monday at 9 am.", "expected": "none"}
+{"id": 1370, "text": "Could be nice to plan a doctor appointment next Monday at 9 am.", "expected": "none"}
+{"id": 1371, "text": "I don't know if I'll have a doctor appointment next Monday at 9 am.", "expected": "none"}
+{"id": 1372, "text": "Maybe I should schedule a doctor appointment next week on Tuesday.", "expected": "none"}
+{"id": 1373, "text": "I might have a doctor appointment next week on Tuesday.", "expected": "none"}
+{"id": 1374, "text": "If I have a doctor appointment next week on Tuesday, I'll let you know.", "expected": "none"}
+{"id": 1375, "text": "I wonder whether I should book a doctor appointment next week on Tuesday.", "expected": "none"}
+{"id": 1376, "text": "Could be nice to plan a doctor appointment next week on Tuesday.", "expected": "none"}
+{"id": 1377, "text": "I don't know if I'll have a doctor appointment next week on Tuesday.", "expected": "none"}
+{"id": 1378, "text": "Maybe I should schedule a doctor appointment on October 14 at 2 pm.", "expected": "none"}
+{"id": 1379, "text": "I might have a doctor appointment on October 14 at 2 pm.", "expected": "none"}
+{"id": 1380, "text": "If I have a doctor appointment on October 14 at 2 pm, I'll let you know.", "expected": "none"}
+{"id": 1381, "text": "I wonder whether I should book a doctor appointment on October 14 at 2 pm.", "expected": "none"}
+{"id": 1382, "text": "Could be nice to plan a doctor appointment on October 14 at 2 pm.", "expected": "none"}
+{"id": 1383, "text": "I don't know if I'll have a doctor appointment on October 14 at 2 pm.", "expected": "none"}
+{"id": 1384, "text": "Maybe I should schedule a doctor appointment in two days at 11.", "expected": "none"}
+{"id": 1385, "text": "I might have a doctor appointment in two days at 11.", "expected": "none"}
+{"id": 1386, "text": "If I have a doctor appointment in two days at 11, I'll let you know.", "expected": "none"}
+{"id": 1387, "text": "I wonder whether I should book a doctor appointment in two days at 11.", "expected": "none"}
+{"id": 1388, "text": "Could be nice to plan a doctor appointment in two days at 11.", "expected": "none"}
+{"id": 1389, "text": "I don't know if I'll have a doctor appointment in two days at 11.", "expected": "none"}
+{"id": 1390, "text": "Maybe I should schedule a doctor appointment later this afternoon.", "expected": "none"}
+{"id": 1391, "text": "I might have a doctor appointment later this afternoon.", "expected": "none"}
+{"id": 1392, "text": "If I have a doctor appointment later this afternoon, I'll let you know.", "expected": "none"}
+{"id": 1393, "text": "I wonder whether I should book a doctor appointment later this afternoon.", "expected": "none"}
+{"id": 1394, "text": "Could be nice to plan a doctor appointment later this afternoon.", "expected": "none"}
+{"id": 1395, "text": "I don't know if I'll have a doctor appointment later this afternoon.", "expected": "none"}
+{"id": 1396, "text": "Maybe I should schedule a doctor appointment the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1397, "text": "I might have a doctor appointment the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1398, "text": "If I have a doctor appointment the day after tomorrow at 4:15, I'll let you know.", "expected": "none"}
+{"id": 1399, "text": "I wonder whether I should book a doctor appointment the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1400, "text": "Could be nice to plan a doctor appointment the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1401, "text": "Maybe I should schedule a conference in three weeks.", "expected": "none"}
+{"id": 1402, "text": "I might have a conference in three weeks.", "expected": "none"}
+{"id": 1403, "text": "If I have a conference in three weeks, I'll let you know.", "expected": "none"}
+{"id": 1404, "text": "I wonder whether I should book a conference in three weeks.", "expected": "none"}
+{"id": 1405, "text": "Could be nice to plan a conference in three weeks.", "expected": "none"}
+{"id": 1406, "text": "I don't know if I'll have a conference in three weeks.", "expected": "none"}
+{"id": 1407, "text": "Maybe I should schedule a conference next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1408, "text": "I might have a conference next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1409, "text": "If I have a conference next Thursday at 1:30 pm, I'll let you know.", "expected": "none"}
+{"id": 1410, "text": "I wonder whether I should book a conference next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1411, "text": "Could be nice to plan a conference next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1412, "text": "I don't know if I'll have a conference next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1413, "text": "Maybe I should schedule a conference at 10 am tomorrow.", "expected": "none"}
+{"id": 1414, "text": "I might have a conference at 10 am tomorrow.", "expected": "none"}
+{"id": 1415, "text": "If I have a conference at 10 am tomorrow, I'll let you know.", "expected": "none"}
+{"id": 1416, "text": "I wonder whether I should book a conference at 10 am tomorrow.", "expected": "none"}
+{"id": 1417, "text": "Could be nice to plan a conference at 10 am tomorrow.", "expected": "none"}
+{"id": 1418, "text": "I don't know if I'll have a conference at 10 am tomorrow.", "expected": "none"}
+{"id": 1419, "text": "Maybe I should schedule a conference on the 20th at noon.", "expected": "none"}
+{"id": 1420, "text": "I might have a conference on the 20th at noon.", "expected": "none"}
+{"id": 1421, "text": "If I have a conference on the 20th at noon, I'll let you know.", "expected": "none"}
+{"id": 1422, "text": "I wonder whether I should book a conference on the 20th at noon.", "expected": "none"}
+{"id": 1423, "text": "Could be nice to plan a conference on the 20th at noon.", "expected": "none"}
+{"id": 1424, "text": "I don't know if I'll have a conference on the 20th at noon.", "expected": "none"}
+{"id": 1425, "text": "Maybe I should schedule a conference Monday after lunch.", "expected": "none"}
+{"id": 1426, "text": "I might have a conference Monday after lunch.", "expected": "none"}
+{"id": 1427, "text": "If I have a conference Monday after lunch, I'll let you know.", "expected": "none"}
+{"id": 1428, "text": "I wonder whether I should book a conference Monday after lunch.", "expected": "none"}
+{"id": 1429, "text": "Could be nice to plan a conference Monday after lunch.", "expected": "none"}
+{"id": 1430, "text": "I don't know if I'll have a conference Monday after lunch.", "expected": "none"}
+{"id": 1431, "text": "Maybe I should schedule a video call tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1432, "text": "I might have a video call tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1433, "text": "If I have a video call tomorrow at 3:30 pm, I'll let you know.", "expected": "none"}
+{"id": 1434, "text": "I wonder whether I should book a video call tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1435, "text": "Could be nice to plan a video call tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1436, "text": "I don't know if I'll have a video call tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1437, "text": "Maybe I should schedule a video call tomorrow morning.", "expected": "none"}
+{"id": 1438, "text": "I might have a video call tomorrow morning.", "expected": "none"}
+{"id": 1439, "text": "If I have a video call tomorrow morning, I'll let you know.", "expected": "none"}
+{"id": 1440, "text": "I wonder whether I should book a video call tomorrow morning.", "expected": "none"}
+{"id": 1441, "text": "Could be nice to plan a video call tomorrow morning.", "expected": "none"}
+{"id": 1442, "text": "I don't know if I'll have a video call tomorrow morning.", "expected": "none"}
+{"id": 1443, "text": "Maybe I should schedule a video call tomorrow afternoon.", "expected": "none"}
+{"id": 1444, "text": "I might have a video call tomorrow afternoon.", "expected": "none"}
+{"id": 1445, "text": "If I have a video call tomorrow afternoon, I'll let you know.", "expected": "none"}
+{"id": 1446, "text": "I wonder whether I should book a video call tomorrow afternoon.", "expected": "none"}
+{"id": 1447, "text": "Could be nice to plan a video call tomorrow afternoon.", "expected": "none"}
+{"id": 1448, "text": "I don't know if I'll have a video call tomorrow afternoon.", "expected": "none"}
+{"id": 1449, "text": "Maybe I should schedule a video call this Friday at noon.", "expected": "none"}
+{"id": 1450, "text": "I might have a video call this Friday at noon.", "expected": "none"}
+{"id": 1451, "text": "If I have a video call this Friday at noon, I'll let you know.", "expected": "none"}
+{"id": 1452, "text": "I wonder whether I should book a video call this Friday at noon.", "expected": "none"}
+{"id": 1453, "text": "Could be nice to plan a video call this Friday at noon.", "expected": "none"}
+{"id": 1454, "text": "I don't know if I'll have a video call this Friday at noon.", "expected": "none"}
+{"id": 1455, "text": "Maybe I should schedule a video call Friday evening.", "expected": "none"}
+{"id": 1456, "text": "I might have a video call Friday evening.", "expected": "none"}
+{"id": 1457, "text": "If I have a video call Friday evening, I'll let you know.", "expected": "none"}
+{"id": 1458, "text": "I wonder whether I should book a video call Friday evening.", "expected": "none"}
+{"id": 1459, "text": "Could be nice to plan a video call Friday evening.", "expected": "none"}
+{"id": 1460, "text": "I don't know if I'll have a video call Friday evening.", "expected": "none"}
+{"id": 1461, "text": "Maybe I should schedule a video call next Monday at 9 am.", "expected": "none"}
+{"id": 1462, "text": "I might have a video call next Monday at 9 am.", "expected": "none"}
+{"id": 1463, "text": "If I have a video call next Monday at 9 am, I'll let you know.", "expected": "none"}
+{"id": 1464, "text": "I wonder whether I should book a video call next Monday at 9 am.", "expected": "none"}
+{"id": 1465, "text": "Could be nice to plan a video call next Monday at 9 am.", "expected": "none"}
+{"id": 1466, "text": "I don't know if I'll have a video call next Monday at 9 am.", "expected": "none"}
+{"id": 1467, "text": "Maybe I should schedule a video call next week on Tuesday.", "expected": "none"}
+{"id": 1468, "text": "I might have a video call next week on Tuesday.", "expected": "none"}
+{"id": 1469, "text": "If I have a video call next week on Tuesday, I'll let you know.", "expected": "none"}
+{"id": 1470, "text": "I wonder whether I should book a video call next week on Tuesday.", "expected": "none"}
+{"id": 1471, "text": "Could be nice to plan a video call next week on Tuesday.", "expected": "none"}
+{"id": 1472, "text": "I don't know if I'll have a video call next week on Tuesday.", "expected": "none"}
+{"id": 1473, "text": "Maybe I should schedule a video call on October 14 at 2 pm.", "expected": "none"}
+{"id": 1474, "text": "I might have a video call on October 14 at 2 pm.", "expected": "none"}
+{"id": 1475, "text": "If I have a video call on October 14 at 2 pm, I'll let you know.", "expected": "none"}
+{"id": 1476, "text": "I wonder whether I should book a video call on October 14 at 2 pm.", "expected": "none"}
+{"id": 1477, "text": "Could be nice to plan a video call on October 14 at 2 pm.", "expected": "none"}
+{"id": 1478, "text": "I don't know if I'll have a video call on October 14 at 2 pm.", "expected": "none"}
+{"id": 1479, "text": "Maybe I should schedule a video call in two days at 11.", "expected": "none"}
+{"id": 1480, "text": "I might have a video call in two days at 11.", "expected": "none"}
+{"id": 1481, "text": "If I have a video call in two days at 11, I'll let you know.", "expected": "none"}
+{"id": 1482, "text": "I wonder whether I should book a video call in two days at 11.", "expected": "none"}
+{"id": 1483, "text": "Could be nice to plan a video call in two days at 11.", "expected": "none"}
+{"id": 1484, "text": "I don't know if I'll have a video call in two days at 11.", "expected": "none"}
+{"id": 1485, "text": "Maybe I should schedule a video call later this afternoon.", "expected": "none"}
+{"id": 1486, "text": "I might have a video call later this afternoon.", "expected": "none"}
+{"id": 1487, "text": "If I have a video call later this afternoon, I'll let you know.", "expected": "none"}
+{"id": 1488, "text": "I wonder whether I should book a video call later this afternoon.", "expected": "none"}
+{"id": 1489, "text": "Could be nice to plan a video call later this afternoon.", "expected": "none"}
+{"id": 1490, "text": "I don't know if I'll have a video call later this afternoon.", "expected": "none"}
+{"id": 1491, "text": "Maybe I should schedule a video call the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1492, "text": "I might have a video call the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1493, "text": "If I have a video call the day after tomorrow at 4:15, I'll let you know.", "expected": "none"}
+{"id": 1494, "text": "I wonder whether I should book a video call the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1495, "text": "Could be nice to plan a video call the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1496, "text": "I don't know if I'll have a video call the day after tomorrow at 4:15.", "expected": "none"}
+{"id": 1497, "text": "Maybe I should schedule a video call next month on the 5th.", "expected": "none"}
+{"id": 1498, "text": "I might have a video call next month on the 5th.", "expected": "none"}
+{"id": 1499, "text": "If I have a video call next month on the 5th, I'll let you know.", "expected": "none"}
+{"id": 1500, "text": "I wonder whether I should book a video call next month on the 5th.", "expected": "none"}
+{"id": 1501, "text": "Could be nice to plan a video call next month on the 5th.", "expected": "none"}
+{"id": 1502, "text": "I don't know if I'll have a video call next month on the 5th.", "expected": "none"}
+{"id": 1503, "text": "Maybe I should schedule a video call this Wednesday morning.", "expected": "none"}
+{"id": 1504, "text": "I might have a video call this Wednesday morning.", "expected": "none"}
+{"id": 1505, "text": "If I have a video call this Wednesday morning, I'll let you know.", "expected": "none"}
+{"id": 1506, "text": "I wonder whether I should book a video call this Wednesday morning.", "expected": "none"}
+{"id": 1507, "text": "Could be nice to plan a video call this Wednesday morning.", "expected": "none"}
+{"id": 1508, "text": "I don't know if I'll have a video call this Wednesday morning.", "expected": "none"}
+{"id": 1509, "text": "Maybe I should schedule a video call Saturday at 6 pm.", "expected": "none"}
+{"id": 1510, "text": "I might have a video call Saturday at 6 pm.", "expected": "none"}
+{"id": 1511, "text": "If I have a video call Saturday at 6 pm, I'll let you know.", "expected": "none"}
+{"id": 1512, "text": "I wonder whether I should book a video call Saturday at 6 pm.", "expected": "none"}
+{"id": 1513, "text": "Could be nice to plan a video call Saturday at 6 pm.", "expected": "none"}
+{"id": 1514, "text": "I don't know if I'll have a video call Saturday at 6 pm.", "expected": "none"}
+{"id": 1515, "text": "Maybe I should schedule a video call on November 3.", "expected": "none"}
+{"id": 1516, "text": "I might have a video call on November 3.", "expected": "none"}
+{"id": 1517, "text": "If I have a video call on November 3, I'll let you know.", "expected": "none"}
+{"id": 1518, "text": "I wonder whether I should book a video call on November 3.", "expected": "none"}
+{"id": 1519, "text": "Could be nice to plan a video call on November 3.", "expected": "none"}
+{"id": 1520, "text": "I don't know if I'll have a video call on November 3.", "expected": "none"}
+{"id": 1521, "text": "Maybe I should schedule a video call in three weeks.", "expected": "none"}
+{"id": 1522, "text": "I might have a video call in three weeks.", "expected": "none"}
+{"id": 1523, "text": "If I have a video call in three weeks, I'll let you know.", "expected": "none"}
+{"id": 1524, "text": "I wonder whether I should book a video call in three weeks.", "expected": "none"}
+{"id": 1525, "text": "Could be nice to plan a video call in three weeks.", "expected": "none"}
+{"id": 1526, "text": "I don't know if I'll have a video call in three weeks.", "expected": "none"}
+{"id": 1527, "text": "Maybe I should schedule a video call next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1528, "text": "I might have a video call next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1529, "text": "If I have a video call next Thursday at 1:30 pm, I'll let you know.", "expected": "none"}
+{"id": 1530, "text": "I wonder whether I should book a video call next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1531, "text": "Could be nice to plan a video call next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1532, "text": "I don't know if I'll have a video call next Thursday at 1:30 pm.", "expected": "none"}
+{"id": 1533, "text": "Maybe I should schedule a video call at 10 am tomorrow.", "expected": "none"}
+{"id": 1534, "text": "I might have a video call at 10 am tomorrow.", "expected": "none"}
+{"id": 1535, "text": "If I have a video call at 10 am tomorrow, I'll let you know.", "expected": "none"}
+{"id": 1536, "text": "I wonder whether I should book a video call at 10 am tomorrow.", "expected": "none"}
+{"id": 1537, "text": "Could be nice to plan a video call at 10 am tomorrow.", "expected": "none"}
+{"id": 1538, "text": "I don't know if I'll have a video call at 10 am tomorrow.", "expected": "none"}
+{"id": 1539, "text": "Maybe I should schedule a video call on the 20th at noon.", "expected": "none"}
+{"id": 1540, "text": "I might have a video call on the 20th at noon.", "expected": "none"}
+{"id": 1541, "text": "If I have a video call on the 20th at noon, I'll let you know.", "expected": "none"}
+{"id": 1542, "text": "I wonder whether I should book a video call on the 20th at noon.", "expected": "none"}
+{"id": 1543, "text": "Could be nice to plan a video call on the 20th at noon.", "expected": "none"}
+{"id": 1544, "text": "I don't know if I'll have a video call on the 20th at noon.", "expected": "none"}
+{"id": 1545, "text": "Maybe I should schedule a video call Monday after lunch.", "expected": "none"}
+{"id": 1546, "text": "I might have a video call Monday after lunch.", "expected": "none"}
+{"id": 1547, "text": "If I have a video call Monday after lunch, I'll let you know.", "expected": "none"}
+{"id": 1548, "text": "I wonder whether I should book a video call Monday after lunch.", "expected": "none"}
+{"id": 1549, "text": "Could be nice to plan a video call Monday after lunch.", "expected": "none"}
+{"id": 1550, "text": "I don't know if I'll have a video call Monday after lunch.", "expected": "none"}
+{"id": 1551, "text": "My sister has a meeting tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1552, "text": "Jordan has a meeting tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1553, "text": "My coworker is going to a meeting tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1554, "text": "They scheduled a meeting tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1555, "text": "My partner is booked for a meeting tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1556, "text": "The video says someone has a meeting tomorrow at 3:30 pm.", "expected": "none"}
+{"id": 1557, "text": "My sister has a meeting tomorrow morning.", "expected": "none"}
+{"id": 1558, "text": "Jordan has a meeting tomorrow morning.", "expected": "none"}
+{"id": 1559, "text": "My coworker is going to a meeting tomorrow morning.", "expected": "none"}
+{"id": 1560, "text": "They scheduled a meeting tomorrow morning.", "expected": "none"}
+{"id": 1561, "text": "My partner is booked for a meeting tomorrow morning.", "expected": "none"}
+{"id": 1562, "text": "The video says someone has a meeting tomorrow morning.", "expected": "none"}
+{"id": 1563, "text": "My sister has a meeting tomorrow afternoon.", "expected": "none"}
+{"id": 1564, "text": "Jordan has a meeting tomorrow afternoon.", "expected": "none"}
+{"id": 1565, "text": "My coworker is going to a meeting tomorrow afternoon.", "expected": "none"}
+{"id": 1566, "text": "They scheduled a meeting tomorrow afternoon.", "expected": "none"}
+{"id": 1567, "text": "My partner is booked for a meeting tomorrow afternoon.", "expected": "none"}
+{"id": 1568, "text": "The video says someone has a meeting tomorrow afternoon.", "expected": "none"}
+{"id": 1569, "text": "My sister has a meeting this Friday at noon.", "expected": "none"}
+{"id": 1570, "text": "Jordan has a meeting this Friday at noon.", "expected": "none"}
+{"id": 1571, "text": "My coworker is going to a meeting this Friday at noon.", "expected": "none"}
+{"id": 1572, "text": "They scheduled a meeting this Friday at noon.", "expected": "none"}
+{"id": 1573, "text": "My partner is booked for a meeting this Friday at noon.", "expected": "none"}
+{"id": 1574, "text": "The video says someone has a meeting this Friday at noon.", "expected": "none"}
+{"id": 1575, "text": "My sister has a meeting Friday evening.", "expected": "none"}
+{"id": 1576, "text": "Jordan has a meeting Friday evening.", "expected": "none"}
+{"id": 1577, "text": "My coworker is going to a meeting Friday evening.", "expected": "none"}
+{"id": 1578, "text": "They scheduled a meeting Friday evening.", "expected": "none"}
+{"id": 1579, "text": "My partner is booked for a meeting Friday evening.", "expected": "none"}
+{"id": 1580, "text": "The video says someone has a meeting Friday evening.", "expected": "none"}
+{"id": 1581, "text": "My sister has a meeting next Monday at 9 am.", "expected": "none"}
+{"id": 1582, "text": "Jordan has a meeting next Monday at 9 am.", "expected": "none"}
+{"id": 1583, "text": "My coworker is going to a meeting next Monday at 9 am.", "expected": "none"}
+{"id": 1584, "text": "They scheduled a meeting next Monday at 9 am.", "expected": "none"}
+{"id": 1585, "text": "My partner is booked for a meeting next Monday at 9 am.", "expected": "none"}
+{"id": 1586, "text": "The video says someone has a meeting next Monday at 9 am.", "expected": "none"}
+{"id": 1587, "text": "My sister has a meeting next week on Tuesday.", "expected": "none"}
+{"id": 1588, "text": "Jordan has a meeting next week on Tuesday.", "expected": "none"}
+{"id": 1589, "text": "My coworker is going to a meeting next week on Tuesday.", "expected": "none"}
+{"id": 1590, "text": "They scheduled a meeting next week on Tuesday.", "expected": "none"}
+{"id": 1591, "text": "My partner is booked for a meeting next week on Tuesday.", "expected": "none"}
+{"id": 1592, "text": "The video says someone has a meeting next week on Tuesday.", "expected": "none"}
+{"id": 1593, "text": "My sister has a meeting on October 14 at 2 pm.", "expected": "none"}
+{"id": 1594, "text": "Jordan has a meeting on October 14 at 2 pm.", "expected": "none"}
+{"id": 1595, "text": "My coworker is going to a meeting on October 14 at 2 pm.", "expected": "none"}
+{"id": 1596, "text": "They scheduled a meeting on October 14 at 2 pm.", "expected": "none"}
+{"id": 1597, "text": "My partner is booked for a meeting on October 14 at 2 pm.", "expected": "none"}
+{"id": 1598, "text": "The video says someone has a meeting on October 14 at 2 pm.", "expected": "none"}
+{"id": 1599, "text": "My sister has a meeting in two days at 11.", "expected": "none"}
+{"id": 1600, "text": "Jordan has a meeting in two days at 11.", "expected": "none"}
+{"id": 1601, "text": "I hate meetings.", "expected": "none"}
+{"id": 1602, "text": "Earlier today, I hate meetings.", "expected": "none"}
+{"id": 1603, "text": "The person in the video said, I hate meetings.", "expected": "none"}
+{"id": 1604, "text": "I was just thinking this: I hate meetings.", "expected": "none"}
+{"id": 1605, "text": "Someone asked me this: I hate meetings.", "expected": "none"}
+{"id": 1606, "text": "I heard this sentence: I hate meetings.", "expected": "none"}
+{"id": 1607, "text": "To be clear, I hate meetings.", "expected": "none"}
+{"id": 1608, "text": "For example, I hate meetings.", "expected": "none"}
+{"id": 1609, "text": "The meeting was really long.", "expected": "none"}
+{"id": 1610, "text": "Earlier today, The meeting was really long.", "expected": "none"}
+{"id": 1611, "text": "The person in the video said, The meeting was really long.", "expected": "none"}
+{"id": 1612, "text": "I was just thinking this: The meeting was really long.", "expected": "none"}
+{"id": 1613, "text": "Someone asked me this: The meeting was really long.", "expected": "none"}
+{"id": 1614, "text": "I heard this sentence: The meeting was really long.", "expected": "none"}
+{"id": 1615, "text": "To be clear, The meeting was really long.", "expected": "none"}
+{"id": 1616, "text": "For example, The meeting was really long.", "expected": "none"}
+{"id": 1617, "text": "Do you know what time the meeting starts?", "expected": "none"}
+{"id": 1618, "text": "Earlier today, Do you know what time the meeting starts?", "expected": "none"}
+{"id": 1619, "text": "The person in the video said, Do you know what time the meeting starts?", "expected": "none"}
+{"id": 1620, "text": "I was just thinking this: Do you know what time the meeting starts?", "expected": "none"}
+{"id": 1621, "text": "Someone asked me this: Do you know what time the meeting starts?", "expected": "none"}
+{"id": 1622, "text": "I heard this sentence: Do you know what time the meeting starts?", "expected": "none"}
+{"id": 1623, "text": "To be clear, Do you know what time the meeting starts?", "expected": "none"}
+{"id": 1624, "text": "For example, Do you know what time the meeting starts?", "expected": "none"}
+{"id": 1625, "text": "The video is about a doctor appointment.", "expected": "none"}
+{"id": 1626, "text": "Earlier today, The video is about a doctor appointment.", "expected": "none"}
+{"id": 1627, "text": "The person in the video said, The video is about a doctor appointment.", "expected": "none"}
+{"id": 1628, "text": "I was just thinking this: The video is about a doctor appointment.", "expected": "none"}
+{"id": 1629, "text": "Someone asked me this: The video is about a doctor appointment.", "expected": "none"}
+{"id": 1630, "text": "I heard this sentence: The video is about a doctor appointment.", "expected": "none"}
+{"id": 1631, "text": "To be clear, The video is about a doctor appointment.", "expected": "none"}
+{"id": 1632, "text": "For example, The video is about a doctor appointment.", "expected": "none"}
+{"id": 1633, "text": "I like Spotify, but I don't want to open it.", "expected": "none"}
+{"id": 1634, "text": "Earlier today, I like Spotify, but I don't want to open it.", "expected": "none"}
+{"id": 1635, "text": "The person in the video said, I like Spotify, but I don't want to open it.", "expected": "none"}
+{"id": 1636, "text": "I was just thinking this: I like Spotify, but I don't want to open it.", "expected": "none"}
+{"id": 1637, "text": "Someone asked me this: I like Spotify, but I don't want to open it.", "expected": "none"}
+{"id": 1638, "text": "I heard this sentence: I like Spotify, but I don't want to open it.", "expected": "none"}
+{"id": 1639, "text": "To be clear, I like Spotify, but I don't want to open it.", "expected": "none"}
+{"id": 1640, "text": "For example, I like Spotify, but I don't want to open it.", "expected": "none"}
+{"id": 1641, "text": "My friend told me to open Discord.", "expected": "none"}
+{"id": 1642, "text": "Earlier today, My friend told me to open Discord.", "expected": "none"}
+{"id": 1643, "text": "The person in the video said, My friend told me to open Discord.", "expected": "none"}
+{"id": 1644, "text": "I was just thinking this: My friend told me to open Discord.", "expected": "none"}
+{"id": 1645, "text": "Someone asked me this: My friend told me to open Discord.", "expected": "none"}
+{"id": 1646, "text": "I heard this sentence: My friend told me to open Discord.", "expected": "none"}
+{"id": 1647, "text": "To be clear, My friend told me to open Discord.", "expected": "none"}
+{"id": 1648, "text": "For example, My friend told me to open Discord.", "expected": "none"}
+{"id": 1649, "text": "I was thinking about the calendar app.", "expected": "none"}
+{"id": 1650, "text": "Earlier today, I was thinking about the calendar app.", "expected": "none"}
+{"id": 1651, "text": "The person in the video said, I was thinking about the calendar app.", "expected": "none"}
+{"id": 1652, "text": "I was just thinking this: I was thinking about the calendar app.", "expected": "none"}
+{"id": 1653, "text": "Someone asked me this: I was thinking about the calendar app.", "expected": "none"}
+{"id": 1654, "text": "I heard this sentence: I was thinking about the calendar app.", "expected": "none"}
+{"id": 1655, "text": "To be clear, I was thinking about the calendar app.", "expected": "none"}
+{"id": 1656, "text": "For example, I was thinking about the calendar app.", "expected": "none"}
+{"id": 1657, "text": "Maybe we should talk about meetings later.", "expected": "none"}
+{"id": 1658, "text": "Earlier today, Maybe we should talk about meetings later.", "expected": "none"}
+{"id": 1659, "text": "The person in the video said, Maybe we should talk about meetings later.", "expected": "none"}
+{"id": 1660, "text": "I was just thinking this: Maybe we should talk about meetings later.", "expected": "none"}
+{"id": 1661, "text": "Someone asked me this: Maybe we should talk about meetings later.", "expected": "none"}
+{"id": 1662, "text": "I heard this sentence: Maybe we should talk about meetings later.", "expected": "none"}
+{"id": 1663, "text": "To be clear, Maybe we should talk about meetings later.", "expected": "none"}
+{"id": 1664, "text": "For example, Maybe we should talk about meetings later.", "expected": "none"}
+{"id": 1665, "text": "Spotify is playing a song I like.", "expected": "none"}
+{"id": 1666, "text": "Earlier today, Spotify is playing a song I like.", "expected": "none"}
+{"id": 1667, "text": "The person in the video said, Spotify is playing a song I like.", "expected": "none"}
+{"id": 1668, "text": "I was just thinking this: Spotify is playing a song I like.", "expected": "none"}
+{"id": 1669, "text": "Someone asked me this: Spotify is playing a song I like.", "expected": "none"}
+{"id": 1670, "text": "I heard this sentence: Spotify is playing a song I like.", "expected": "none"}
+{"id": 1671, "text": "To be clear, Spotify is playing a song I like.", "expected": "none"}
+{"id": 1672, "text": "For example, Spotify is playing a song I like.", "expected": "none"}
+{"id": 1673, "text": "The browser is already open.", "expected": "none"}
+{"id": 1674, "text": "Earlier today, The browser is already open.", "expected": "none"}
+{"id": 1675, "text": "The person in the video said, The browser is already open.", "expected": "none"}
+{"id": 1676, "text": "I was just thinking this: The browser is already open.", "expected": "none"}
+{"id": 1677, "text": "Someone asked me this: The browser is already open.", "expected": "none"}
+{"id": 1678, "text": "I heard this sentence: The browser is already open.", "expected": "none"}
+{"id": 1679, "text": "To be clear, The browser is already open.", "expected": "none"}
+{"id": 1680, "text": "For example, The browser is already open.", "expected": "none"}
+{"id": 1681, "text": "I opened Steam yesterday.", "expected": "none"}
+{"id": 1682, "text": "Earlier today, I opened Steam yesterday.", "expected": "none"}
+{"id": 1683, "text": "The person in the video said, I opened Steam yesterday.", "expected": "none"}
+{"id": 1684, "text": "I was just thinking this: I opened Steam yesterday.", "expected": "none"}
+{"id": 1685, "text": "Someone asked me this: I opened Steam yesterday.", "expected": "none"}
+{"id": 1686, "text": "I heard this sentence: I opened Steam yesterday.", "expected": "none"}
+{"id": 1687, "text": "To be clear, I opened Steam yesterday.", "expected": "none"}
+{"id": 1688, "text": "For example, I opened Steam yesterday.", "expected": "none"}
+{"id": 1689, "text": "The dentist office called me earlier.", "expected": "none"}
+{"id": 1690, "text": "Earlier today, The dentist office called me earlier.", "expected": "none"}
+{"id": 1691, "text": "The person in the video said, The dentist office called me earlier.", "expected": "none"}
+{"id": 1692, "text": "I was just thinking this: The dentist office called me earlier.", "expected": "none"}
+{"id": 1693, "text": "Someone asked me this: The dentist office called me earlier.", "expected": "none"}
+{"id": 1694, "text": "I heard this sentence: The dentist office called me earlier.", "expected": "none"}
+{"id": 1695, "text": "To be clear, The dentist office called me earlier.", "expected": "none"}
+{"id": 1696, "text": "For example, The dentist office called me earlier.", "expected": "none"}
+{"id": 1697, "text": "I don't have any meetings today.", "expected": "none"}
+{"id": 1698, "text": "Earlier today, I don't have any meetings today.", "expected": "none"}
+{"id": 1699, "text": "The person in the video said, I don't have any meetings today.", "expected": "none"}
+{"id": 1700, "text": "I was just thinking this: I don't have any meetings today.", "expected": "none"}
+{"id": 1701, "text": "Someone asked me this: I don't have any meetings today.", "expected": "none"}
+{"id": 1702, "text": "I heard this sentence: I don't have any meetings today.", "expected": "none"}
+{"id": 1703, "text": "To be clear, I don't have any meetings today.", "expected": "none"}
+{"id": 1704, "text": "For example, I don't have any meetings today.", "expected": "none"}
+{"id": 1705, "text": "I heard them say the appointment is tomorrow.", "expected": "none"}
+{"id": 1706, "text": "Earlier today, I heard them say the appointment is tomorrow.", "expected": "none"}
+{"id": 1707, "text": "The person in the video said, I heard them say the appointment is tomorrow.", "expected": "none"}
+{"id": 1708, "text": "I was just thinking this: I heard them say the appointment is tomorrow.", "expected": "none"}
+{"id": 1709, "text": "Someone asked me this: I heard them say the appointment is tomorrow.", "expected": "none"}
+{"id": 1710, "text": "I heard this sentence: I heard them say the appointment is tomorrow.", "expected": "none"}
+{"id": 1711, "text": "To be clear, I heard them say the appointment is tomorrow.", "expected": "none"}
+{"id": 1712, "text": "For example, I heard them say the appointment is tomorrow.", "expected": "none"}
+{"id": 1713, "text": "What does the word appointment mean?", "expected": "none"}
+{"id": 1714, "text": "Earlier today, What does the word appointment mean?", "expected": "none"}
+{"id": 1715, "text": "The person in the video said, What does the word appointment mean?", "expected": "none"}
+{"id": 1716, "text": "I was just thinking this: What does the word appointment mean?", "expected": "none"}
+{"id": 1717, "text": "Someone asked me this: What does the word appointment mean?", "expected": "none"}
+{"id": 1718, "text": "I heard this sentence: What does the word appointment mean?", "expected": "none"}
+{"id": 1719, "text": "To be clear, What does the word appointment mean?", "expected": "none"}
+{"id": 1720, "text": "For example, What does the word appointment mean?", "expected": "none"}
+{"id": 1721, "text": "Someone in this video is talking about a meeting.", "expected": "none"}
+{"id": 1722, "text": "Earlier today, Someone in this video is talking about a meeting.", "expected": "none"}
+{"id": 1723, "text": "The person in the video said, Someone in this video is talking about a meeting.", "expected": "none"}
+{"id": 1724, "text": "I was just thinking this: Someone in this video is talking about a meeting.", "expected": "none"}
+{"id": 1725, "text": "Someone asked me this: Someone in this video is talking about a meeting.", "expected": "none"}
+{"id": 1726, "text": "I heard this sentence: Someone in this video is talking about a meeting.", "expected": "none"}
+{"id": 1727, "text": "To be clear, Someone in this video is talking about a meeting.", "expected": "none"}
+{"id": 1728, "text": "For example, Someone in this video is talking about a meeting.", "expected": "none"}
+{"id": 1729, "text": "I'm not asking you to do anything, just thinking out loud.", "expected": "none"}
+{"id": 1730, "text": "Earlier today, I'm not asking you to do anything, just thinking out loud.", "expected": "none"}
+{"id": 1731, "text": "The person in the video said, I'm not asking you to do anything, just thinking out loud.", "expected": "none"}
+{"id": 1732, "text": "I was just thinking this: I'm not asking you to do anything, just thinking out loud.", "expected": "none"}
+{"id": 1733, "text": "Someone asked me this: I'm not asking you to do anything, just thinking out loud.", "expected": "none"}
+{"id": 1734, "text": "I heard this sentence: I'm not asking you to do anything, just thinking out loud.", "expected": "none"}
+{"id": 1735, "text": "To be clear, I'm not asking you to do anything, just thinking out loud.", "expected": "none"}
+{"id": 1736, "text": "For example, I'm not asking you to do anything, just thinking out loud.", "expected": "none"}
+{"id": 1737, "text": "That reminds me of a calendar event from last year.", "expected": "none"}
+{"id": 1738, "text": "Earlier today, That reminds me of a calendar event from last year.", "expected": "none"}
+{"id": 1739, "text": "The person in the video said, That reminds me of a calendar event from last year.", "expected": "none"}
+{"id": 1740, "text": "I was just thinking this: That reminds me of a calendar event from last year.", "expected": "none"}
+{"id": 1741, "text": "Someone asked me this: That reminds me of a calendar event from last year.", "expected": "none"}
+{"id": 1742, "text": "I heard this sentence: That reminds me of a calendar event from last year.", "expected": "none"}
+{"id": 1743, "text": "To be clear, That reminds me of a calendar event from last year.", "expected": "none"}
+{"id": 1744, "text": "For example, That reminds me of a calendar event from last year.", "expected": "none"}
+{"id": 1745, "text": "I should probably get around to that sometime.", "expected": "none"}
+{"id": 1746, "text": "Earlier today, I should probably get around to that sometime.", "expected": "none"}
+{"id": 1747, "text": "The person in the video said, I should probably get around to that sometime.", "expected": "none"}
+{"id": 1748, "text": "I was just thinking this: I should probably get around to that sometime.", "expected": "none"}
+{"id": 1749, "text": "Someone asked me this: I should probably get around to that sometime.", "expected": "none"}
+{"id": 1750, "text": "I heard this sentence: I should probably get around to that sometime.", "expected": "none"}
+{"id": 1751, "text": "To be clear, I should probably get around to that sometime.", "expected": "none"}
+{"id": 1752, "text": "For example, I should probably get around to that sometime.", "expected": "none"}
+{"id": 1753, "text": "It's nice outside today.", "expected": "none"}
+{"id": 1754, "text": "Earlier today, It's nice outside today.", "expected": "none"}
+{"id": 1755, "text": "The person in the video said, It's nice outside today.", "expected": "none"}
+{"id": 1756, "text": "I was just thinking this: It's nice outside today.", "expected": "none"}
+{"id": 1757, "text": "Someone asked me this: It's nice outside today.", "expected": "none"}
+{"id": 1758, "text": "I heard this sentence: It's nice outside today.", "expected": "none"}
+{"id": 1759, "text": "To be clear, It's nice outside today.", "expected": "none"}
+{"id": 1760, "text": "For example, It's nice outside today.", "expected": "none"}
+{"id": 1761, "text": "The game update is taking a while.", "expected": "none"}
+{"id": 1762, "text": "Earlier today, The game update is taking a while.", "expected": "none"}
+{"id": 1763, "text": "The person in the video said, The game update is taking a while.", "expected": "none"}
+{"id": 1764, "text": "I was just thinking this: The game update is taking a while.", "expected": "none"}
+{"id": 1765, "text": "Someone asked me this: The game update is taking a while.", "expected": "none"}
+{"id": 1766, "text": "I heard this sentence: The game update is taking a while.", "expected": "none"}
+{"id": 1767, "text": "To be clear, The game update is taking a while.", "expected": "none"}
+{"id": 1768, "text": "For example, The game update is taking a while.", "expected": "none"}
+{"id": 1769, "text": "I wonder what time it is in Tokyo.", "expected": "none"}
+{"id": 1770, "text": "Earlier today, I wonder what time it is in Tokyo.", "expected": "none"}
+{"id": 1771, "text": "The person in the video said, I wonder what time it is in Tokyo.", "expected": "none"}
+{"id": 1772, "text": "I was just thinking this: I wonder what time it is in Tokyo.", "expected": "none"}
+{"id": 1773, "text": "Someone asked me this: I wonder what time it is in Tokyo.", "expected": "none"}
+{"id": 1774, "text": "I heard this sentence: I wonder what time it is in Tokyo.", "expected": "none"}
+{"id": 1775, "text": "To be clear, I wonder what time it is in Tokyo.", "expected": "none"}
+{"id": 1776, "text": "For example, I wonder what time it is in Tokyo.", "expected": "none"}
+{"id": 1777, "text": "The music is too loud in this video.", "expected": "none"}
+{"id": 1778, "text": "Earlier today, The music is too loud in this video.", "expected": "none"}
+{"id": 1779, "text": "The person in the video said, The music is too loud in this video.", "expected": "none"}
+{"id": 1780, "text": "I was just thinking this: The music is too loud in this video.", "expected": "none"}
+{"id": 1781, "text": "Someone asked me this: The music is too loud in this video.", "expected": "none"}
+{"id": 1782, "text": "I heard this sentence: The music is too loud in this video.", "expected": "none"}
+{"id": 1783, "text": "To be clear, The music is too loud in this video.", "expected": "none"}
+{"id": 1784, "text": "For example, The music is too loud in this video.", "expected": "none"}
+{"id": 1785, "text": "My phone calendar has too many notifications.", "expected": "none"}
+{"id": 1786, "text": "Earlier today, My phone calendar has too many notifications.", "expected": "none"}
+{"id": 1787, "text": "The person in the video said, My phone calendar has too many notifications.", "expected": "none"}
+{"id": 1788, "text": "I was just thinking this: My phone calendar has too many notifications.", "expected": "none"}
+{"id": 1789, "text": "Someone asked me this: My phone calendar has too many notifications.", "expected": "none"}
+{"id": 1790, "text": "I heard this sentence: My phone calendar has too many notifications.", "expected": "none"}
+{"id": 1791, "text": "To be clear, My phone calendar has too many notifications.", "expected": "none"}
+{"id": 1792, "text": "For example, My phone calendar has too many notifications.", "expected": "none"}
+{"id": 1793, "text": "My brother's interview is next week.", "expected": "none"}
+{"id": 1794, "text": "Earlier today, My brother's interview is next week.", "expected": "none"}
+{"id": 1795, "text": "The person in the video said, My brother's interview is next week.", "expected": "none"}
+{"id": 1796, "text": "I was just thinking this: My brother's interview is next week.", "expected": "none"}
+{"id": 1797, "text": "Someone asked me this: My brother's interview is next week.", "expected": "none"}
+{"id": 1798, "text": "I heard this sentence: My brother's interview is next week.", "expected": "none"}
+{"id": 1799, "text": "To be clear, My brother's interview is next week.", "expected": "none"}
+{"id": 1800, "text": "For example, My brother's interview is next week.", "expected": "none"}
+{"id": 1801, "text": "The weather looks pretty good.", "expected": "none"}
+{"id": 1802, "text": "The weather looks pretty good today.", "expected": "none"}
+{"id": 1803, "text": "The weather looks pretty good again.", "expected": "none"}
+{"id": 1804, "text": "The weather looks pretty good in the video.", "expected": "none"}
+{"id": 1805, "text": "The weather was interesting.", "expected": "none"}
+{"id": 1806, "text": "The weather was interesting today.", "expected": "none"}
+{"id": 1807, "text": "The weather was interesting again.", "expected": "none"}
+{"id": 1808, "text": "The weather was interesting in the video.", "expected": "none"}
+{"id": 1809, "text": "The weather sounds strange.", "expected": "none"}
+{"id": 1810, "text": "The weather sounds strange today.", "expected": "none"}
+{"id": 1811, "text": "The weather sounds strange again.", "expected": "none"}
+{"id": 1812, "text": "The weather sounds strange in the video.", "expected": "none"}
+{"id": 1813, "text": "The weather is taking forever.", "expected": "none"}
+{"id": 1814, "text": "The weather is taking forever today.", "expected": "none"}
+{"id": 1815, "text": "The weather is taking forever again.", "expected": "none"}
+{"id": 1816, "text": "The weather is taking forever in the video.", "expected": "none"}
+{"id": 1817, "text": "The weather might be useful.", "expected": "none"}
+{"id": 1818, "text": "The weather might be useful today.", "expected": "none"}
+{"id": 1819, "text": "The weather might be useful again.", "expected": "none"}
+{"id": 1820, "text": "The weather might be useful in the video.", "expected": "none"}
+{"id": 1821, "text": "The weather was on sale.", "expected": "none"}
+{"id": 1822, "text": "The weather was on sale today.", "expected": "none"}
+{"id": 1823, "text": "The weather was on sale again.", "expected": "none"}
+{"id": 1824, "text": "The weather was on sale in the video.", "expected": "none"}
+{"id": 1825, "text": "The weather feels too loud.", "expected": "none"}
+{"id": 1826, "text": "The weather feels too loud today.", "expected": "none"}
+{"id": 1827, "text": "The weather feels too loud again.", "expected": "none"}
+{"id": 1828, "text": "The weather feels too loud in the video.", "expected": "none"}
+{"id": 1829, "text": "The weather is hard to follow.", "expected": "none"}
+{"id": 1830, "text": "The weather is hard to follow today.", "expected": "none"}
+{"id": 1831, "text": "The weather is hard to follow again.", "expected": "none"}
+{"id": 1832, "text": "The weather is hard to follow in the video.", "expected": "none"}
+{"id": 1833, "text": "That movie looks pretty good.", "expected": "none"}
+{"id": 1834, "text": "That movie looks pretty good today.", "expected": "none"}
+{"id": 1835, "text": "That movie looks pretty good again.", "expected": "none"}
+{"id": 1836, "text": "That movie looks pretty good in the video.", "expected": "none"}
+{"id": 1837, "text": "That movie was interesting.", "expected": "none"}
+{"id": 1838, "text": "That movie was interesting today.", "expected": "none"}
+{"id": 1839, "text": "That movie was interesting again.", "expected": "none"}
+{"id": 1840, "text": "That movie was interesting in the video.", "expected": "none"}
+{"id": 1841, "text": "That movie sounds strange.", "expected": "none"}
+{"id": 1842, "text": "That movie sounds strange today.", "expected": "none"}
+{"id": 1843, "text": "That movie sounds strange again.", "expected": "none"}
+{"id": 1844, "text": "That movie sounds strange in the video.", "expected": "none"}
+{"id": 1845, "text": "That movie is taking forever.", "expected": "none"}
+{"id": 1846, "text": "That movie is taking forever today.", "expected": "none"}
+{"id": 1847, "text": "That movie is taking forever again.", "expected": "none"}
+{"id": 1848, "text": "That movie is taking forever in the video.", "expected": "none"}
+{"id": 1849, "text": "That movie might be useful.", "expected": "none"}
+{"id": 1850, "text": "That movie might be useful today.", "expected": "none"}
+{"id": 1851, "text": "That movie might be useful again.", "expected": "none"}
+{"id": 1852, "text": "That movie might be useful in the video.", "expected": "none"}
+{"id": 1853, "text": "That movie was on sale.", "expected": "none"}
+{"id": 1854, "text": "That movie was on sale today.", "expected": "none"}
+{"id": 1855, "text": "That movie was on sale again.", "expected": "none"}
+{"id": 1856, "text": "That movie was on sale in the video.", "expected": "none"}
+{"id": 1857, "text": "That movie feels too loud.", "expected": "none"}
+{"id": 1858, "text": "That movie feels too loud today.", "expected": "none"}
+{"id": 1859, "text": "That movie feels too loud again.", "expected": "none"}
+{"id": 1860, "text": "That movie feels too loud in the video.", "expected": "none"}
+{"id": 1861, "text": "That movie is hard to follow.", "expected": "none"}
+{"id": 1862, "text": "That movie is hard to follow today.", "expected": "none"}
+{"id": 1863, "text": "That movie is hard to follow again.", "expected": "none"}
+{"id": 1864, "text": "That movie is hard to follow in the video.", "expected": "none"}
+{"id": 1865, "text": "My laptop looks pretty good.", "expected": "none"}
+{"id": 1866, "text": "My laptop looks pretty good today.", "expected": "none"}
+{"id": 1867, "text": "My laptop looks pretty good again.", "expected": "none"}
+{"id": 1868, "text": "My laptop looks pretty good in the video.", "expected": "none"}
+{"id": 1869, "text": "My laptop was interesting.", "expected": "none"}
+{"id": 1870, "text": "My laptop was interesting today.", "expected": "none"}
+{"id": 1871, "text": "My laptop was interesting again.", "expected": "none"}
+{"id": 1872, "text": "My laptop was interesting in the video.", "expected": "none"}
+{"id": 1873, "text": "My laptop sounds strange.", "expected": "none"}
+{"id": 1874, "text": "My laptop sounds strange today.", "expected": "none"}
+{"id": 1875, "text": "My laptop sounds strange again.", "expected": "none"}
+{"id": 1876, "text": "My laptop sounds strange in the video.", "expected": "none"}
+{"id": 1877, "text": "My laptop is taking forever.", "expected": "none"}
+{"id": 1878, "text": "My laptop is taking forever today.", "expected": "none"}
+{"id": 1879, "text": "My laptop is taking forever again.", "expected": "none"}
+{"id": 1880, "text": "My laptop is taking forever in the video.", "expected": "none"}
+{"id": 1881, "text": "My laptop might be useful.", "expected": "none"}
+{"id": 1882, "text": "My laptop might be useful today.", "expected": "none"}
+{"id": 1883, "text": "My laptop might be useful again.", "expected": "none"}
+{"id": 1884, "text": "My laptop might be useful in the video.", "expected": "none"}
+{"id": 1885, "text": "My laptop was on sale.", "expected": "none"}
+{"id": 1886, "text": "My laptop was on sale today.", "expected": "none"}
+{"id": 1887, "text": "My laptop was on sale again.", "expected": "none"}
+{"id": 1888, "text": "My laptop was on sale in the video.", "expected": "none"}
+{"id": 1889, "text": "My laptop feels too loud.", "expected": "none"}
+{"id": 1890, "text": "My laptop feels too loud today.", "expected": "none"}
+{"id": 1891, "text": "My laptop feels too loud again.", "expected": "none"}
+{"id": 1892, "text": "My laptop feels too loud in the video.", "expected": "none"}
+{"id": 1893, "text": "My laptop is hard to follow.", "expected": "none"}
+{"id": 1894, "text": "My laptop is hard to follow today.", "expected": "none"}
+{"id": 1895, "text": "My laptop is hard to follow again.", "expected": "none"}
+{"id": 1896, "text": "My laptop is hard to follow in the video.", "expected": "none"}
+{"id": 1897, "text": "The new update looks pretty good.", "expected": "none"}
+{"id": 1898, "text": "The new update looks pretty good today.", "expected": "none"}
+{"id": 1899, "text": "The new update looks pretty good again.", "expected": "none"}
+{"id": 1900, "text": "The new update looks pretty good in the video.", "expected": "none"}
+{"id": 1901, "text": "The new update was interesting.", "expected": "none"}
+{"id": 1902, "text": "The new update was interesting today.", "expected": "none"}
+{"id": 1903, "text": "The new update was interesting again.", "expected": "none"}
+{"id": 1904, "text": "The new update was interesting in the video.", "expected": "none"}
+{"id": 1905, "text": "The new update sounds strange.", "expected": "none"}
+{"id": 1906, "text": "The new update sounds strange today.", "expected": "none"}
+{"id": 1907, "text": "The new update sounds strange again.", "expected": "none"}
+{"id": 1908, "text": "The new update sounds strange in the video.", "expected": "none"}
+{"id": 1909, "text": "The new update is taking forever.", "expected": "none"}
+{"id": 1910, "text": "The new update is taking forever today.", "expected": "none"}
+{"id": 1911, "text": "The new update is taking forever again.", "expected": "none"}
+{"id": 1912, "text": "The new update is taking forever in the video.", "expected": "none"}
+{"id": 1913, "text": "The new update might be useful.", "expected": "none"}
+{"id": 1914, "text": "The new update might be useful today.", "expected": "none"}
+{"id": 1915, "text": "The new update might be useful again.", "expected": "none"}
+{"id": 1916, "text": "The new update might be useful in the video.", "expected": "none"}
+{"id": 1917, "text": "The new update was on sale.", "expected": "none"}
+{"id": 1918, "text": "The new update was on sale today.", "expected": "none"}
+{"id": 1919, "text": "The new update was on sale again.", "expected": "none"}
+{"id": 1920, "text": "The new update was on sale in the video.", "expected": "none"}
+{"id": 1921, "text": "The new update feels too loud.", "expected": "none"}
+{"id": 1922, "text": "The new update feels too loud today.", "expected": "none"}
+{"id": 1923, "text": "The new update feels too loud again.", "expected": "none"}
+{"id": 1924, "text": "The new update feels too loud in the video.", "expected": "none"}
+{"id": 1925, "text": "The new update is hard to follow.", "expected": "none"}
+{"id": 1926, "text": "The new update is hard to follow today.", "expected": "none"}
+{"id": 1927, "text": "The new update is hard to follow again.", "expected": "none"}
+{"id": 1928, "text": "The new update is hard to follow in the video.", "expected": "none"}
+{"id": 1929, "text": "The song looks pretty good.", "expected": "none"}
+{"id": 1930, "text": "The song looks pretty good today.", "expected": "none"}
+{"id": 1931, "text": "The song looks pretty good again.", "expected": "none"}
+{"id": 1932, "text": "The song looks pretty good in the video.", "expected": "none"}
+{"id": 1933, "text": "The song was interesting.", "expected": "none"}
+{"id": 1934, "text": "The song was interesting today.", "expected": "none"}
+{"id": 1935, "text": "The song was interesting again.", "expected": "none"}
+{"id": 1936, "text": "The song was interesting in the video.", "expected": "none"}
+{"id": 1937, "text": "The song sounds strange.", "expected": "none"}
+{"id": 1938, "text": "The song sounds strange today.", "expected": "none"}
+{"id": 1939, "text": "The song sounds strange again.", "expected": "none"}
+{"id": 1940, "text": "The song sounds strange in the video.", "expected": "none"}
+{"id": 1941, "text": "The song is taking forever.", "expected": "none"}
+{"id": 1942, "text": "The song is taking forever today.", "expected": "none"}
+{"id": 1943, "text": "The song is taking forever again.", "expected": "none"}
+{"id": 1944, "text": "The song is taking forever in the video.", "expected": "none"}
+{"id": 1945, "text": "The song might be useful.", "expected": "none"}
+{"id": 1946, "text": "The song might be useful today.", "expected": "none"}
+{"id": 1947, "text": "The song might be useful again.", "expected": "none"}
+{"id": 1948, "text": "The song might be useful in the video.", "expected": "none"}
+{"id": 1949, "text": "The song was on sale.", "expected": "none"}
+{"id": 1950, "text": "The song was on sale today.", "expected": "none"}
+{"id": 1951, "text": "The song was on sale again.", "expected": "none"}
+{"id": 1952, "text": "The song was on sale in the video.", "expected": "none"}
+{"id": 1953, "text": "The song feels too loud.", "expected": "none"}
+{"id": 1954, "text": "The song feels too loud today.", "expected": "none"}
+{"id": 1955, "text": "The song feels too loud again.", "expected": "none"}
+{"id": 1956, "text": "The song feels too loud in the video.", "expected": "none"}
+{"id": 1957, "text": "The song is hard to follow.", "expected": "none"}
+{"id": 1958, "text": "The song is hard to follow today.", "expected": "none"}
+{"id": 1959, "text": "The song is hard to follow again.", "expected": "none"}
+{"id": 1960, "text": "The song is hard to follow in the video.", "expected": "none"}
+{"id": 1961, "text": "The browser looks pretty good.", "expected": "none"}
+{"id": 1962, "text": "The browser looks pretty good today.", "expected": "none"}
+{"id": 1963, "text": "The browser looks pretty good again.", "expected": "none"}
+{"id": 1964, "text": "The browser looks pretty good in the video.", "expected": "none"}
+{"id": 1965, "text": "The browser was interesting.", "expected": "none"}
+{"id": 1966, "text": "The browser was interesting today.", "expected": "none"}
+{"id": 1967, "text": "The browser was interesting again.", "expected": "none"}
+{"id": 1968, "text": "The browser was interesting in the video.", "expected": "none"}
+{"id": 1969, "text": "The browser sounds strange.", "expected": "none"}
+{"id": 1970, "text": "The browser sounds strange today.", "expected": "none"}
+{"id": 1971, "text": "The browser sounds strange again.", "expected": "none"}
+{"id": 1972, "text": "The browser sounds strange in the video.", "expected": "none"}
+{"id": 1973, "text": "The browser is taking forever.", "expected": "none"}
+{"id": 1974, "text": "The browser is taking forever today.", "expected": "none"}
+{"id": 1975, "text": "The browser is taking forever again.", "expected": "none"}
+{"id": 1976, "text": "The browser is taking forever in the video.", "expected": "none"}
+{"id": 1977, "text": "The browser might be useful.", "expected": "none"}
+{"id": 1978, "text": "The browser might be useful today.", "expected": "none"}
+{"id": 1979, "text": "The browser might be useful again.", "expected": "none"}
+{"id": 1980, "text": "The browser might be useful in the video.", "expected": "none"}
+{"id": 1981, "text": "The browser was on sale.", "expected": "none"}
+{"id": 1982, "text": "The browser was on sale today.", "expected": "none"}
+{"id": 1983, "text": "The browser was on sale again.", "expected": "none"}
+{"id": 1984, "text": "The browser was on sale in the video.", "expected": "none"}
+{"id": 1985, "text": "The browser feels too loud.", "expected": "none"}
+{"id": 1986, "text": "The browser feels too loud today.", "expected": "none"}
+{"id": 1987, "text": "The browser feels too loud again.", "expected": "none"}
+{"id": 1988, "text": "The browser feels too loud in the video.", "expected": "none"}
+{"id": 1989, "text": "The browser is hard to follow.", "expected": "none"}
+{"id": 1990, "text": "The browser is hard to follow today.", "expected": "none"}
+{"id": 1991, "text": "The browser is hard to follow again.", "expected": "none"}
+{"id": 1992, "text": "The browser is hard to follow in the video.", "expected": "none"}
+{"id": 1993, "text": "My neighbor looks pretty good.", "expected": "none"}
+{"id": 1994, "text": "My neighbor looks pretty good today.", "expected": "none"}
+{"id": 1995, "text": "My neighbor looks pretty good again.", "expected": "none"}
+{"id": 1996, "text": "My neighbor looks pretty good in the video.", "expected": "none"}
+{"id": 1997, "text": "My neighbor was interesting.", "expected": "none"}
+{"id": 1998, "text": "My neighbor was interesting today.", "expected": "none"}
+{"id": 1999, "text": "My neighbor was interesting again.", "expected": "none"}
+{"id": 2000, "text": "My neighbor was interesting in the video.", "expected": "none"}

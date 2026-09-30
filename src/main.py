@@ -20,7 +20,7 @@ from src.audio.meeting import MeetingSession
 from src.tts.streaming import StreamingVoiceSynthesizer
 from src.wake.engine import WakeWordDetector
 from src.stt.transcriber import WhisperTranscriber, create_transcriber
-from src.stt.speaker import SpeakerVerifier
+from src.stt.speaker import SpeakerVerifier, default_profile_path, default_user_profile_path
 from src.stt.diarizer import NemotronDiarizer, SpeakerSpan
 from src.stt.meeting_speakers import MeetingSpeakerRegistry
 from src.stt.target_separator import TargetSpeakerSeparator
@@ -167,13 +167,28 @@ class AdamDaemon:
         profile_path = speaker_cfg.profile_path or None
         self.speaker_verifier = None
         if speaker_cfg.enabled:
+            user_profiles = {}
+            for user in speaker_cfg.users:
+                if user.profiles:
+                    user_profiles[user.name] = {
+                        profile_name: path or default_user_profile_path(user.name, profile_name)
+                        for profile_name, path in user.profiles.items()
+                    }
+                else:
+                    user_profiles[user.name] = {
+                        "default": user.profile_path or default_user_profile_path(user.name)
+                    }
             candidate_verifier = SpeakerVerifier(
                 profile_path=profile_path,
                 threshold=speaker_cfg.threshold,
+                user_profiles=user_profiles or None,
             )
             if candidate_verifier.enrolled:
                 self.speaker_verifier = candidate_verifier
-                print("[Speaker] Local voice profile found; command speaker checks enabled.")
+                print(
+                    f"[Speaker] {len(candidate_verifier.profiles)} local voice profile(s) found; "
+                    "command speaker checks enabled."
+                )
             else:
                 print("[Speaker] No local voice profile enrolled; speaker checks are opt-in and currently off.")
         else:
@@ -242,6 +257,7 @@ class AdamDaemon:
         self.tts.set_audio_context(
             self.stream, self.wake, self.earcon,
             stt=_LockedTranscriber(self.stt, self._stt_lock),
+            speaker_verifier=self.speaker_verifier,
         )
 
         # 4. Tiered Speech Architecture (Semantic Endpointing & Speculative Tool Pre-flight)
@@ -265,6 +281,33 @@ class AdamDaemon:
             arbiter=self.arbiter,
             speculative_router=self.speculative_router
         )
+        self.idea_router = None
+        idea_cfg = getattr(self.config, "idea_routing", None)
+        if idea_cfg is not None and idea_cfg.enabled:
+            if idea_cfg.require_enrolled_speaker and self.speaker_verifier is None:
+                print(
+                    "[IdeaRouter] Disabled: enroll a speaker profile before enabling wake-free actions or background capture.",
+                    flush=True,
+                )
+            else:
+                try:
+                    from src.intent.idea_router import IdeaRouter
+                    candidate_router = IdeaRouter(
+                        ideas_path=idea_cfg.ideas_path,
+                        model_id=idea_cfg.model,
+                        command_threshold=idea_cfg.command_threshold,
+                        background_threshold=idea_cfg.background_threshold,
+                        minimum_margin=idea_cfg.minimum_margin,
+                    )
+                    candidate_router.prepare()
+                    self.idea_router = candidate_router
+                    print(
+                        f"[IdeaRouter] Enabled with {idea_cfg.model}; idle speech is transcribed locally. "
+                        "Commands and background calendar candidates use separate confidence thresholds.",
+                        flush=True,
+                    )
+                except Exception as exc:
+                    print(f"[IdeaRouter] Disabled because setup is incomplete ({exc}).", flush=True)
         self.speculative_router.set_executor("get_current_time", lambda location="local": self.brain._resolve_time(location))
 
         self.conversation_deadline = 0.0
@@ -567,7 +610,7 @@ class AdamDaemon:
                 return True
 
         print(
-            f"[Speaker] No registered voice found (best score={best_score:.3f}); skipping ASR.",
+            f"[Speaker] No enrolled voice matched the mixed audio (best score={best_score:.3f}); trying wake-word fallback.",
             flush=True,
         )
         return False
@@ -755,13 +798,21 @@ class AdamDaemon:
                 if getattr(self.tts, "pending_barge_in_text", None):
                     barge_cmd = self.tts.pending_barge_in_text
                     barge_audio = getattr(self.tts, "pending_barge_in_audio", None)
+                    barge_speaker_verified = getattr(
+                        self.tts, "pending_barge_in_speaker_verified", False
+                    )
                     self.tts.pending_barge_in_text = None
                     self.tts.pending_barge_in_audio = None
+                    self.tts.pending_barge_in_speaker_verified = False
                     barge_capture_id = self._save_heard_capture(barge_audio)
                     self._log_heard_transcript(barge_capture_id, barge_cmd, "barge-in-transcript")
                     self._active_heard_capture_id = barge_capture_id
 
-                    if barge_audio is not None and not await self._speaker_allowed(barge_audio):
+                    if (
+                        barge_audio is not None
+                        and not barge_speaker_verified
+                        and not await self._speaker_allowed(barge_audio)
+                    ):
                         self.stream.flush()
                         self.stream.quench(duration=0.4)
                         continue
@@ -869,14 +920,20 @@ class AdamDaemon:
                     continue
 
                 # Path A: Custom Wake Word via VAD + ASR spotting OR within follow-up window
-                if self.wake.is_custom_mode or is_in_followup:
+                idea_listening = self.idea_router is not None and not self.meeting_session.active
+                if self.wake.is_custom_mode or is_in_followup or idea_listening:
+                    pretrained_wake_triggered = False
+                    if idea_listening and not self.wake.is_custom_mode:
+                        pretrained_wake_triggered, wake_score = self.wake.predict(chunk)
+                        if pretrained_wake_triggered:
+                            print(f"\n[Wake] Wake word detected! (Confidence: {wake_score:.2f})", flush=True)
                     dynamic_floor = max(0.0035, min(0.022, self.stream.ref_monitor.speaker_rms * 0.40)) if (self.stream.ref_monitor and self.stream.ref_monitor.is_active) else 0.0025
                     is_speech, prob = self.stream.vad.is_speech(
                         chunk,
                         threshold=self.config.audio.vad_threshold_idle,
                         energy_floor=dynamic_floor
                     )
-                    if is_speech:
+                    if is_speech or pretrained_wake_triggered:
                         print(f"\n[Mic] Speech detected (prob={prob:.2f}). Recording utterance...", flush=True)
                         diarization_context = self.stream.get_recent_audio(
                             duration_s=5.0,
@@ -885,7 +942,11 @@ class AdamDaemon:
                         partial_cb = self._create_partial_callback(loop, wake_word="") if is_in_followup else None
                         audio_data = await self._record_utterance(
                             silence_duration=self.config.audio.vad_silence_duration,
-                            max_duration=45.0,
+                            # In standby, long background speech can keep VAD
+                            # open indefinitely and postpone wake-word checks.
+                            # Commands are short; cap each candidate while the
+                            # follow-up path still accepts longer requests.
+                            max_duration=45.0 if is_in_followup else 10.0,
                             idle_threshold=self.config.audio.vad_threshold_idle,
                             speaking_threshold=self.config.audio.vad_threshold_speaking,
                             initial_chunk=chunk,
@@ -923,7 +984,9 @@ class AdamDaemon:
                                             continue
                                     else:
                                         isolated = None
-                                        if self.stream.ref_monitor and self.stream.ref_monitor.is_active:
+                                        if self.meeting_session.active or self.speaker_verifier is not None or (
+                                            self.stream.ref_monitor and self.stream.ref_monitor.is_active
+                                        ):
                                             isolated = await asyncio.to_thread(
                                                 self._separate_enrolled_speaker, audio_data
                                             )
@@ -956,7 +1019,9 @@ class AdamDaemon:
                                             continue
                                     else:
                                         isolated = None
-                                        if self.stream.ref_monitor and self.stream.ref_monitor.is_active:
+                                        if self.meeting_session.active or self.speaker_verifier is not None or (
+                                            self.stream.ref_monitor and self.stream.ref_monitor.is_active
+                                        ):
                                             isolated = await asyncio.to_thread(
                                                 self._separate_enrolled_speaker, audio_data
                                             )
@@ -972,7 +1037,10 @@ class AdamDaemon:
                                             self.speculative_router.cancel_active()
                                             continue
 
-                            if self.wake.is_custom_mode and not is_in_followup:
+                            if (
+                                not is_in_followup
+                                and (self.wake.is_custom_mode or idea_listening)
+                            ):
                                 text = await asyncio.to_thread(self._transcribe_wake_candidate, audio_data)
                             else:
                                 text = await asyncio.to_thread(self._transcribe_stt, audio_data)
@@ -980,6 +1048,8 @@ class AdamDaemon:
                                 self._active_heard_capture_id, text, "mixed-audio"
                             )
                             matched, remaining_cmd = self.wake.match_custom_wake_word(text or "")
+                            if pretrained_wake_triggered and not self.wake.is_custom_mode:
+                                matched, remaining_cmd = True, text or ""
                             mixed_wake_command = remaining_cmd if matched else ""
 
                             # If the full utterance was not recognized as a wake, retry
@@ -1004,16 +1074,20 @@ class AdamDaemon:
                                     matched, remaining_cmd = tail_matched, tail_remaining
                                     mixed_wake_command = tail_remaining
 
-                            # When desktop audio is active, try the target-source
-                            # fallback if the mixed transcript missed the wake.
-                            # This is the same CPU SepFormer/profile path exercised
-                            # in the standalone voice-isolation experiment.
+                            # Keep meeting transcription on the original mixed
+                            # stream, but always try the enrolled-voice separator
+                            # on an unrecognized wake candidate. Only this
+                            # command lane uses the isolated copy. This also lets
+                            # normal wake listening work while other people speak.
                             if (
                                 not matched
                                 and not already_isolated
                                 and not is_in_followup
-                                and self.stream.ref_monitor
-                                and self.stream.ref_monitor.is_active
+                                and (
+                                    self.meeting_session.active
+                                    or self.speaker_verifier is not None
+                                    or (self.stream.ref_monitor and self.stream.ref_monitor.is_active)
+                                )
                             ):
                                 isolated = await asyncio.to_thread(
                                     self._separate_enrolled_speaker, full_utterance_audio
@@ -1034,11 +1108,26 @@ class AdamDaemon:
 
                             # In standby, a local miss ends the attempt. Do not send
                             # ordinary enrolled-speaker chatter to the configured ASR.
-                            if self.wake.is_custom_mode and not is_in_followup and not matched:
+                            if (
+                                not is_in_followup
+                                and not matched
+                                and self.wake.is_custom_mode
+                                and self.idea_router is None
+                            ):
                                 self.speculative_router.cancel_active()
                                 continue
 
-                            if self.speaker_diarizer is not None and matched and not already_isolated:
+                            # Ambient idea routing has already required a positive
+                            # enrolled-speaker check before transcription. Short,
+                            # single-speaker wake commands often yield no exclusive
+                            # Nemotron segment, so do not let diarization discard a
+                            # command that passed speaker verification.
+                            if (
+                                self.speaker_diarizer is not None
+                                and matched
+                                and not already_isolated
+                                and not idea_listening
+                            ):
                                 registered_audio = await asyncio.to_thread(
                                     self._registered_speaker_audio,
                                     full_utterance_audio,
@@ -1160,6 +1249,7 @@ class AdamDaemon:
 
                             matched, remaining_cmd = self.wake.match_custom_wake_word(text)
                             target_cmd = None
+                            matched_memory_context = None
 
                             if matched:
                                 # At this point the wake was confirmed, and when
@@ -1210,8 +1300,89 @@ class AdamDaemon:
                                     continue
                                 print(f"[Follow-up] Continuous conversation turn: \"{text}\"", flush=True)
                                 target_cmd = text
+                            elif idea_listening and self.idea_router is not None:
+                                if self.speaker_verifier is None or not await self._speaker_allowed(audio_data):
+                                    self.speculative_router.cancel_active()
+                                    continue
+                                from src.intent.idea_router import extract_memory_text
+
+                                memory_text = extract_memory_text(text)
+                                if memory_text is not None:
+                                    memory_id = self.idea_router.add_memory(memory_text)
+                                    print(f"[Memory] Saved user memory {memory_id} verbatim from the transcript.", flush=True)
+                                    await self.tts.speak_async("Memory saved.")
+                                    self.stream.flush()
+                                    self.stream.quench(duration=0.4)
+                                    continue
+
+                                memory_match = self.idea_router.match_memory(text)
+                                if memory_match is not None and memory_match.accepted:
+                                    matched_memory_context = memory_match.text
+                                    target_cmd = text
+                                    print(
+                                        f"[Memory] Matched saved memory {memory_match.memory_id} "
+                                        f"(score={memory_match.score:.3f}, margin={memory_match.margin:.3f}).",
+                                        flush=True,
+                                    )
+
+                                if target_cmd is not None:
+                                    idea_match = None
+                                else:
+                                    idea_match = self.idea_router.match(text)
+                                if idea_match is not None and idea_match.accepted:
+                                    print(
+                                        f"[IdeaRouter] Matched {idea_match.idea_id} "
+                                        f"(score={idea_match.score:.3f}, margin={idea_match.margin:.3f}).",
+                                        flush=True,
+                                    )
+                                    if idea_match.route == "command":
+                                        target_cmd = text
+                                    elif idea_match.route == "background_calendar":
+                                        idea = next(
+                                            item for item in self.idea_router._load_ideas()
+                                            if item["id"] == idea_match.idea_id
+                                        )
+                                        await self.arbiter.set_state("PROCESSING_REACT")
+                                        try:
+                                            await self.brain.process_background_observation(text, idea)
+                                        finally:
+                                            self.speculative_router.cancel_active()
+                                            if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
+                                                await self.arbiter.set_state("IDLE_LISTENING")
+                                                self.stream.flush()
+                                                self.stream.quench(duration=0.4)
+                                        continue
+                                elif idea_match is not None:
+                                    print(
+                                        f"[IdeaRouter] Ignored {idea_match.idea_id} "
+                                        f"(score={idea_match.score:.3f}, margin={idea_match.margin:.3f}).",
+                                        flush=True,
+                                    )
 
                             if target_cmd:
+                                if self.idea_router is not None:
+                                    from src.intent.idea_router import extract_memory_text
+
+                                    memory_text = extract_memory_text(target_cmd)
+                                    if memory_text is not None:
+                                        memory_id = self.idea_router.add_memory(memory_text)
+                                        print(f"[Memory] Saved user memory {memory_id} verbatim from the transcript.", flush=True)
+                                        await self.tts.speak_async("Memory saved.")
+                                        if self.meeting_session.active:
+                                            self.stream.flush()
+                                            self.stream.quench(duration=0.4)
+                                        continue
+
+                                    if matched_memory_context is None:
+                                        memory_match = self.idea_router.match_memory(target_cmd)
+                                        if memory_match is not None and memory_match.accepted:
+                                            matched_memory_context = memory_match.text
+                                            print(
+                                                f"[Memory] Matched saved memory {memory_match.memory_id} "
+                                                f"(score={memory_match.score:.3f}, margin={memory_match.margin:.3f}).",
+                                                flush=True,
+                                            )
+
                                 meeting_action = meeting_command_kind(target_cmd)
                                 if meeting_action == "start":
                                     await self._start_meeting()
@@ -1223,7 +1394,10 @@ class AdamDaemon:
                                 self.earcon.play("captured")
                                 await self.arbiter.set_state("PROCESSING_REACT")
                                 try:
-                                    await self.brain.process_user_utterance(target_cmd)
+                                    await self.brain.process_user_utterance(
+                                        target_cmd,
+                                        memory_context=matched_memory_context,
+                                    )
                                 finally:
                                     self.speculative_router.cancel_active()
                                     if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
@@ -1238,7 +1412,9 @@ class AdamDaemon:
                                             print(f"[Follow-up] Window open for {self.config.wake.followup_window_seconds:.1f}s (no wake word needed)...", flush=True)
                             else:
                                 self.speculative_router.cancel_active()
-                                if text and not is_in_followup:
+                                if text and idea_listening and not is_in_followup:
+                                    print("[IdeaRouter] No high-confidence idea match; staying idle.", flush=True)
+                                elif text and not is_in_followup:
                                     print(f"[Wake] (Phrase heard but not addressed to assistant; resuming listening)", flush=True)
                                 if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
                                     await self.arbiter.set_state("IDLE_LISTENING")
@@ -1437,6 +1613,9 @@ class AdamDaemon:
         print("\n[Adam] Shutting down cleanly...")
         self.running = False
         try:
+            brain = getattr(self, "brain", None)
+            if brain is not None:
+                brain.close()
             self.stream.stop()
             self.earcon.close()
         except Exception:

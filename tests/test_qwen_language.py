@@ -6,7 +6,7 @@ import numpy as np
 from src.stt.transcriber import Qwen3Transcriber
 
 
-def test_qwen_forwards_language_hint_to_transcribe_cpp():
+def test_qwen_ignores_unsupported_language_hint_and_uses_auto_detection():
     calls = []
 
     class Session:
@@ -25,7 +25,7 @@ def test_qwen_forwards_language_hint_to_transcribe_cpp():
 
     audio = np.ones(1600, dtype=np.float32)
     assert transcriber.transcribe(audio) == "Hello there."
-    assert calls == [(audio, "English")]
+    assert calls == [(audio, None)]
 
 
 def test_qwen_can_use_automatic_language_detection():

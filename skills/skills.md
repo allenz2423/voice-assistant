@@ -6,6 +6,7 @@ This directory contains modular environment skills that provide Adam with deep d
 
 | Skill File | Desktop Environment / Window Manager | Primary Tooling |
 | :--- | :--- | :--- |
+| `computer_use.md` | General computer-use workflow | Adam desktop and browser tools |
 | `hyprland.md` | Hyprland (Wayland Tiling) | `hyprctl dispatch`, UNIX sockets |
 | `sway.md` | Sway (Wayland i3-compatible) | `swaymsg`, tree container IPC |
 | `i3.md` | i3 (X11 Tiling Window Manager) | `i3-msg`, UNIX sockets |
@@ -16,16 +17,16 @@ This directory contains modular environment skills that provide Adam with deep d
 
 ## How Skills Work
 
-1. **Automatic Detection:**
-   At startup and before handling commands, `SkillManager` evaluates environment variables (`XDG_CURRENT_DESKTOP`, `HYPRLAND_INSTANCE_SIGNATURE`, `SWAYSOCK`, `I3SOCK`), compositor sockets, and available binaries to determine the active DE/WM.
+1. **Skill Discovery:**
+   `SkillManager` discovers top-level Markdown files in the built-in `skills/` directory and `~/.config/adam/skills/`. User files override built-in skills with the same ID. Skill IDs are filenames without `.md` or `.skills.md`.
 
-2. **Context Injection:**
-   The active environment's skill file is loaded and injected into AdamBrain's system prompt. This gives the local model immediate, zero-latency awareness of:
-   - Built-in assistant tools mapping directly to that DE/WM.
-   - Exact CLI dispatcher commands, arguments, and syntax.
-   - Session and power management hooks.
+2. **Startup Loading:**
+   When AdamBrain starts, it loads `computer_use.md` and detects the active desktop from environment variables, compositor sockets, and available binaries. It appends the matching desktop skill (or `generic_desktop.md`) to the system prompt.
 
-3. **User-Defined Custom Skills:**
+3. **On-Demand Loading:**
+   Adam can call `list_skills` to discover skills and `get_skill_context` to load one into the current conversation. Skill files are read-only guidance; tool availability and runtime policy remain authoritative.
+
+4. **User-Defined Custom Skills:**
    Users can add or override skills without modifying the core voice assistant repository by placing Markdown files in:
    ```bash
    ~/.config/adam/skills/

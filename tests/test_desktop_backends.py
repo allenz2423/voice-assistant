@@ -368,16 +368,102 @@ def test_open_in_browser_search_and_url():
 def test_close_browser_tab():
     from src.tools.desktop import close_browser_tab
 
-    with patch("src.tools.desktop.focus_window", return_value="Focused Microsoft Edge") as mock_focus:
-        with patch("shutil.which", return_value="/usr/bin/wtype"):
-            with patch("subprocess.run") as mock_run:
-                mock_run.return_value = MagicMock(returncode=0)
-                res = close_browser_tab("browser")
-                assert "Closed active browser tab" in res
-                mock_focus.assert_called_with("browser")
-                mock_run.assert_called_once()
-                args = mock_run.call_args[0][0]
-                assert args == ["wtype", "-M", "ctrl", "w", "-m", "ctrl"]
+    states = iter([
+        {"id": "edge-1", "class": "microsoft-edge", "title": "Video - Personal - Microsoft Edge"},
+        {"id": "edge-1", "class": "microsoft-edge", "title": "Home - Personal - Microsoft Edge"},
+    ])
+    with patch("src.tools.desktop.focus_window", return_value="Focused Microsoft Edge") as mock_focus, \
+         patch("src.tools.desktop._active_window_metadata", side_effect=lambda: next(states)), \
+         patch("src.tools.desktop._send_browser_shortcut", return_value=(True, "")) as mock_key:
+        res = close_browser_tab("browser")
+        assert "verified the active tab changed" in res
+        mock_focus.assert_called_with("browser")
+        mock_key.assert_called_once_with("w")
 
 
+def test_close_browser_tab_finds_matching_title_before_closing():
+    from src.tools.desktop import close_browser_tab
 
+    states = iter([
+        {"id": "edge-1", "class": "microsoft-edge", "title": "Music - Personal - Microsoft Edge and 2 more pages"},
+        {"id": "edge-1", "class": "microsoft-edge", "title": "Hugging Face - Personal - Microsoft Edge and 2 more pages"},
+        {"id": "edge-1", "class": "microsoft-edge", "title": "Docs - Personal - Microsoft Edge and 1 more pages"},
+    ])
+    with patch("src.tools.desktop.focus_window", return_value="Focused Microsoft Edge"), \
+         patch("src.tools.desktop._active_window_metadata", side_effect=lambda: next(states)), \
+         patch("src.tools.desktop._send_browser_shortcut", return_value=(True, "")) as mock_key:
+        res = close_browser_tab("edge", title_contains="hugging face")
+    assert "Closed browser tab 'Hugging Face'" in res
+    assert [call.args[0] for call in mock_key.call_args_list] == ["Tab", "w"]
+
+
+def test_close_browser_tab_closes_all_matching_tabs_with_verification():
+    from src.tools.desktop import close_browser_tab
+
+    states = iter([
+        {"id": "edge-1", "class": "microsoft-edge", "title": "Music - Personal - Microsoft Edge and 3 more pages"},
+        {"id": "edge-1", "class": "microsoft-edge", "title": "Hugging Face A - Personal - Microsoft Edge and 3 more pages"},
+        {"id": "edge-1", "class": "microsoft-edge", "title": "Hugging Face B - Personal - Microsoft Edge and 2 more pages"},
+        {"id": "edge-1", "class": "microsoft-edge", "title": "Music - Personal - Microsoft Edge and 1 more pages"},
+        {"id": "edge-1", "class": "microsoft-edge", "title": "Music - Personal - Microsoft Edge and 1 more pages"},
+    ])
+    with patch("src.tools.desktop.focus_window", return_value="Focused Microsoft Edge"), \
+         patch("src.tools.desktop._active_window_metadata", side_effect=lambda: next(states)), \
+         patch("src.tools.desktop._send_browser_shortcut", return_value=(True, "")) as mock_key:
+        res = close_browser_tab("edge", title_contains="hugging face", all_matches=True)
+    assert "Closed and verified 2 tab(s)" in res
+    assert [call.args[0] for call in mock_key.call_args_list] == ["Tab", "w", "w", "Tab"]
+
+
+def test_close_browser_tab_retries_when_first_shortcut_does_not_change_title():
+    from src.tools.desktop import close_browser_tab
+
+    same = {"id": "edge-1", "class": "microsoft-edge", "title": "Music - Personal - Microsoft Edge"}
+    next_tab = {"id": "edge-1", "class": "microsoft-edge", "title": "Home - Personal - Microsoft Edge"}
+    states = iter([same, same, next_tab])
+    with patch("src.tools.desktop.focus_window", return_value="Focused Microsoft Edge"), \
+         patch("src.tools.desktop._active_window_metadata", side_effect=lambda: next(states)), \
+         patch("src.tools.desktop._send_browser_shortcut", return_value=(True, "")) as mock_key, \
+         patch("src.tools.desktop.time.sleep"):
+        result = close_browser_tab("edge")
+
+    assert "verified the active tab changed" in result
+    assert [call.args[0] for call in mock_key.call_args_list] == ["w", "w"]
+
+
+def test_close_browser_tab_does_not_claim_success_after_two_ineffective_shortcuts():
+    from src.tools.desktop import close_browser_tab
+
+    same = {"id": "edge-1", "class": "microsoft-edge", "title": "Music - Personal - Microsoft Edge"}
+    states = iter([same, same, same])
+    with patch("src.tools.desktop.focus_window", return_value="Focused Microsoft Edge"), \
+         patch("src.tools.desktop._active_window_metadata", side_effect=lambda: next(states)), \
+         patch("src.tools.desktop._send_browser_shortcut", return_value=(True, "")) as mock_key, \
+         patch("src.tools.desktop.time.sleep"):
+        result = close_browser_tab("edge")
+
+    assert "sent twice" in result
+    assert mock_key.call_count == 2
+
+
+def test_hyprland_screenshot_uses_focused_output_name(monkeypatch):
+    from types import SimpleNamespace
+
+    screenshot = b"\x89PNG\r\n\x1a\nfixture"
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command == ["hyprctl", "activewindow", "-j"]:
+            return SimpleNamespace(returncode=0, stdout='{"monitor":1}', stderr=b"")
+        if command == ["hyprctl", "monitors", "-j"]:
+            return SimpleNamespace(returncode=0, stdout='[{"id":1,"name":"DP-5","x":0,"y":0,"width":2560,"height":1440}]', stderr=b"")
+        if command == ["grim", "-l", "0", "-o", "DP-5", "-"]:
+            return SimpleNamespace(returncode=0, stdout=screenshot, stderr=b"")
+        raise AssertionError(f"Unexpected screenshot command: {command}")
+
+    monkeypatch.setattr("src.tools.desktop.subprocess.run", run)
+    image = HyprlandBackend().capture_screenshot()
+
+    assert image == screenshot
+    assert calls[-1] == ["grim", "-l", "0", "-o", "DP-5", "-"]

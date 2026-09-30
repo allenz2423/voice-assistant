@@ -6,6 +6,9 @@
 
 ## Universal Automation Standards
 
+### Scope Restriction
+The commands below are technical references, not default actions for general app tasks. Use read-only commands to inspect state when relevant. Use window-manager or compositor commands only when the user explicitly requests window/workspace/layout management or that system action is itself the goal. Never use them to imitate an application's controls: a request to start recording means use the recorder's UI or direct app API, not fullscreen, workspace, or input-injection commands. For app tasks, focus the intended app, inspect its current UI, perform one requested action, and inspect the result.
+
 ### 1. Application Discovery & Launching (Freedesktop XDG)
 - Standard paths: `~/.local/share/applications`, `/usr/local/share/applications`, `/usr/share/applications`, `/var/lib/flatpak/exports/share/applications`
 - **Native Freedesktop Launcher**: `gtk-launch <desktop_id>` (e.g. `gtk-launch firefox.desktop` or `gtk-launch com.discordapp.Discord`)
@@ -21,12 +24,11 @@ On X11 or with XWayland-compatible windows, `wmctrl` is the universal tool:
 - **Toggle Fullscreen**: `wmctrl -r :ACTIVE: -b toggle,fullscreen`
 - **Toggle Maximize**: `wmctrl -r :ACTIVE: -b toggle,maximized_vert,maximized_horz`
 
-### 3. Media Playback Control (MPRIS D-Bus Specification)
-All modern Linux media players (Spotify, Firefox, Chrome, VLC, MPV) expose `org.mpris.MediaPlayer2`:
-- **Play/Pause**: `playerctl play-pause`
-- **Next / Previous**: `playerctl next` / `playerctl previous`
-- **Query Track Info**: `playerctl metadata --format '{{ artist }} - {{ title }}'`
-- **Target Specific Player**: `playerctl -p spotify play-pause`
+### 3. Media Playback
+- For transport commands (`play`, `pause`, `next`, `previous`, `stop`), use `control_media_app` with the explicitly requested application. It resolves and targets only that app's MPRIS player.
+- Never use unscoped `playerctl` transport commands or click the app UI for a simple transport command; global controls may affect another app, such as a browser video.
+- Use the requested app's UI to browse playlists, search, or select a specific track.
+- `get_now_playing` is read-only and may be used to identify which player currently owns playback.
 
 ### 4. Audio Control (PipeWire WirePlumber / PulseAudio)
 - **WirePlumber (PipeWire Default)**:

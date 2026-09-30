@@ -11,6 +11,8 @@ Configures:
 - Voice profile enrollment (speaker verification)
 - Optional NVIDIA Nemotron speaker diarization through Transformers
 - Continuous meeting capture, transcripts, and speaker labels
+- Optional local embedding idea routing for wake-free tool calls
+- Optional OmniParser screenshot-region boxes for computer use
 - Speech engine restored after silent mode
 - Systemd background user service
 """
@@ -362,7 +364,6 @@ def configure_stt():
     current_provider = get_current_config_value("provider", "local", section="stt")
     current_model = get_current_config_value("model_size", "qwen3-asr-1.7b", section="stt")
     current_dev = get_current_config_value("device", "Vulkan0", section="stt")
-    current_language = get_current_config_value("language", "English", section="stt")
     nvidia_devices = [] if os.environ.get("ADAM_CPU_ONLY") == "1" else detect_nvidia_devices()
     qwen_devices = [] if os.environ.get("ADAM_CPU_ONLY") == "1" else detect_qwen_vulkan_devices()
 
@@ -407,14 +408,8 @@ def configure_stt():
         update_config_value("model_size", "qwen3-asr-1.7b", section="stt")
         update_config_value("device", device, section="stt")
         update_config_value("compute_type", "int8_float32", section="stt")
-        language_options = [
-            "English (force English recognition; recommended for English meetings)",
-            "Auto-detect (allow all languages supported by Qwen)",
-        ]
-        language_idx = 1 if not current_language.strip() or current_language.lower() == "auto" else 0
-        language_choice = prompt_choice("Select Qwen language behavior", language_options, language_idx)
-        update_config_value("language", "English" if language_choice == 0 else "", section="stt")
-        print(f"{CLR_GREEN}Configured Qwen3-ASR on {device}.{CLR_RESET}")
+        update_config_value("language", "", section="stt")
+        print(f"{CLR_GREEN}Configured Qwen3-ASR on {device}; it will detect the spoken language automatically.{CLR_RESET}")
     elif choice == 1:
         if not ensure_nvidia_runtime():
             print(f"{CLR_YELLOW}Keeping the current STT device because CUDA runtime support is unavailable.{CLR_RESET}")
@@ -458,8 +453,8 @@ def configure_stt():
             )
             update_config_value("compute_type", compute_type, section="stt")
         if "qwen" in custom_model.lower():
-            language = prompt_text("Qwen language hint (English, or blank for automatic detection)", current_language)
-            update_config_value("language", language, section="stt")
+            update_config_value("language", "", section="stt")
+            print(f"{CLR_CYAN}Qwen3-ASR will detect the spoken language automatically; this runtime does not accept language hints.{CLR_RESET}")
         print(f"{CLR_GREEN}Configured custom STT:{CLR_RESET} model={custom_model}, device={custom_dev}")
     else:
         is_openrouter = choice == 5
@@ -655,7 +650,7 @@ def configure_llm():
         # Select model
         curr_model = get_current_config_value("local_model", "qwen3.5:4b", section="llm")
         models = [
-            "qwen3.5:4b   - (Recommended) Fast 4B parameter model with 16k context (~2.5GB VRAM)",
+            "qwen3.5:4b   - (Recommended) Fast 4B parameter model with 64k context",
             "qwen2.5:7b   - Powerful reasoning & structured JSON calling (~4.5GB VRAM)",
             "llama3.2:3b  - Extremely lightweight & responsive (~2.0GB VRAM)",
             "Custom local model tag (type your own)",
@@ -927,10 +922,277 @@ def configure_speaker_diarization():
 
 
 # ------------------------------------------------------------------------------
-# Step 9: Systemd Daemon Setup
+# Step 10: Optional Idea-Based Wake-Free Routing
+# ------------------------------------------------------------------------------
+def configure_idea_routing():
+    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 10: Optional Idea-Based Wake-Free Routing ---{CLR_RESET}")
+    print(
+        "Adam can use a small local MiniLM embedding model to match idle speech to configured ideas. "
+        "Direct command matches enter the normal assistant flow; calendar ideas get an isolated LLM review."
+    )
+    print(
+        "This transcribes detected speech locally while idle, requires an enrolled voice profile, "
+        "and is paused during meeting mode. No audio is sent to cloud transcription for this feature."
+    )
+    current_enabled = get_current_config_value("enabled", "false", section="idea_routing").lower() in ("true", "yes", "1")
+    default_enabled = os.environ.get("ADAM_IDEA_ROUTING_DEFAULT") == "1" or current_enabled
+    if not prompt_yes_no("Enable wake-free command matching and background calendar review?", default_yes=default_enabled):
+        update_config_value("enabled", "false", section="idea_routing")
+        print(f"{CLR_YELLOW}Idea-based routing remains disabled.{CLR_RESET}")
+        return
+
+    if os.environ.get("ADAM_SKIP_ENROLLMENT") == "1":
+        print(f"{CLR_YELLOW}Idea routing needs a voice profile, but --skip-enrollment was selected. Leaving it disabled.{CLR_RESET}")
+        update_config_value("enabled", "false", section="idea_routing")
+        return
+
+    if os.environ.get("ADAM_SKIP_SPEAKER_VERIFICATION") == "1":
+        print(f"{CLR_YELLOW}Idea routing requires speaker verification, but --skip-speaker-verification was selected. Leaving it disabled.{CLR_RESET}")
+        update_config_value("enabled", "false", section="idea_routing")
+        return
+
+    speaker_enabled = get_current_config_value("enabled", "true", section="speaker_verification").lower() in ("true", "yes", "1")
+    speaker_path = get_current_config_value(
+        "profile_path", "~/.local/state/adam/speaker-profile.npz", section="speaker_verification"
+    )
+    profile_path = Path(speaker_path).expanduser()
+    if not speaker_enabled or not profile_path.is_file():
+        print(f"{CLR_YELLOW}Wake-free actions need an enrolled speaker profile to avoid reacting to other voices or media.{CLR_RESET}")
+        needs_enrollment = not profile_path.is_file()
+        prompt = "Enable speaker verification and enroll your voice now?" if needs_enrollment else "Enable speaker verification with the existing voice profile?"
+        if not prompt_yes_no(prompt, default_yes=True):
+            update_config_value("enabled", "false", section="idea_routing")
+            return
+        update_config_value("enabled", "true", section="speaker_verification")
+        if needs_enrollment:
+            try:
+                from src.stt.enroll import main as run_enroll
+                run_enroll()
+            except Exception as exc:
+                print(f"{CLR_RED}Voice enrollment failed: {exc}{CLR_RESET}")
+        if not profile_path.is_file():
+            print(f"{CLR_YELLOW}No profile was created. Idea routing remains disabled.{CLR_RESET}")
+            update_config_value("enabled", "false", section="idea_routing")
+            return
+
+    if os.environ.get("ADAM_SKIP_PYTHON") == "1":
+        import importlib.util
+        if not all(importlib.util.find_spec(module) for module in ("onnxruntime", "tokenizers", "huggingface_hub")):
+            print(f"{CLR_YELLOW}Embedding dependencies are missing and --skip-python-deps prevents installing them.{CLR_RESET}")
+            update_config_value("enabled", "false", section="idea_routing")
+            return
+    else:
+        uv = shutil.which("uv")
+        if not uv:
+            print(f"{CLR_RED}uv was not found; idea routing dependencies could not be installed.{CLR_RESET}")
+            update_config_value("enabled", "false", section="idea_routing")
+            return
+        sync_args = [uv, "sync", "--extra", os.environ.get("ADAM_RUNTIME_EXTRA", "runtime-cpu"), "--extra", "intent-routing"]
+        if os.environ.get("ADAM_SKIP_SPEAKER_VERIFICATION") != "1":
+            sync_args.extend(["--extra", "speaker-verification"])
+        if get_current_config_value("enabled", "false", section="speaker_diarization").lower() in ("true", "yes", "1"):
+            sync_args.extend(["--extra", "nemotron-diarization"])
+        try:
+            subprocess.run(sync_args, cwd=PROJECT_DIR, check=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"{CLR_YELLOW}Could not install idea-routing dependencies ({exc}); leaving the feature disabled.{CLR_RESET}")
+            update_config_value("enabled", "false", section="idea_routing")
+            return
+
+    if not prompt_yes_no("Download the quantized MiniLM model now (~23 MB on supported CPUs)?", default_yes=True):
+        print(f"{CLR_YELLOW}Model download skipped. Run 'uv run python -m src.intent.idea_router --download' later, then enable idea_routing in config.yaml.{CLR_RESET}")
+        update_config_value("enabled", "false", section="idea_routing")
+        return
+    uv = shutil.which("uv")
+    if not uv:
+        print(f"{CLR_RED}uv was not found; download the MiniLM model with the documented command after installing uv.{CLR_RESET}")
+        update_config_value("enabled", "false", section="idea_routing")
+        return
+    try:
+        subprocess.run(
+            [uv, "run", "--no-sync", "python", "-m", "src.intent.idea_router", "--download"],
+            cwd=PROJECT_DIR,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"{CLR_YELLOW}MiniLM setup failed ({exc}); leaving the feature disabled until download succeeds.{CLR_RESET}")
+        update_config_value("enabled", "false", section="idea_routing")
+        return
+
+    update_config_value("enabled", "true", section="idea_routing")
+    print(f"{CLR_GREEN}Idea routing enabled. Edit assets/intent_ideas.json to change the ideas Adam matches.{CLR_RESET}")
+
+
+# ------------------------------------------------------------------------------
+# Step 11: Existing Browser
+# ------------------------------------------------------------------------------
+def configure_browser_navigation():
+    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 11: Use Your Existing Browser ---{CLR_RESET}")
+    update_config_value("enabled", "false", section="browser_navigation")
+    print(
+        f"{CLR_GREEN}Adam will use the configured default browser and its existing profile through desktop tools. "
+        f"The separate Playwright browser is disabled.{CLR_RESET}"
+    )
+
+
+# ------------------------------------------------------------------------------
+# Step 12: OCR-only Desktop Use and Jev
+# ------------------------------------------------------------------------------
+def configure_ocr_computer_use():
+    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 12: OCR Desktop Use with Jev ---{CLR_RESET}")
+    print(
+        "Adam can keep screenshot pixels out of the model context and use OCR text boxes instead. "
+        "TypeSafe Jev can choose the next desktop operation and recognized text target across native apps and browsers."
+    )
+    section = "computer_control"
+    current = get_current_config_value("ocr_only", "false", section=section).lower() in ("true", "yes", "1")
+    if not prompt_yes_no("Use OCR-only screen observations (never attach screenshot pixels)?", default_yes=current):
+        update_config_value("ocr_only", "false", section=section)
+        update_config_value("jev_enabled", "false", section=section)
+        return
+
+    if os.environ.get("ADAM_SKIP_PYTHON") == "1":
+        import importlib.util
+        if not importlib.util.find_spec("rapidocr"):
+            print(f"{CLR_YELLOW}OCR package is missing and --skip-python-deps prevents installing it; OCR-only mode remains disabled.{CLR_RESET}")
+            update_config_value("ocr_only", "false", section=section)
+            update_config_value("jev_enabled", "false", section=section)
+            return
+    else:
+        uv = shutil.which("uv")
+        if not uv:
+            print(f"{CLR_RED}uv was not found; OCR dependencies could not be installed.{CLR_RESET}")
+            update_config_value("ocr_only", "false", section=section)
+            update_config_value("jev_enabled", "false", section=section)
+            return
+        sync_args = [uv, "sync", "--extra", os.environ.get("ADAM_RUNTIME_EXTRA", "runtime-cpu"), "--extra", "computer-ocr"]
+        if os.environ.get("ADAM_SKIP_SPEAKER_VERIFICATION") != "1":
+            sync_args.extend(["--extra", "speaker-verification"])
+        if get_current_config_value("enabled", "false", section="idea_routing").lower() in ("true", "yes", "1"):
+            sync_args.extend(["--extra", "intent-routing"])
+        if get_current_config_value("enabled", "false", section="speaker_diarization").lower() in ("true", "yes", "1"):
+            sync_args.extend(["--extra", "nemotron-diarization"])
+        if get_current_config_value("enabled", "false", section="browser_navigation").lower() in ("true", "yes", "1"):
+            sync_args.extend(["--extra", "browser-control"])
+        try:
+            subprocess.run(sync_args, cwd=PROJECT_DIR, check=True)
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"{CLR_YELLOW}Could not install OCR dependencies ({exc}); OCR-only mode remains disabled.{CLR_RESET}")
+            update_config_value("ocr_only", "false", section=section)
+            update_config_value("jev_enabled", "false", section=section)
+            return
+
+    print(f"{CLR_CYAN}Preparing PP-OCRv6 medium weights (about 133 MB; downloaded once)...{CLR_RESET}")
+    preload = [
+        sys.executable, "-c",
+        "from src.tools.ocr import ScreenOCR; ScreenOCR()._get_engine()",
+    ] if os.environ.get("ADAM_SKIP_PYTHON") == "1" else [
+        uv, "run", "--no-sync", "python", "-c",
+        "from src.tools.ocr import ScreenOCR; ScreenOCR()._get_engine()",
+    ]
+    try:
+        subprocess.run(preload, cwd=PROJECT_DIR, check=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"{CLR_YELLOW}Could not prepare PP-OCRv6 medium ({exc}); OCR-only mode remains disabled.{CLR_RESET}")
+        update_config_value("ocr_only", "false", section=section)
+        update_config_value("jev_enabled", "false", section=section)
+        return
+
+    update_config_value("ocr_only", "true", section=section)
+    jev_current = get_current_config_value("jev_enabled", "false", section=section).lower() in ("true", "yes", "1")
+    if prompt_yes_no("Use TypeSafe Jev 1.13 for desktop action and target decisions?", default_yes=jev_current):
+        api_key = get_current_config_value("api_key", "", section="llm") or os.environ.get("OPENROUTER_API_KEY", "")
+        if not api_key:
+            import getpass
+            api_key = getpass.getpass("OpenRouter API key for Jev (input hidden): ").strip()
+            if api_key:
+                update_config_value("api_key", api_key, section="llm")
+        if not api_key:
+            update_config_value("jev_enabled", "false", section=section)
+            print(f"{CLR_YELLOW}Jev remains disabled until an OpenRouter API key is configured in llm.api_key or OPENROUTER_API_KEY.{CLR_RESET}")
+            return
+        update_config_value("jev_enabled", "true", section=section)
+        update_config_value("jev_api_base", "https://openrouter.ai/api/alpha/decisions", section=section)
+        update_config_value("jev_model", "typesafe/jev-1.13", section=section)
+        print(f"{CLR_GREEN}Jev 1.13 desktop decisions configured with your OpenRouter key. No local model service is required.{CLR_RESET}")
+    else:
+        update_config_value("jev_enabled", "false", section=section)
+        print(f"{CLR_GREEN}OCR-only desktop observations enabled without Jev action selection.{CLR_RESET}")
+
+
+# Step 13: Optional Screenshot Grounding
+# ------------------------------------------------------------------------------
+def configure_computer_vision():
+    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 13: Optional Screenshot Grounding (OmniParser) ---{CLR_RESET}")
+    if get_current_config_value("ocr_only", "false", section="computer_control").lower() in ("true", "yes", "1"):
+        update_config_value("enabled", "false", section="computer_vision")
+        print(f"{CLR_YELLOW}OCR-only mode is active, so screenshot grounding is disabled.{CLR_RESET}")
+        return
+    print(
+        "OmniParser's YOLOv8 Nano detector adds numbered clickable-region boxes and screenshot-pixel coordinates. "
+        "It does not caption controls; Adam reads their visible text from the screenshot. "
+        "The isolated runtime downloads about 41 MB of weights. Vulkan is not supported by this detector. "
+        "The YOLOv8 checkpoint and Ultralytics runtime are AGPL-3.0 licensed."
+    )
+    section = "computer_vision"
+    enabled_now = get_current_config_value("enabled", "false", section=section).lower() in ("true", "yes", "1")
+    if not prompt_yes_no("Enable OmniParser screenshot boxes?", default_yes=enabled_now):
+        update_config_value("enabled", "false", section=section)
+        return
+
+    gpu_rows = []
+    if shutil.which("nvidia-smi"):
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,name,uuid", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            for row in result.stdout.splitlines():
+                fields = [field.strip() for field in row.split(",", 2)]
+                if len(fields) == 3:
+                    gpu_rows.append(fields)
+
+    current_device = get_current_config_value("device", "cuda", section=section).lower()
+    devices = ["CPU (portable; slower)"]
+    if gpu_rows:
+        devices.extend([f"CUDA: GPU {index} — {name}" for index, name, _ in gpu_rows])
+    default_device = 0
+    if current_device == "cuda" and gpu_rows:
+        current_uuid = get_current_config_value("gpu_uuid", "", section=section)
+        default_device = next(
+            (i + 1 for i, (_, _, uuid) in enumerate(gpu_rows) if uuid == current_uuid), 1
+        )
+    choice = prompt_choice("Select OmniParser inference device", devices, default_idx=default_device)
+    if choice == 0:
+        device, gpu_uuid = "cpu", ""
+    else:
+        device, gpu_uuid = "cuda", gpu_rows[choice - 1][2]
+
+    installer = PROJECT_DIR / "tools" / "install_omniparser.py"
+    command = [sys.executable, str(installer), "--device", device]
+    if gpu_uuid:
+        command.extend(["--gpu-uuid", gpu_uuid])
+    print(f"{CLR_CYAN}Installing the isolated {device.upper()} runtime and OmniParser detector...{CLR_RESET}")
+    installed = subprocess.run(command, cwd=PROJECT_DIR).returncode == 0
+    if not installed:
+        update_config_value("enabled", "false", section=section)
+        print(f"{CLR_YELLOW}OmniParser setup did not complete; screenshot grounding remains disabled.{CLR_RESET}")
+        return
+
+    data_home = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local/share")).expanduser()
+    update_config_value("backend", "omniparser", section=section)
+    update_config_value("device", device, section=section)
+    update_config_value("gpu_uuid", gpu_uuid, section=section)
+    update_config_value("python_path", str(data_home / "adam" / "omniparser-runtime" / "bin" / "python"), section=section)
+    update_config_value("model_path", str(data_home / "adam" / "models" / "omniparser-yolov8n.pt"), section=section)
+    update_config_value("enabled", "true", section=section)
+    print(f"{CLR_GREEN}OmniParser boxes enabled on {device.upper()}.{CLR_RESET}")
+
+
+# Step 14: Systemd Daemon Setup
 # ------------------------------------------------------------------------------
 def configure_systemd():
-    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 10: Systemd User Service ---{CLR_RESET}")
+    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 14: Systemd User Service ---{CLR_RESET}")
     if os.environ.get("ADAM_SKIP_SERVICE") == "1":
         print(f"{CLR_YELLOW}Service setup skipped by setup option.{CLR_RESET}")
         return
@@ -941,6 +1203,12 @@ def configure_systemd():
     ):
         print(f"{CLR_YELLOW}This Linux system does not use systemd; start Adam with 'uv run python -m src.main' or use your init system.{CLR_RESET}")
         return
+    legacy_kev_state = subprocess.run(
+        ["systemctl", "--user", "is-enabled", "adam-kev.service"], capture_output=True, text=True
+    )
+    if legacy_kev_state.returncode == 0:
+        print(f"{CLR_CYAN}Disabling the retired local Kev service; desktop decisions now use Jev over OpenRouter.{CLR_RESET}")
+        subprocess.run(["systemctl", "--user", "disable", "--now", "adam-kev.service"], capture_output=True)
     if prompt_yes_no("Enable and start Adam as an automatic background service (adam.service)?", default_yes=True):
         print(f"{CLR_CYAN}Enabling and starting adam.service...{CLR_RESET}")
         subprocess.run(["systemctl", "--user", "daemon-reload"])
@@ -965,6 +1233,10 @@ def main():
         configure_speaker_verification()
         configure_meeting()
         configure_speaker_diarization()
+        configure_idea_routing()
+        configure_browser_navigation()
+        configure_ocr_computer_use()
+        configure_computer_vision()
         config_path = PROJECT_DIR / "config.yaml"
         if config_path.exists():
             config_path.chmod(0o600)
@@ -978,6 +1250,7 @@ def main():
         print(f"  • Test microphone:   {CLR_BOLD}uv run python tools/test_mic.py{CLR_RESET}")
         print(f"  • Meeting recordings: {CLR_BOLD}{Path(get_current_config_value('output_dir', '~/.local/state/adam/meetings', section='meeting')).expanduser()}{CLR_RESET}")
         print(f"  • Heard audio/logs:  {CLR_BOLD}{Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'adam' / 'heard-captures'}{CLR_RESET}")
+        print(f"  • Idea definitions: {CLR_BOLD}{PROJECT_DIR / 'assets' / 'intent_ideas.json'}{CLR_RESET}")
         print(f"  • Edit config:       {CLR_BOLD}{PROJECT_DIR}/config.yaml{CLR_RESET}\n")
     except KeyboardInterrupt:
         print(f"\n\n{CLR_YELLOW}Setup cancelled by user.{CLR_RESET}\n")

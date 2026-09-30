@@ -1,4 +1,5 @@
 import os
+import json
 import re
 import shlex
 import shutil
@@ -581,6 +582,9 @@ def _find_qdbus() -> Optional[str]:
 class BaseDesktopBackend:
     name: str = "generic_desktop"
 
+    def __init__(self) -> None:
+        self.last_screenshot_origin = (0, 0)
+
     def get_capabilities(self) -> set[str]:
         return {
             "window_focus", "window_close", "window_list",
@@ -860,10 +864,47 @@ class HyprlandBackend(BaseDesktopBackend):
             return f"Could not reorder windows in Hyprland: {e}"
 
     def capture_screenshot(self) -> bytes:
+        geometry = None
+        output_name = None
+        try:
+            active_result = subprocess.run(
+                ["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=2,
+                env=os.environ,
+            )
+            monitor_id = json.loads(active_result.stdout or "{}").get("monitor")
+            monitors_result = subprocess.run(
+                ["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=2,
+                env=os.environ,
+            )
+            monitors = json.loads(monitors_result.stdout or "[]")
+            monitor = next((item for item in monitors if item.get("id") == monitor_id), None)
+            if monitor:
+                x, y = int(monitor.get("x", 0)), int(monitor.get("y", 0))
+                width, height = int(monitor.get("width", 0)), int(monitor.get("height", 0))
+                output_name = str(monitor.get("name") or "").strip() or None
+                if width > 0 and height > 0:
+                    geometry = (x, y, width, height)
+        except Exception:
+            geometry = None
+        if geometry:
+            x, y, width, height = geometry
+            self.last_screenshot_origin = (x, y)
+            # grim can hang on Hyprland when an output is selected by its
+            # explicit geometry, especially on mixed-resolution/HDR setups.
+            # Selecting the compositor output by name is both more direct and
+            # robust; keep geometry only for older compositors without a name.
+            command = (
+                ["grim", "-l", "0", "-o", output_name, "-"]
+                if output_name
+                else ["grim", "-l", "0", "-g", f"{x},{y} {width}x{height}", "-"]
+            )
+        else:
+            self.last_screenshot_origin = (0, 0)
+            command = ["grim", "-l", "0", "-"]
         result = subprocess.run(
-            ["grim", "-"],
+            command,
             capture_output=True,
-            timeout=15,
+            timeout=3,
             env=os.environ,
         )
         if result.returncode != 0:
@@ -1991,11 +2032,216 @@ def get_active_capabilities() -> dict[str, bool]:
 # Public Desktop Tool API
 # ---------------------------------------------------------------------------
 
-def capture_screenshot() -> bytes:
-    """Captures the current desktop as PNG bytes without writing an image file."""
-    ensure_gui_environment()
+def _active_window_geometry() -> tuple[int, int, int, int]:
+    """Return the focused window's desktop-space x, y, width, and height."""
+    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
+        result = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=2)
+        data = json.loads(result.stdout or "{}")
+        x, y = map(int, data["at"])
+        width, height = map(int, data["size"])
+    elif get_active_backend().name in {"sway", "i3"}:
+        bounds = _active_window_metadata().get("bounds")
+        if not bounds or len(bounds) != 4:
+            raise RuntimeError("The focused window has no capturable bounds.")
+        x, y, width, height = bounds
+    elif shutil.which("xdotool"):
+        result = subprocess.run(
+            ["xdotool", "getactivewindow", "getwindowgeometry", "--shell"],
+            capture_output=True, text=True, timeout=2, check=True,
+        )
+        values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        x, y, width, height = (int(values[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
+    else:
+        raise RuntimeError("Focused-window screenshots need Hyprland or xdotool window geometry support.")
+    if width <= 0 or height <= 0:
+        raise RuntimeError("The focused application has no capturable window size.")
+    return x, y, width, height
+
+
+def _active_window_metadata() -> dict[str, Any]:
+    """Return identity for the focused window where the compositor exposes it."""
     backend = get_active_backend()
-    return backend.capture_screenshot()
+    try:
+        if backend.name == "hyprland":
+            result = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=2)
+            data = json.loads(result.stdout or "{}")
+            return {
+                "id": str(data.get("address") or ""),
+                "class": str(data.get("class") or data.get("initialClass") or ""),
+                "title": str(data.get("title") or data.get("initialTitle") or ""),
+            }
+        if backend.name in {"sway", "i3"}:
+            command = ["swaymsg", "-t", "get_tree"] if backend.name == "sway" else ["i3-msg", "-t", "get_tree"]
+            result = subprocess.run(command, capture_output=True, text=True, timeout=2)
+            tree = json.loads(result.stdout or "{}")
+            def focused(node: dict) -> Optional[dict]:
+                if node.get("focused") and (node.get("window") is not None or node.get("app_id") or node.get("window_properties")):
+                    return node
+                for child in [*node.get("nodes", []), *node.get("floating_nodes", [])]:
+                    match = focused(child)
+                    if match:
+                        return match
+                return None
+            node = focused(tree) or {}
+            props = node.get("window_properties") or {}
+            rect = node.get("rect") or {}
+            return {
+                "id": str(node.get("id") or ""),
+                "class": str(node.get("app_id") or props.get("class") or props.get("instance") or ""),
+                "title": str(node.get("name") or ""),
+                "bounds": (int(rect.get("x", 0)), int(rect.get("y", 0)), int(rect.get("width", 0)), int(rect.get("height", 0))),
+            }
+        if backend.name == "niri":
+            result = subprocess.run(["niri", "msg", "-j", "windows"], capture_output=True, text=True, timeout=2)
+            windows = json.loads(result.stdout or "[]")
+            node = next((w for w in windows if w.get("is_focused") or w.get("focused")), {})
+            return {
+                "id": str(node.get("id") or ""),
+                "class": str(node.get("app_id") or ""),
+                "title": str(node.get("title") or ""),
+                "bounds": tuple(node.get("rect") or (0, 0, 0, 0)),
+            }
+        if shutil.which("kdotool"):
+            result = subprocess.run(["kdotool", "getactivewindow", "getwindowname"], capture_output=True, text=True, timeout=2)
+            if result.returncode == 0 and result.stdout.strip():
+                return {"id": "", "class": "", "title": result.stdout.strip().splitlines()[-1]}
+        if shutil.which("xdotool"):
+            result = subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True, timeout=2)
+            window_id = result.stdout.strip()
+            if result.returncode == 0 and window_id:
+                name = subprocess.run(["xdotool", "getwindowname", window_id], capture_output=True, text=True, timeout=2)
+                cls = subprocess.run(["xdotool", "getwindowclassname", window_id], capture_output=True, text=True, timeout=2)
+                return {"id": window_id, "class": cls.stdout.strip(), "title": name.stdout.strip()}
+    except Exception:
+        pass
+    return {"id": "", "class": "", "title": ""}
+
+
+def screenshot_delay_for_focused_window(
+    default_seconds: float = 0.25,
+    browser_seconds: float = 1.5,
+) -> float:
+    """Choose a short deterministic screenshot settle delay from the focused app."""
+    try:
+        window = _active_window_metadata()
+        app_identity = f"{window.get('class', '')} {window.get('title', '')}"
+        browser = re.search(
+            r"browser|firefox|mozilla|chrom(e|ium)|edge|msedge|brave|vivaldi|opera|zen",
+            app_identity,
+            re.IGNORECASE,
+        )
+        value = browser_seconds if browser else default_seconds
+        value = float(value)
+        return min(max(value, 0.0), 10.0)
+    except (TypeError, ValueError):
+        return 0.25
+
+
+def _expected_application_names(target: str) -> set[str]:
+    names = {str(target or "").strip().lower()}
+    try:
+        apps = _scan_desktop_entries()
+        selected = _resolve_application_entry(target, apps)
+        if selected:
+            names.add(str(selected.get("name") or "").lower())
+            names.add(Path(shlex.split(str(selected.get("exec") or ""))[0]).name.lower())
+            names.add(str(selected.get("startup_wm_class") or "").lower())
+    except Exception:
+        pass
+    return {name for name in names if name}
+
+
+def _window_matches_application(window: dict[str, str], expected_names: set[str]) -> bool:
+    haystack = " ".join((window.get("class", ""), window.get("title", ""))).lower()
+    normalized = re.sub(r"[^a-z0-9]+", " ", haystack).strip()
+    words = set(normalized.split())
+    for name in expected_names:
+        candidate = re.sub(r"[^a-z0-9]+", " ", name).strip()
+        if not candidate:
+            continue
+        if candidate in normalized or normalized in candidate:
+            return True
+        candidate_words = set(candidate.split())
+        if candidate_words and any(len(word) >= 3 and word in words for word in candidate_words):
+            return True
+    return False
+
+
+def wait_for_application_ready(target: Optional[str] = None, timeout: float = 15.0) -> None:
+    """Wait until a focused app window exists and its identity/bounds settle."""
+    ensure_gui_environment()
+    deadline = time.monotonic() + max(0.5, timeout)
+    expected_names = _expected_application_names(target) if target else set()
+    previous: Optional[tuple[str, str, tuple[int, int, int, int]]] = None
+    stable_polls = 0
+    while time.monotonic() < deadline:
+        try:
+            window = _active_window_metadata()
+            if expected_names and not _window_matches_application(window, expected_names):
+                stable_polls = 0
+                previous = None
+            else:
+                try:
+                    bounds = _active_window_geometry()
+                except Exception:
+                    bounds = tuple(window.get("bounds") or (0, 0, 0, 0))
+                identity = window.get("id") or f"{window.get('class', '')}:{window.get('title', '')}"
+                current = (identity, window.get("class", ""), bounds)
+                if identity.strip(":") and current == previous:
+                    stable_polls += 1
+                else:
+                    stable_polls = 1 if identity.strip(":") else 0
+                previous = current
+                if stable_polls >= 3:
+                    time.sleep(0.2)  # Allow the compositor to present the mapped window.
+                    return
+        except Exception:
+            stable_polls = 0
+            previous = None
+        time.sleep(0.2)
+    target_text = f" matching '{target}'" if target else ""
+    raise TimeoutError(f"The focused application{target_text} did not become ready for a screenshot within {timeout:g} seconds.")
+
+
+def capture_screenshot_with_origin(
+    scope: str = "monitor", *, expected_application: Optional[str] = None, wait_until_ready: bool = True
+) -> tuple[bytes, tuple[int, int]]:
+    """Capture the focused monitor or crop the screenshot to the focused window."""
+    scope = (scope or "monitor").strip().lower()
+    if scope not in {"monitor", "window"}:
+        raise ValueError("Screenshot scope must be 'monitor' or 'window'.")
+    ensure_gui_environment()
+    if wait_until_ready:
+        wait_for_application_ready(expected_application)
+    backend = get_active_backend()
+    image = backend.capture_screenshot()
+    origin = getattr(backend, "last_screenshot_origin", (0, 0))
+    if scope == "monitor":
+        return image, origin
+
+    x, y, width, height = _active_window_geometry()
+    left, top = x - origin[0], y - origin[1]
+    try:
+        from PIL import Image
+        from io import BytesIO
+
+        with Image.open(BytesIO(image)) as screenshot:
+            bounds = (
+                max(0, left), max(0, top),
+                min(screenshot.width, left + width), min(screenshot.height, top + height),
+            )
+            if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+                raise RuntimeError("The focused window is outside the captured monitor image.")
+            output = BytesIO()
+            screenshot.crop(bounds).save(output, format="PNG")
+            return output.getvalue(), (origin[0] + bounds[0], origin[1] + bounds[1])
+    except ImportError as exc:
+        raise RuntimeError("Focused-window screenshots require Pillow; install the 'pillow' package.") from exc
+
+
+def capture_screenshot(scope: str = "monitor", *, expected_application: Optional[str] = None) -> bytes:
+    """Capture the focused monitor or application window as PNG bytes."""
+    return capture_screenshot_with_origin(scope, expected_application=expected_application)[0]
 
 
 def list_applications(query: Optional[str] = "") -> str:
@@ -2094,50 +2340,160 @@ def focus_window(target: str) -> str:
     return backend.focus_window(target)
 
 
-def close_browser_tab(target: str = "browser") -> str:
-    """Focuses the browser window and closes the active tab via Ctrl+W."""
+def _is_browser_window(window: dict[str, Any]) -> bool:
+    identity = f"{window.get('class', '')} {window.get('title', '')}"
+    return bool(re.search(r"browser|firefox|mozilla|chrom(e|ium)|edge|msedge|brave|vivaldi|opera|zen", identity, re.I))
+
+
+def _browser_title_state(title: str) -> tuple[str, int | None]:
+    """Return the visible page title and, where Chromium exposes it, tab count."""
+    count_match = re.search(r"\band\s+(\d+)\s+more\s+pages\b", title, re.I)
+    count = int(count_match.group(1)) + 1 if count_match else None
+    clean = re.sub(r"\s+and\s+\d+\s+more\s+pages\b", "", title, flags=re.I)
+    clean = re.sub(r"\s+-\s+(?:Personal|Work|Profile\s*\d*)\s+-\s+.*$", "", clean, flags=re.I)
+    clean = re.sub(r"\s+-\s+(?:Microsoft\s*)?Edge\s*$", "", clean, flags=re.I)
+    clean = re.sub(r"\s+-\s+Firefox\s*$", "", clean, flags=re.I)
+    return clean.strip(), count
+
+
+def _send_browser_shortcut(key: str) -> tuple[bool, str]:
+    """Send a browser shortcut with the session's native input backend."""
+    if (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")):
+        if shutil.which("wtype"):
+            key_arg = "-k" if key == "Tab" else None
+            args = ["wtype", "-M", "ctrl"]
+            args.extend([key_arg, key] if key_arg else [key.lower()])
+            args.extend(["-m", "ctrl"])
+            try:
+                result = subprocess.run(args, capture_output=True, text=True, timeout=3)
+                if result.returncode == 0:
+                    return True, ""
+            except Exception as exc:
+                error = str(exc)
+            else:
+                error = result.stderr.strip()
+        else:
+            error = "wtype is unavailable"
+
+        if shutil.which("ydotool"):
+            # Ctrl=29, W=17, Tab=15 (Linux evdev key codes).
+            keycode = "17" if key == "w" else "15"
+            try:
+                runtime = os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+                socket_path = Path(runtime) / ".ydotool_socket"
+                if not socket_path.exists() and shutil.which("systemctl"):
+                    subprocess.run(["systemctl", "--user", "start", "ydotool.service"], capture_output=True, text=True, timeout=5)
+                    for _ in range(20):
+                        if socket_path.exists():
+                            break
+                        time.sleep(0.1)
+                if socket_path.exists():
+                    result = subprocess.run(
+                        ["ydotool", "key", "29:1", f"{keycode}:1", f"{keycode}:0", "29:0"],
+                        capture_output=True, text=True, timeout=3,
+                    )
+                    if result.returncode == 0:
+                        return True, ""
+                    error = result.stderr.strip()
+            except Exception as exc:
+                error = str(exc)
+        return False, error or "Wayland keyboard input failed"
+
+    if shutil.which("xdotool") and os.environ.get("DISPLAY"):
+        try:
+            result = subprocess.run(["xdotool", "key", f"ctrl+{key.lower()}"], capture_output=True, text=True, timeout=3)
+            return result.returncode == 0, result.stderr.strip()
+        except Exception as exc:
+            return False, str(exc)
+    return False, "No keyboard input backend is available (install wtype/ydotool on Wayland or xdotool on X11)."
+
+
+def close_browser_tab(
+    target: str = "browser",
+    title_contains: str = "",
+    all_matches: bool = False,
+) -> str:
+    """Close the active browser tab, optionally finding and closing tabs by visible title."""
     ensure_gui_environment()
     browser_target = (target or "browser").strip()
+    query = (title_contains or "").strip()
 
     focus_res = focus_window(browser_target)
     if "not found" in focus_res.lower() or "error" in focus_res.lower():
-        if browser_target != "browser":
+        if browser_target.casefold() != "browser":
             focus_res = focus_window("browser")
-            if "not found" in focus_res.lower() or "error" in focus_res.lower():
-                return f"Could not find open browser window to close tab: {focus_res}"
-        else:
-            return f"No open browser window found: {focus_res}"
+        if "not found" in focus_res.lower() or "error" in focus_res.lower():
+            return f"Could not find open browser window: {focus_res}"
 
-    time.sleep(0.08)
+    time.sleep(0.15)
+    current = _active_window_metadata()
+    if not _is_browser_window(current):
+        return "Could not safely close a tab: the focused window is not identifiable as a browser."
+    if not current.get("title"):
+        return "The browser is focused, but this desktop does not expose its active tab title, so the close cannot be verified."
 
-    # Wayland: wtype
-    if shutil.which("wtype") and (os.environ.get("WAYLAND_DISPLAY") or os.environ.get("HYPRLAND_INSTANCE_SIGNATURE")):
-        try:
-            res = subprocess.run(["wtype", "-M", "ctrl", "w", "-m", "ctrl"], capture_output=True, text=True, timeout=3)
-            if res.returncode == 0:
-                return "Closed active browser tab."
-        except Exception:
-            pass
+    start_title = str(current["title"])
+    page_title, _ = _browser_title_state(start_title)
+    visited: set[tuple[str, int | None]] = set()
+    closed = 0
+    last_error = ""
+    max_steps = 100
 
-    # Generic Linux: ydotool
-    if shutil.which("ydotool"):
-        try:
-            res = subprocess.run(["ydotool", "key", "29:1", "17:1", "17:0", "29:0"], capture_output=True, timeout=3)
-            if res.returncode == 0:
-                return "Closed active browser tab."
-        except Exception:
-            pass
+    for _ in range(max_steps):
+        title = str(current.get("title") or "")
+        page_title, tab_count = _browser_title_state(title)
+        state = (page_title.casefold(), tab_count)
+        if state in visited:
+            break
+        visited.add(state)
 
-    # X11 fallback: xdotool
-    if shutil.which("xdotool") and os.environ.get("DISPLAY"):
-        try:
-            res = subprocess.run(["xdotool", "key", "ctrl+w"], capture_output=True, text=True, timeout=3)
-            if res.returncode == 0:
-                return "Closed active browser tab."
-        except Exception:
-            pass
+        matches = not query or query.casefold() in title.casefold()
+        if matches:
+            after = current
+            for attempt in range(2):
+                sent, last_error = _send_browser_shortcut("w")
+                if not sent:
+                    return f"Failed to send Ctrl+W: {last_error}"
+                # Some browser pages briefly swallow the first shortcut while
+                # loading or focused on an embedded control. Recheck, then retry
+                # once only while the exact same tab is still active.
+                time.sleep(0.35 if attempt == 0 else 0.5)
+                after = _active_window_metadata()
+                after_title = str(after.get("title") or "")
+                if after_title != title:
+                    break
+            else:
+                return f"Ctrl+W was sent twice, but the browser still shows the same tab ('{page_title[:80]}'); it was not verified closed."
+            after_title = str(after.get("title") or "")
+            if after_title and not _is_browser_window(after):
+                closed += 1
+                if query and tab_count == 1:
+                    return f"Closed the matching last browser tab ('{page_title[:80]}'); the browser window closed too."
+                return "The browser window closed while attempting to close a tab; stopping without further input."
+            closed += 1
+            if not query or not all_matches:
+                return f"Closed browser tab '{page_title[:100]}' and verified the active tab changed."
+            current = after
+            continue
 
-    return "Failed to send close tab shortcut: no virtual keyboard input tool found (install wtype or ydotool)."
+        if not query:
+            break
+        sent, last_error = _send_browser_shortcut("Tab")
+        if not sent:
+            return f"Could not search browser tabs: {last_error}"
+        time.sleep(0.2)
+        current = _active_window_metadata()
+        next_title = str(current.get("title") or "")
+        if not _is_browser_window(current):
+            return f"Tab search left the browser unexpectedly; closed {closed} matching tab(s)."
+        if next_title == start_title:
+            break
+
+    if closed:
+        return f"Closed and verified {closed} tab(s) matching '{query}'."
+    if query:
+        return f"No open browser tab title matched '{query}'. Checked {len(visited)} distinct tab state(s)."
+    return "No browser tab was closed."
 
 
 

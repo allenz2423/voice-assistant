@@ -22,7 +22,7 @@ class WakeConfig(BaseModel):
 class STTConfig(BaseModel):
     provider: str = "local"
     model_size: str = "qwen3-asr-1.7b"
-    language: str = "English"
+    language: str = ""
     device: str = "Vulkan0"
     device_index: int = 0
     compute_type: str = "int8_float32"
@@ -33,10 +33,60 @@ class STTConfig(BaseModel):
     fallback_device: str = "cpu"
     fallback_compute_type: str = "int8"
 
+class SpeakerUserConfig(BaseModel):
+    name: str
+    profile_path: str = ""
+    profiles: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, name):
+        name = name.strip()
+        if not name:
+            raise ValueError("Speaker user name cannot be empty.")
+        return name
+
+
 class SpeakerVerificationConfig(BaseModel):
     enabled: bool = True
     profile_path: str = ""
     threshold: float = 0.25
+    users: list[SpeakerUserConfig] = Field(default_factory=list)
+
+    @field_validator("users", mode="before")
+    @classmethod
+    def accept_user_name_shorthand(cls, users):
+        if users is None:
+            return []
+        if not isinstance(users, list):
+            raise ValueError("Speaker users must be a list of names or user objects.")
+        normalized = []
+        for user in users:
+            if isinstance(user, str):
+                normalized.append({"name": user})
+            elif isinstance(user, dict) and isinstance(user.get("profiles"), list):
+                item = dict(user)
+                item["profiles"] = {str(profile): "" for profile in item["profiles"]}
+                normalized.append(item)
+            else:
+                normalized.append(user)
+        return normalized
+
+    @field_validator("users")
+    @classmethod
+    def validate_users(cls, users):
+        names = [user.name.strip().casefold() for user in users]
+        if any(not name for name in names):
+            raise ValueError("Speaker user names cannot be empty.")
+        if len(names) != len(set(names)):
+            raise ValueError("Speaker user names must be unique, ignoring case.")
+        for user in users:
+            profiles = [name.strip().casefold() for name in user.profiles]
+            if any(not name for name in profiles) or len(profiles) != len(set(profiles)):
+                raise ValueError(f"Profile names for speaker user {user.name!r} must be non-empty and unique.")
+            if user.profiles and user.profile_path:
+                raise ValueError(f"Use either profile_path or profiles for speaker user {user.name!r}, not both.")
+        return users
 
 class SpeakerDiarizationConfig(BaseModel):
     enabled: bool = False
@@ -68,6 +118,61 @@ class MeetingConfig(BaseModel):
     max_segment_seconds: float = 30.0
     speaker_similarity_threshold: float = 0.55
 
+class IdeaRoutingConfig(BaseModel):
+    enabled: bool = False
+    model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    ideas_path: str = "assets/intent_ideas.json"
+    command_threshold: float = 0.30
+    background_threshold: float = 0.49
+    minimum_margin: float = 0.025
+    require_enrolled_speaker: bool = True
+
+class BrowserNavigationConfig(BaseModel):
+    enabled: bool = False
+    browser: str = "default"  # "default", "chromium", or "firefox"
+    profile_path: str = "~/.local/share/adam/browser-navigation"
+    timeout_seconds: float = 15.0
+
+class ComputerControlConfig(BaseModel):
+    enabled: bool = True
+    max_text_length: int = 20000
+    screenshot_delay_seconds: float = 0.25
+    browser_screenshot_delay_seconds: float = 3.0
+    ocr_only: bool = False
+    jev_enabled: bool = False
+    jev_api_base: str = "https://openrouter.ai/api/alpha/decisions"
+    jev_model: str = "typesafe/jev-1.13"
+    jev_timeout_seconds: float = 20.0
+    jev_min_confidence: float = 0.65
+    ocr_max_regions: int = 100
+    ocr_device: Literal["cpu", "cuda"] | None = None
+    ocr_gpu_uuid: str = ""
+
+class ComputerVisionConfig(BaseModel):
+    enabled: bool = False
+    backend: Literal["omniparser"] = "omniparser"
+    device: Literal["cpu", "cuda"] = "cuda"
+    gpu_uuid: str = ""
+    python_path: str = "~/.local/share/adam/omniparser-runtime/bin/python"
+    model_path: str = "~/.local/share/adam/models/omniparser-yolov8n.pt"
+    confidence_threshold: float = 0.05
+    max_regions: int = 60
+    timeout_seconds: float = 15.0
+
+    @field_validator("confidence_threshold")
+    @classmethod
+    def validate_confidence_threshold(cls, value):
+        if not 0.0 < value < 1.0:
+            raise ValueError("Computer vision confidence threshold must be between 0 and 1.")
+        return value
+
+    @field_validator("max_regions")
+    @classmethod
+    def validate_max_regions(cls, value):
+        if not 1 <= value <= 200:
+            raise ValueError("Computer vision max_regions must be between 1 and 200.")
+        return value
+
 class TTSConfig(BaseModel):
     engine: str = "kokoro" # "kokoro" | "openai" | "cosyvoice" | "silent"
     silent_restore_engine: str = "kokoro"
@@ -93,7 +198,9 @@ class LLMConfig(BaseModel):
     ollama_host: str = "http://localhost:11434"
     api_base: str = ""
     api_key: str = ""
-    num_ctx: int = 16384
+    provider_only: list[str] = Field(default_factory=list)
+    allow_provider_fallbacks: bool = True
+    num_ctx: int = 65536
     temperature: float = 0.1
     think: Union[bool, str] = False
 
@@ -172,6 +279,10 @@ class AppConfig(BaseModel):
     speaker_verification: SpeakerVerificationConfig = Field(default_factory=SpeakerVerificationConfig)
     speaker_diarization: SpeakerDiarizationConfig = Field(default_factory=SpeakerDiarizationConfig)
     meeting: MeetingConfig = Field(default_factory=MeetingConfig)
+    idea_routing: IdeaRoutingConfig = Field(default_factory=IdeaRoutingConfig)
+    browser_navigation: BrowserNavigationConfig = Field(default_factory=BrowserNavigationConfig)
+    computer_control: ComputerControlConfig = Field(default_factory=ComputerControlConfig)
+    computer_vision: ComputerVisionConfig = Field(default_factory=ComputerVisionConfig)
     tts: TTSConfig = Field(default_factory=TTSConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)

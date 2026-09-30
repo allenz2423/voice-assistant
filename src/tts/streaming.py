@@ -181,6 +181,8 @@ class StreamingVoiceSynthesizer:
         self.current_sentence = ""
         self.pending_barge_in_text = None
         self.pending_barge_in_audio = None
+        self.pending_barge_in_speaker_verified = False
+        self.speaker_verifier = None
         self.speech_history: deque[tuple[float, str]] = deque(maxlen=30)
 
         if self.engine == "cosyvoice":
@@ -244,12 +246,13 @@ class StreamingVoiceSynthesizer:
             print(f"[TTS] Failed to initialize Kokoro: {e}. Falling back to silent notification mode.")
             self.engine = "silent"
 
-    def set_audio_context(self, mic_stream, wake_detector, earcon, stt=None):
+    def set_audio_context(self, mic_stream, wake_detector, earcon, stt=None, speaker_verifier=None):
         """Wires mic, wake detector, earcon, and STT engine for natural barge-in abort."""
         self.mic_stream = mic_stream
         self.wake_detector = wake_detector
         self.earcon = earcon
         self.stt = stt
+        self.speaker_verifier = speaker_verifier
 
     def advance_epoch(self):
         """Immediately aborts any ongoing synthesis and speech playback."""
@@ -457,6 +460,7 @@ class StreamingVoiceSynthesizer:
         speech_buffer: list[np.ndarray] = []
         silence_samples = 0
         speech_samples = 0
+        wake_word_detected = False
         # 350ms minimum speech at mic sample rate
         min_speech_samples = int(0.35 * self.mic_stream.sample_rate)
         # Cap on sustained continuous speech before evaluating STT check (~600ms)
@@ -481,15 +485,14 @@ class StreamingVoiceSynthesizer:
                 continue
 
             # 1. Wake word check (if openWakeWord active)
+            wake_triggered_on_chunk = False
             if self.wake_detector and not self.wake_detector.is_custom_mode:
                 triggered, _ = self.wake_detector.predict(chunk)
                 if triggered:
-                    print("\n[Barge-In] Wake word detected during speech! Aborting...", flush=True)
-                    self.advance_epoch()
-                    if self.earcon:
-                        self.earcon.advance_epoch()
-                        self.earcon.play("interrupt")
-                    break
+                    # A wake detector hit is only a candidate. Keep playback
+                    # alive until STT and, when enrolled, speaker verification
+                    # confirm that this is an authorized interruption.
+                    wake_triggered_on_chunk = True
 
             # 2. Silero VAD without acoustic energy override (threshold=0.88)
             is_speech, prob = self.mic_stream.vad.is_speech(chunk, threshold=0.88, use_energy_floor=False)
@@ -498,6 +501,7 @@ class StreamingVoiceSynthesizer:
                 speech_buffer.append(chunk)
                 speech_samples += len(chunk)
                 silence_samples = 0
+                wake_word_detected = wake_word_detected or wake_triggered_on_chunk
             else:
                 if speech_samples > 0:
                     silence_samples += len(chunk)
@@ -529,6 +533,7 @@ class StreamingVoiceSynthesizer:
                                 matched, _ = self.wake_detector.match_custom_wake_word(text_clean)
                                 if matched:
                                     matched_wake = True
+                            matched_wake = matched_wake or wake_word_detected
 
                             contains_interrupt = any(kw in text_clean.lower() for kw in INTERRUPT_KEYWORDS)
 
@@ -538,9 +543,34 @@ class StreamingVoiceSynthesizer:
                             # Note: Like Amazon Alexa and Google Assistant, arbitrary speech without wake word
                             # or interrupt keyword is suppressed during playback to prevent acoustic bleed self-interruption.
                             if matched_wake or contains_interrupt:
+                                speaker_verified = False
+                                if self.speaker_verifier is not None:
+                                    try:
+                                        authorized, score = await asyncio.to_thread(
+                                            self.speaker_verifier.verify, audio_snippet
+                                        )
+                                    except Exception as exc:
+                                        authorized, score = False, float("nan")
+                                        print(
+                                            f"[Speaker] Barge-in verification unavailable; keeping playback active ({type(exc).__name__}).",
+                                            flush=True,
+                                        )
+                                    if not authorized:
+                                        print(
+                                            f"[Speaker] Rejected barge-in (score={score:.3f}); playback continues.",
+                                            flush=True,
+                                        )
+                                        speech_buffer = []
+                                        speech_samples = 0
+                                        silence_samples = 0
+                                        wake_word_detected = False
+                                        continue
+                                    speaker_verified = True
+                                    print(f"[Speaker] Authorized barge-in (score={score:.3f}).", flush=True)
                                 print(f"\n[Barge-In] >>> Spoken interruption detected ({duration_s:.2f}s): \"{text_clean}\"! Aborting playback <<<", flush=True)
                                 self.pending_barge_in_text = text_clean
                                 self.pending_barge_in_audio = audio_snippet.copy()
+                                self.pending_barge_in_speaker_verified = speaker_verified
                                 self.advance_epoch()
                                 if self.earcon:
                                     self.earcon.advance_epoch()
@@ -551,10 +581,12 @@ class StreamingVoiceSynthesizer:
                                 speech_buffer = []
                                 speech_samples = 0
                                 silence_samples = 0
+                                wake_word_detected = False
                     else:
                         speech_buffer = []
                         speech_samples = 0
                         silence_samples = 0
+                        wake_word_detected = False
 
             elif silence_samples >= pause_samples_needed and speech_samples < min_speech_samples:
                 # Sound was shorter than min_speech_samples (e.g. 50ms transient click) -> reset

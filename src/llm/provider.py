@@ -3,6 +3,7 @@ import json
 import re
 import html
 import asyncio
+import base64
 import ollama
 from src.llm.tools import ADAM_TOOLS, CanonicalTool
 
@@ -18,6 +19,8 @@ class UniversalLLMClient:
         self.temperature = config.llm.temperature
         self.num_ctx = config.llm.num_ctx
         self.think = getattr(config.llm, "think", False)
+        self.provider_only = getattr(config.llm, "provider_only", [])
+        self.allow_provider_fallbacks = getattr(config.llm, "allow_provider_fallbacks", True)
 
     async def warmup(self):
         """Preloads and warms up the LLM model in VRAM during system startup."""
@@ -125,6 +128,29 @@ class UniversalLLMClient:
             msg = dict(m)
             if msg.get("content") is None:
                 msg["content"] = ""
+            images = msg.pop("images", None)
+            if images:
+                content = msg["content"]
+                parts = list(content) if isinstance(content, list) else []
+                if isinstance(content, str) and content:
+                    parts.append({"type": "text", "text": content})
+                for image in images:
+                    if isinstance(image, str) and image.startswith(("data:image/", "https://", "http://")):
+                        image_url = image
+                    else:
+                        image_bytes = bytes(image)
+                        if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                            mime_type = "image/png"
+                        elif image_bytes.startswith(b"\xff\xd8\xff"):
+                            mime_type = "image/jpeg"
+                        elif image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+                            mime_type = "image/webp"
+                        else:
+                            mime_type = "image/png"
+                        encoded = base64.b64encode(image_bytes).decode("ascii")
+                        image_url = f"data:{mime_type};base64,{encoded}"
+                    parts.append({"type": "image_url", "image_url": {"url": image_url, "detail": "auto"}})
+                msg["content"] = parts
             formatted.append(msg)
 
         payload = {
@@ -135,16 +161,45 @@ class UniversalLLMClient:
         if openai_tools:
             payload["tools"] = openai_tools
 
+        # OpenRouter routing and reasoning are request-level options. Keep the
+        # model pinned when configured instead of silently falling back to a
+        # different inference provider.
+        if "openrouter.ai" in url.lower():
+            if self.provider_only:
+                payload["provider"] = {
+                    "only": self.provider_only,
+                    "allow_fallbacks": self.allow_provider_fallbacks,
+                }
+            if self.think:
+                payload["reasoning"] = {"enabled": True}
+
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as session:
+            # Vision calls include screenshots and can take longer than a text turn.
+            # Keep ordinary voice responses snappy while giving computer-use turns
+            # enough time to reason over the full image and structured UI hints.
+            has_image = any(bool(message.get("images")) for message in messages)
+            timeout_seconds = 90 if has_image else 45
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_seconds)) as session:
                 async with session.post(url, headers=headers, json=payload) as resp:
                     if resp.status != 200:
-                        print(f"[LLM] OpenAI-compatible call failed ({resp.status}).")
+                        error_body = (await resp.text())[:500]
+                        print(f"[LLM] OpenAI-compatible call failed ({resp.status}): {error_body}")
                         return self._emergency_rule_fallback(messages[-1].get("content", ""))
                     data = await resp.json()
-                    choice = data.get("choices", [{}])[0].get("message", {})
+                    first_choice = data.get("choices", [{}])[0]
+                    choice = first_choice.get("message", {})
                     content = choice.get("content") or ""
                     tool_calls = choice.get("tool_calls") or []
+                    reasoning_details = choice.get("reasoning_details")
+
+                    if not content and not tool_calls:
+                        finish_reason = first_choice.get("finish_reason", "unknown")
+                        fields = ",".join(sorted(choice.keys())) or "none"
+                        print(
+                            f"[LLM] Empty assistant completion (finish_reason={finish_reason}, "
+                            f"message_fields={fields}, image_input={has_image}).",
+                            flush=True,
+                        )
 
                     if content:
                         content = re.sub(r"<think>[\s\S]*?</think>", "", content, flags=re.IGNORECASE).strip()
@@ -153,13 +208,18 @@ class UniversalLLMClient:
                         tool_calls = tool_calls or extracted
                         content = cleaned_content
 
-                    return {
+                    result = {
                         "role": "assistant",
                         "content": content,
                         "tool_calls": tool_calls
                     }
+                    if reasoning_details is not None:
+                        # OpenRouter asks clients to return these opaque blocks
+                        # unchanged on the next turn for supported reasoning models.
+                        result["reasoning_details"] = reasoning_details
+                    return result
         except Exception as e:
-            print(f"[LLM] OpenAI-compatible request failed ({type(e).__name__}).")
+            print(f"[LLM] OpenAI-compatible request failed ({type(e).__name__}: {e}).")
             return self._emergency_rule_fallback(messages[-1].get("content", ""))
 
     async def _chat_anthropic(self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS) -> dict:
@@ -252,9 +312,9 @@ class UniversalLLMClient:
     ) -> tuple[str, list[dict]]:
         """Normalize textual tool-call formats emitted by models into existing calls.
 
-        Structured provider tool calls remain the preferred protocol. This parser
-        handles common Qwen/Dots XML fallbacks, but only for tools offered in this
-        request. The caller marks these as text fallbacks for dispatch policy.
+        Structured provider tool calls remain preferred. This also normalizes
+        DeepSeek DSML, Qwen, and Dots formats when a gateway leaks them as text.
+        Only tools offered in this request are accepted.
         """
         if available_tools is None:
             allowed_names = {tool.name for tool in ADAM_TOOLS}
@@ -280,6 +340,41 @@ class UniversalLLMClient:
                 return json.loads(value)
             except (json.JSONDecodeError, TypeError):
                 return value
+
+        # DeepSeek V4/V4.1 uses special-token delimiters rendered as visible
+        # strings by some OpenAI-compatible gateways. V4.1 adds spaces after
+        # the DSML marker; older V4 used "tool_calls" without those spaces.
+        dsml_call_re = re.compile(
+            r"<｜DSML｜\s*(?:calls|tool_calls)\s*>(.*?)</｜DSML｜\s*(?:calls|tool_calls)\s*>",
+            re.DOTALL,
+        )
+        dsml_blocks = list(dsml_call_re.finditer(text))
+        invoke_re = re.compile(
+            r'<｜DSML｜\s*invoke\s+name\s*=\s*(["\'])([A-Za-z0-9_.:-]+)\1\s*>'
+            r'(.*?)</｜DSML｜\s*invoke\s*>',
+            re.DOTALL,
+        )
+        parameter_re = re.compile(
+            r'<｜DSML｜\s*parameter\s+name\s*=\s*(["\'])([A-Za-z0-9_]+)\1'
+            r'\s+string\s*=\s*(["\'])(true|false)\3\s*>'
+            r'(.*?)</｜DSML｜\s*parameter\s*>',
+            re.DOTALL | re.IGNORECASE,
+        )
+        for block in dsml_blocks:
+            for invoke in invoke_re.finditer(block.group(1)):
+                name, fn_body = invoke.group(2), invoke.group(3)
+                if name not in allowed_names:
+                    continue
+                arguments = {}
+                for parameter in parameter_re.finditer(fn_body):
+                    key = parameter.group(2)
+                    is_string = parameter.group(4).lower() == "true"
+                    raw_value = parameter.group(5)
+                    arguments[key] = html.unescape(raw_value) if is_string else parse_value(raw_value)
+                parsed_calls.append({
+                    "function": {"name": name, "arguments": arguments},
+                    "_origin": "dsml_fallback",
+                })
 
         for wrapper in wrappers:
             body = wrapper.group(2)
@@ -319,8 +414,19 @@ class UniversalLLMClient:
 
         # Remove recognized wrapper blocks even when their function wasn't
         # offered, so unsupported pseudo-calls are never spoken back verbatim.
-        for wrapper in reversed(wrappers):
-            cleaned_text = cleaned_text[:wrapper.start()] + cleaned_text[wrapper.end():]
+        # Remove all recognized wrapper blocks against the original text, in
+        # reverse order so earlier offsets remain valid.
+        spans = sorted(
+            [(block.start(), block.end()) for block in dsml_blocks]
+            + [(wrapper.start(), wrapper.end()) for wrapper in wrappers],
+            reverse=True,
+        )
+        for start, end in spans:
+            cleaned_text = cleaned_text[:start] + cleaned_text[end:]
+
+        # Suppress truncated/unwrapped DSML markers too, rather than speaking
+        # fragments of a provider's internal tool-call serialization.
+        cleaned_text = re.sub(r"<｜DSML｜[^>]*>|</｜DSML｜[^>]*>", "", cleaned_text)
 
         # Keep the existing JSON/markdown/inline compatibility parser for other
         # providers, then filter its results against the current offered tools.
@@ -416,32 +522,11 @@ class UniversalLLMClient:
                     }
                 }]
             }
-        elif any(k in text for k in ["pause", "stop music"]):
-            return {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "function": {
-                        "name": "media_control",
-                        "arguments": {"action": "pause"}
-                    }
-                }]
-            }
-        elif any(k in text for k in ["play", "resume"]):
-            return {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "function": {
-                        "name": "media_control",
-                        "arguments": {"action": "play"}
-                    }
-                }]
-            }
         return {
             "role": "assistant",
             "content": "I couldn't reach the language model. Please try again shortly.",
-            "tool_calls": []
+            "tool_calls": [],
+            "provider_error": True,
         }
 
     def format_tool_response(self, tool_call_id: str, tool_name: str, result: str) -> dict:

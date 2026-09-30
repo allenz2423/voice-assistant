@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "ideas": [
+    {
+      "id": "launch_application",
+      "title": "Launch or open a desktop application",
+      "description": "The speaker wants Adam to start, open, or switch to a named application on the computer.",
+      "embedding_text": "Open or launch an application.",
+      "route": "command"
+    },
+    {
+      "id": "control_media",
+      "title": "Control media playback or audio",
+      "description": "The speaker wants Adam to control music or video playback, or change the computer's audio volume or mute state.",
+      "embedding_text": "Controlling music or video playback and audio volume on the computer.",
+      "route": "command"
+    },
+    {
+      "id": "manage_desktop",
+      "title": "Manage a window or desktop workspace",
+      "description": "The speaker wants Adam to focus, move, arrange, open, or close a desktop window, tab, or workspace.",
+      "embedding_text": "Changing focus or arrangement of desktop windows and workspaces.",
+      "route": "command"
+    },
+    {
+      "id": "request_information",
+      "title": "Ask Adam for information or inspection",
+      "description": "The speaker asks Adam to answer a question, look something up, inspect the screen, or report current time, weather, or computer status.",
+      "embedding_text": "Asking the assistant to retrieve or explain information.",
+      "route": "command"
+    },
+    {
+      "id": "manage_reminder_or_note",
+      "title": "Create or manage a reminder, timer, or note",
+      "description": "The speaker directly asks Adam to create or manage a reminder, timer, or personal note.",
+      "embedding_text": "Creating a timer, reminder, or note using the assistant.",
+      "route": "command"
+    },
+    {
+      "id": "personal_calendar_commitment",
+      "title": "A future scheduled personal event",
+      "description": "A personal appointment, meeting, or deadline that is scheduled to happen later.",
+      "embedding_text": "A personal appointment, meeting, or deadline that is scheduled to happen later.",
+      "route": "background_calendar"
+    },
+    {
+      "id": "ordinary_conversation",
+      "title": "Ordinary conversation without an Adam action",
+      "description": "The speaker is having ordinary conversation, commenting on something, narrating media, discussing the past, describing another person's plans, or thinking hypothetically. They are not asking Adam to perform an action now and are not disclosing their own definite upcoming calendar commitment.",
+      "route": "ignore"
+    },
+    {
+      "id": "application_topic_discussion",
+      "title": "Discussion about an application, not a launch request",
+      "description": "The speaker is talking about an application, website, media player, or desktop tool, but is not asking Adam to open or control it.",
+      "route": "ignore"
+    },
+    {
+      "id": "quoted_or_media_command",
+      "title": "Quoted or media-contained instruction",
+      "description": "The speaker is quoting, reporting, or hearing an instruction in a video, song, conversation, or other media instead of instructing Adam to act.",
+      "embedding_text": "Quoting or reporting that someone said to open, launch, play, pause, or change something. The speaker is not asking Adam to do it.",
+      "route": "ignore"
+    }
+  ]
+}

@@ -3,7 +3,7 @@ import json
 import pytest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from src.skills import SkillManager
 from src.tools.desktop import (
     workspace_control,
@@ -326,7 +326,7 @@ def test_sway_targeted_window_move(monkeypatch):
         assert "Moved 'Spotify Premium' to workspace 2 in Sway" in res
 
 @pytest.mark.asyncio
-async def test_brain_fast_path_action_tools():
+async def test_brain_verifies_workspace_action_before_claiming_completion():
     from src.llm.brain import AdamBrain
 
     class DummyClient:
@@ -345,7 +345,7 @@ async def test_brain_fast_path_action_tools():
                         }
                     }]
                 }
-            return {"content": "I should not be called!", "tool_calls": []}
+            return {"content": "The workspace move is complete.", "tool_calls": []}
         def format_tool_response(self, tool_call_id, tool_name, result):
             return {"role": "tool", "tool_call_id": tool_call_id, "name": tool_name, "content": result}
 
@@ -368,13 +368,32 @@ async def test_brain_fast_path_action_tools():
     brain = AdamBrain(config=dummy_config, supervisor=None, probe=None, confirmation_mgr=None, tts_engine=DummyTTS())
     brain.llm_client = DummyClient()
 
-    with patch("src.llm.brain.workspace_control", return_value="Moved 'Spotify Premium' to workspace 1."):
+    with (
+        patch("src.llm.brain.workspace_control", return_value="Moved 'Spotify Premium' to workspace 1."),
+        patch.object(
+            brain,
+            "_verify_computer_outcome",
+            new=AsyncMock(return_value=(
+                {
+                    "status": "complete",
+                    "reason": "The window listing shows Spotify on workspace 1.",
+                    "outcomes": [{
+                        "outcome": "Move Spotify to workspace 1",
+                        "status": "complete",
+                        "evidence": ["Spotify is listed on workspace 1."],
+                    }],
+                    "evidence": ["Spotify is listed on workspace 1."],
+                },
+                "Open windows: Spotify — workspace 1",
+                None,
+                "obs_123",
+            )),
+        ),
+    ):
         await brain.process_user_utterance("could you move Spotify to Workspace One?")
 
-    # Verify that fast-path spoke "Done." without calling chat a 2nd time!
-    assert brain.tts.spoken == ["Done."]
-    assert brain.llm_client.chat_calls == 1
-    assert brain.messages[-1]["content"] == "Done."
+    assert brain.tts.spoken == ["The workspace move is complete."]
+    assert brain.llm_client.chat_calls == 2
 
 @pytest.mark.asyncio
 async def test_brain_reprompts_for_summary_instead_of_speaking_raw_tool_result():

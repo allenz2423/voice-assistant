@@ -19,6 +19,9 @@ Always parse structured JSON output via `hyprctl -j <subcommand>`:
 - `hyprctl -j monitors`: Array of connected displays with resolutions, refresh rates, active workspace IDs, and scale factors.
 - `hyprctl -j workspaces`: Array of all allocated workspaces and client counts.
 
+## Scope Restriction (Overrides Command Examples Below)
+These commands are technical references, not permission to use them for every desktop task. Use `hyprctl -j` for relevant read-only inspection. Use compositor dispatch commands only when the user explicitly requests window, workspace, monitor, layout, or compositor management, or when that operation is itself the stated goal. Never use a compositor command to imitate a control inside an application. For example, a request to record a full-screen clip means operate the recorder's Record control; it does not mean toggle the OBS window's fullscreen state. For in-app tasks, focus the app, inspect its current UI, perform the requested app action, and inspect again.
+
 ## Verified Keybind Dispatchers (`hyprctl dispatch <dispatcher> <arg>`)
 Execute via `hyprctl dispatch`:
 

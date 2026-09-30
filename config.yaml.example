@@ -17,7 +17,7 @@ wake:
 stt:
   provider: "local"        # "local" | "openai" | "openrouter" | "custom"
   model_size: "qwen3-asr-1.7b" # "qwen3-asr-1.7b", "distil-large-v3", or "base.en"
-  language: "English"      # Qwen language hint; use "" for multilingual auto-detection
+  language: ""             # Qwen3-ASR auto-detects; transcribe.cpp currently rejects explicit language hints
   device: "Vulkan0"         # Dedicated GPU 0 (GTX 1080 Ti) via Vulkan / CUDA
   device_index: 0
   compute_type: "int8_float32" # Pascal CC 6.1 optimized
@@ -46,6 +46,47 @@ meeting:
   max_segment_seconds: 30.0
   speaker_similarity_threshold: 0.55
 
+idea_routing:
+  enabled: false # Optional wake-free semantic routing; setup installs MiniLM when enabled
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  ideas_path: "assets/intent_ideas.json"
+  command_threshold: 0.30 # High-confidence direct commands such as "Open Spotify"
+  background_threshold: 0.49 # Stricter candidate gate before background LLM review
+  minimum_margin: 0.025 # Best idea must beat the runner-up by this cosine margin
+  require_enrolled_speaker: true # Avoid treating media/other speakers as Adam's user
+
+browser_navigation:
+  enabled: false # Optional Playwright control in Adam's isolated browser profile; normal browsing uses your default browser
+  browser: "default" # "default" follows desktop.default_browser; or choose "chromium" / "firefox"
+  profile_path: "~/.local/share/adam/browser-navigation"
+  timeout_seconds: 15.0
+
+computer_control:
+  enabled: true # Screenshot-guided mouse and keyboard control; chooses X11 or Wayland automatically
+  max_text_length: 20000 # Maximum characters Adam can enter in one action
+  screenshot_delay_seconds: 0.25 # Automatic wait after GUI actions before the next screenshot
+  browser_screenshot_delay_seconds: 3.0 # Let browser navigation and controls settle before observing
+  ocr_only: false # When enabled, images stay internal and only OCR text/boxes reach the model
+  jev_enabled: false # Use TypeSafe Jev 1.13 for desktop action and target decisions
+  jev_api_base: "https://openrouter.ai/api/alpha/decisions"
+  jev_model: "typesafe/jev-1.13"
+  jev_timeout_seconds: 20.0
+  jev_min_confidence: 0.65
+  ocr_max_regions: 100
+  ocr_device: null # cuda or cpu; null inherits computer_vision.device
+  ocr_gpu_uuid: "" # Exact NVIDIA UUID for OCR only; blank inherits computer_vision.gpu_uuid
+
+computer_vision:
+  enabled: false # Optional OmniParser detector; overlays numbered candidate controls on computer_control screenshots
+  backend: "omniparser" # Detector-only: boxes are provided; text labels come from the screenshot/accessibility data
+  device: "cuda" # "cuda" or "cpu"; the Ultralytics runtime does not support Vulkan.
+  gpu_uuid: "" # Required for CUDA; exact NVIDIA GPU UUID from nvidia-smi -L, so Adam never picks another GPU
+  python_path: "~/.local/share/adam/omniparser-runtime/bin/python" # Isolated runtime; keeps Torch out of Adam's main environment
+  model_path: "~/.local/share/adam/models/omniparser-yolov8n.pt"
+  confidence_threshold: 0.05
+  max_regions: 60
+  timeout_seconds: 15.0
+
 tts:
   engine: "kokoro"             # "kokoro" | "openai" (cloud speech) | "silent" (desktop notifications)
   silent_restore_engine: "kokoro" # Engine restored when silent mode is explicitly disabled
@@ -66,7 +107,9 @@ llm:
   ollama_host: "http://localhost:11434"
   api_base: ""              # Base URL for custom OpenAI-compatible providers
   api_key: ""               # Optional API key for cloud/custom providers
-  num_ctx: 16384             # 4x expanded context window (16,384 tokens)
+  provider_only: []          # OpenRouter only: pin to a provider slug, e.g. ["relace"]
+  allow_provider_fallbacks: true
+  num_ctx: 65536             # 64k context window
   temperature: 0.3
   think: false                # Disable model thinking
 

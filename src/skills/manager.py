@@ -110,7 +110,8 @@ class SkillManager:
                     "id": skill_id,
                     "filename": file_path.name,
                     "path": str(file_path),
-                    "is_active": (skill_id == active_de)
+                    "is_active": (skill_id == active_de),
+                    "loaded_by_default": (skill_id == "computer_use" or skill_id == active_de),
                 }
 
         return list(discovered.values())
@@ -118,6 +119,10 @@ class SkillManager:
     def load_skill(self, skill_name: str) -> Optional[str]:
         """Loads the content of a skill by name or ID."""
         clean_name = skill_name.strip().lower().replace(".md", "").replace(".skills", "")
+        # Skill names are IDs, never paths. This keeps lookup inside the
+        # configured skill directories even when a model supplies a bad name.
+        if not clean_name or "/" in clean_name or "\\" in clean_name:
+            return None
         # Aliases
         alias_map = {
             "plasma": "kde_plasma",
@@ -144,10 +149,23 @@ class SkillManager:
                 p = search_dir / fname
                 if p.is_file():
                     try:
+                        if not p.resolve().is_relative_to(search_dir.resolve()) or p.stat().st_size > 40_000:
+                            continue
                         return p.read_text(encoding="utf-8")
                     except Exception:
                         pass
         return None
+
+    def get_startup_context(self) -> str:
+        """Load the core computer-use workflow and detected desktop skill."""
+        general = self.load_skill("computer_use") or ""
+        desktop = self.get_active_de_context()
+        return (
+            "=== CORE COMPUTER-USE SKILL (loaded at startup) ===\n"
+            f"{general.strip()}\n"
+            "=== END CORE COMPUTER-USE SKILL ===\n\n"
+            f"{desktop}"
+        )
 
     def get_active_de_context(self) -> str:
         """Retrieves formatted markdown context for the currently active desktop environment."""

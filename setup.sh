@@ -34,6 +34,9 @@ SKIP_SPEAKER_VERIFICATION=false
 SKIP_ENROLLMENT=false
 CPU_ONLY=false
 FORCE_NVIDIA_RUNTIME=false
+ENABLE_IDEA_ROUTING=false
+ENABLE_BROWSER_NAVIGATION=false
+DISABLE_COMPUTER_CONTROL=false
 RUNTIME_EXTRA="runtime-cpu"
 
 print_usage() {
@@ -44,6 +47,7 @@ Interactive setup wizard for the Adam / Adam Voice Assistant.
 Detects Linux distribution, installs dependencies, sets up Python virtualenv,
 downloads neural models, and interactively configures audio, wake word, speech,
 speaker verification, optional Nemotron diarization, and the user service.
+It can also enable local MiniLM idea routing for wake-free tool calls and calendar review.
 
 Nemotron diarization uses NVIDIA's official Transformers model runtime. The wizard
 lets you choose CPU or a specific CUDA GPU, installs the optional runtime, and can
@@ -60,6 +64,9 @@ Options:
   --skip-enrollment    Install speaker verification but skip microphone enrollment
   --cpu-only           Use CPU runtime packages and avoid CUDA libraries
   --nvidia-runtime     Install ONNX Runtime and CUDA support for NVIDIA GPUs
+  --idea-routing      Enable local wake-free command matching and background calendar review
+  --browser-navigation Enable safe browser navigation through a separate Adam profile
+  --disable-computer-control Disable screenshot-guided mouse and keyboard control
   --skip-service       Skip creating and enabling systemd user service
   -h, --help           Show this help message and exit
 
@@ -111,6 +118,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         --nvidia-runtime)
             FORCE_NVIDIA_RUNTIME=true
+            shift
+            ;;
+        --idea-routing)
+            ENABLE_IDEA_ROUTING=true
+            shift
+            ;;
+        --browser-navigation)
+            ENABLE_BROWSER_NAVIGATION=true
+            shift
+            ;;
+        --disable-computer-control)
+            DISABLE_COMPUTER_CONTROL=true
             shift
             ;;
         --skip-service)
@@ -194,6 +213,9 @@ install_system_packages() {
         PKGS=(
             media-libs/portaudio
             gui-apps/wtype
+            app-misc/ydotool
+            x11-misc/xdotool
+            x11-misc/wmctrl
             gui-apps/grim
             gui-apps/slurp
             sys-power/brightnessctl
@@ -214,6 +236,9 @@ install_system_packages() {
             portaudio
             portaudio-devel
             wtype
+            ydotool
+            xdotool
+            wmctrl
             grim
             slurp
             brightnessctl
@@ -236,6 +261,9 @@ install_system_packages() {
             libportaudio2
             portaudio19-dev
             wtype
+            ydotool
+            xdotool
+            wmctrl
             grim
             slurp
             brightnessctl
@@ -257,6 +285,9 @@ install_system_packages() {
             portaudio
             portaudio-devel
             wtype
+            ydotool
+            xdotool
+            wmctrl
             grim
             slurp
             brightnessctl
@@ -279,6 +310,9 @@ install_system_packages() {
         PKGS=(
             portaudio
             wtype
+            ydotool
+            xdotool
+            wmctrl
             grim
             slurp
             brightnessctl
@@ -297,52 +331,52 @@ install_system_packages() {
     elif [[ "$DISTRO_ID" == "alpine" || "$DISTRO_LIKE" == *"alpine"* ]]; then
         PKG_MANAGER="apk"
         PKGS=(
-            portaudio portaudio-dev wtype grim slurp brightnessctl libnotify
+            portaudio portaudio-dev wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
             pipewire pipewire-pulse wireplumber alsa-utils pulseaudio-utils
             curl git jq pkgconf build-base linux-headers
         )
     elif [[ "$DISTRO_ID" == "void" || "$DISTRO_LIKE" == *"void"* ]]; then
         PKG_MANAGER="xbps-install"
         PKGS=(
-            portaudio-devel wtype grim slurp brightnessctl libnotify
+            portaudio-devel wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
             pipewire wireplumber alsa-utils pulseaudio curl git jq
             pkg-config base-devel
         )
     elif [[ "$DISTRO_ID" == "solus" || "$DISTRO_LIKE" == *"solus"* ]]; then
         PKG_MANAGER="eopkg"
         PKGS=(
-            portaudio-devel wtype grim slurp brightnessctl libnotify
+            portaudio-devel wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
             pipewire wireplumber alsa-utils pulseaudio curl git jq
             pkg-config system.devel
         )
     elif [[ "$DISTRO_ID" == "nixos" || "$DISTRO_LIKE" == *"nixos"* ]]; then
-        log_warn "NixOS uses declarative system packages. Add portaudio, pipewire, wireplumber, libnotify, curl, git, jq, wtype, grim, slurp, and brightnessctl to your system configuration."
+        log_warn "NixOS uses declarative system packages. Add portaudio, pipewire, wireplumber, libnotify, curl, git, jq, wtype, ydotool, xdotool, wmctrl, grim, slurp, and brightnessctl to your system configuration."
         log_warn "Continuing without changing your NixOS configuration."
         return 0
     elif command -v apt-get &>/dev/null; then
         PKG_MANAGER="apt"
-        PKGS=(libportaudio2 portaudio19-dev pipewire pipewire-pulse wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config build-essential)
+        PKGS=(libportaudio2 portaudio19-dev wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulse wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config build-essential)
     elif command -v dnf &>/dev/null; then
         PKG_MANAGER="dnf"
-        PKGS=(portaudio portaudio-devel pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconf-pkg-config gcc gcc-c++ make)
+        PKGS=(portaudio portaudio-devel wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconf-pkg-config gcc gcc-c++ make)
     elif command -v yum &>/dev/null; then
         PKG_MANAGER="yum"
-        PKGS=(portaudio portaudio-devel pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconfig gcc gcc-c++ make)
+        PKGS=(portaudio portaudio-devel wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconfig gcc gcc-c++ make)
     elif command -v zypper &>/dev/null; then
         PKG_MANAGER="zypper"
-        PKGS=(portaudio portaudio-devel pipewire pipewire-pulseaudio wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config gcc make)
+        PKGS=(portaudio portaudio-devel wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulseaudio wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config gcc make)
     elif command -v pacman &>/dev/null; then
         PKG_MANAGER="pacman"
-        PKGS=(portaudio pipewire pipewire-pulse wireplumber pulseaudio alsa-utils curl git jq pkgconf base-devel)
+        PKGS=(portaudio wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulse wireplumber pulseaudio alsa-utils curl git jq pkgconf base-devel)
     elif command -v apk &>/dev/null; then
         PKG_MANAGER="apk"
-        PKGS=(portaudio portaudio-dev pipewire wireplumber alsa-utils pulseaudio curl git jq pkgconf build-base linux-headers)
+        PKGS=(portaudio portaudio-dev wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkgconf build-base linux-headers)
     elif command -v xbps-install &>/dev/null; then
         PKG_MANAGER="xbps-install"
-        PKGS=(portaudio-devel pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config base-devel)
+        PKGS=(portaudio-devel wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config base-devel)
     elif command -v eopkg &>/dev/null; then
         PKG_MANAGER="eopkg"
-        PKGS=(portaudio-devel pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config system.devel)
+        PKGS=(portaudio-devel wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config system.devel)
     fi
 
     if [[ -z "$PKG_MANAGER" ]]; then
@@ -442,6 +476,8 @@ setup_python_env() {
     export ADAM_SKIP_SERVICE="$([[ "$SKIP_SERVICE" == true ]] && echo 1 || echo 0)"
     export ADAM_CPU_ONLY="$([[ "$CPU_ONLY" == true ]] && echo 1 || echo 0)"
     export ADAM_SKIP_PYTHON="$([[ "$SKIP_PYTHON" == true ]] && echo 1 || echo 0)"
+    export ADAM_IDEA_ROUTING_DEFAULT="$([[ "$ENABLE_IDEA_ROUTING" == true ]] && echo 1 || echo 0)"
+    export ADAM_BROWSER_NAVIGATION_DEFAULT="$([[ "$ENABLE_BROWSER_NAVIGATION" == true ]] && echo 1 || echo 0)"
     if [[ "$SKIP_PYTHON" == true ]]; then
         log_info "Skipping Python dependency sync (--skip-python-deps)."
         [[ "$CPU_ONLY" == true ]] && RUNTIME_EXTRA="runtime-cpu"
@@ -473,6 +509,12 @@ setup_python_env() {
     local -a UV_ARGS=(sync --extra "$RUNTIME_EXTRA")
     if [[ "$SKIP_SPEAKER_VERIFICATION" != true ]]; then
         UV_ARGS+=(--extra speaker-verification)
+    fi
+    if [[ "$ENABLE_IDEA_ROUTING" == true ]]; then
+        UV_ARGS+=(--extra intent-routing)
+    fi
+    if [[ "$ENABLE_BROWSER_NAVIGATION" == true ]]; then
+        UV_ARGS+=(--extra browser-control)
     fi
     uv "${UV_ARGS[@]}"
     log_success "Python virtual environment configured in $SCRIPT_DIR/.venv"
@@ -606,6 +648,53 @@ run_unattended_setup() {
     fi
 }
 
+configure_unattended_browser_navigation() {
+    [[ "$ENABLE_BROWSER_NAVIGATION" == true ]] || return 0
+
+    if grep -q '^browser_navigation:' "${SCRIPT_DIR}/config.yaml"; then
+        sed -i '/^browser_navigation:/,/^[^ ]/ s/^[[:space:]]*enabled:.*/  enabled: true/' "${SCRIPT_DIR}/config.yaml"
+    else
+        cat >> "${SCRIPT_DIR}/config.yaml" <<'EOF'
+
+browser_navigation:
+  enabled: true
+  browser: "default"
+  profile_path: "~/.local/share/adam/browser-navigation"
+  timeout_seconds: 15.0
+EOF
+    fi
+
+    local default_browser
+    default_browser="$(uv run --no-sync python -c 'from src.config import load_config; print(load_config().desktop.default_browser.lower())')"
+    local managed_engine=""
+    if [[ "$default_browser" == *firefox* ]]; then
+        managed_engine="firefox"
+    elif [[ "$default_browser" == "chromium" || "$default_browser" == "chromium-browser" ]]; then
+        managed_engine="chromium"
+    fi
+    if [[ -n "$managed_engine" ]] && ! uv run --no-sync playwright install "$managed_engine"; then
+        log_warn "Could not install Playwright $managed_engine; disabling browser navigation."
+        sed -i '/^browser_navigation:/,/^[^ ]/ s/^[[:space:]]*enabled:.*/  enabled: false/' "${SCRIPT_DIR}/config.yaml"
+        return 1
+    fi
+    log_success "Browser navigation enabled in config.yaml."
+}
+
+configure_computer_control() {
+    local enabled=true
+    [[ "$DISABLE_COMPUTER_CONTROL" == true ]] && enabled=false
+    if grep -q '^computer_control:' "${SCRIPT_DIR}/config.yaml"; then
+        sed -i "/^computer_control:/,/^[^ ]/ s/^[[:space:]]*enabled:.*/  enabled: ${enabled}/" "${SCRIPT_DIR}/config.yaml"
+    else
+        cat >> "${SCRIPT_DIR}/config.yaml" <<EOF
+
+computer_control:
+  enabled: ${enabled}
+  max_text_length: 1000
+EOF
+    fi
+}
+
 # ------------------------------------------------------------------------------
 # Main
 # ------------------------------------------------------------------------------
@@ -634,7 +723,10 @@ main() {
         fi
     fi
 
+    configure_computer_control
+
     if [[ "$ASSUME_YES" == true ]]; then
+        configure_unattended_browser_navigation || true
         run_unattended_setup
     else
         # Generate the unit only on systemd hosts and when the user wants one.
