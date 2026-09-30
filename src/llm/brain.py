@@ -79,6 +79,9 @@ DESKTOP_MUTATION_TOOLS = {
     "workspace_control", "swap_windows", "control_media_app", "desktop_macro",
     "manage_clipboard", "run_bash_command", "start_background_job", "create_file", "write_file",
 }
+DESKTOP_TRACE_TOOLS = DESKTOP_MUTATION_TOOLS | {
+    "observe_desktop", "capture_screenshot", "read_file", "list_windows",
+}
 
 
 def _completion_verdict(
@@ -143,6 +146,7 @@ def _completion_verdict(
             if not isinstance(outcome.get("evidence"), list):
                 outcome["evidence"] = [outcome["evidence"]]
     return value
+
 
 SYSTEM_PROMPT = """You are Adam, a voice-first Linux assistant with desktop, system, web, and productivity tools.
 
@@ -396,7 +400,8 @@ class AdamBrain:
             if tool.name in {"read_file", "list_windows"}
         ]
         authoritative_readback = False
-        for _ in range(4):
+        seen_verifier_reads: set[str] = set()
+        while True:
             result = await self.llm_client.chat(verifier_messages, tools=verifier_tools)
             if result.get("provider_error"):
                 print("[OutcomeVerifier] Model provider returned an error.", flush=True)
@@ -438,6 +443,16 @@ class AdamBrain:
                 if name not in {"read_file", "list_windows"} or not isinstance(args, dict):
                     print(f"[OutcomeVerifier] Rejected unsupported verifier tool: {name!r}.", flush=True)
                     return None, observation_text, image, observation_id
+                read_signature = json.dumps(
+                    {"tool": name, "arguments": args}, sort_keys=True, ensure_ascii=False
+                )
+                if read_signature in seen_verifier_reads:
+                    print(f"[OutcomeVerifier] Repeated read-only check without new evidence: {name}.", flush=True)
+                    return {
+                        "status": "incomplete",
+                        "reason": "The independent verifier repeated the same read-only check without new evidence.",
+                    }, observation_text, image, observation_id
+                seen_verifier_reads.add(read_signature)
                 print(f"[OutcomeVerifier] Read-only {name} evidence requested.", flush=True)
                 output = await self._execute_tool(name, args)
                 try:
@@ -749,7 +764,7 @@ class AdamBrain:
         forced_desktop_verification_turn = False
         desktop_mutation_seen = False
         desktop_task_trace: list[dict] = []
-        completion_retries = 0
+        last_incomplete_trace_length: int | None = None
         hop = 0
         while True:
             response = await self.llm_client.chat(self.messages, tools=self.get_tools())
@@ -833,8 +848,21 @@ class AdamBrain:
                         await self.tts.speak_async(content)
                         turn_completed_with_speech = True
                         break
-                    if status == "incomplete" and completion_retries < 3:
-                        completion_retries += 1
+                    if status == "incomplete":
+                        if (
+                            last_incomplete_trace_length is not None
+                            and len(desktop_task_trace) == last_incomplete_trace_length
+                        ):
+                            response_text = (
+                                "I couldn't complete the request because no further action or new evidence "
+                                "was produced after the fresh state check."
+                            )
+                            print(f"[Adam] Response: {response_text}", flush=True)
+                            self.messages.append({"role": "assistant", "content": response_text})
+                            await self.tts.speak_async(response_text)
+                            turn_completed_with_speech = True
+                            break
+                        last_incomplete_trace_length = len(desktop_task_trace)
                         self.messages.append({
                             "role": "user",
                             "content": (
@@ -1008,6 +1036,7 @@ class AdamBrain:
                 last_tool_output = str(tool_output)
                 if name in DESKTOP_MUTATION_TOOLS and origin not in {"text_fallback", "dsml_fallback"}:
                     desktop_mutation_seen = True
+                if name in DESKTOP_TRACE_TOOLS and origin not in {"text_fallback", "dsml_fallback"}:
                     trace_args = dict(args) if isinstance(args, dict) else {"value": str(args)}
                     if name == "computer_control" and trace_args.get("action") == "type":
                         trace_args["text"] = f"<redacted: {len(str(trace_args.get('text', '')))} characters>"
