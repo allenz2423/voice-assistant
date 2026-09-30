@@ -2,6 +2,11 @@ import numpy as np
 import torch
 from silero_vad import load_silero_vad
 
+# NNPACK reports unsupported hardware repeatedly for some otherwise capable
+# CPUs (including this machine). PyTorch falls back to its other CPU kernels;
+# disable the optional backend to keep each audio inference from flooding logs.
+torch.backends.nnpack.set_flags(False)
+
 class SileroVAD:
     """Production Silero VAD (v5) ONNX wrapper with neural inference and acoustic energy floor."""
     def __init__(self, sample_rate=16000):
