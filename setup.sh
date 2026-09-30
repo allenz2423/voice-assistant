@@ -469,6 +469,51 @@ ensure_uv() {
 # ------------------------------------------------------------------------------
 # 3. Python Environment & Dependencies
 # ------------------------------------------------------------------------------
+ensure_onnxruntime() {
+    local python="${SCRIPT_DIR}/.venv/bin/python"
+    local runtime_package="onnxruntime"
+    [[ "$RUNTIME_EXTRA" == "runtime-nvidia" ]] && runtime_package="onnxruntime-gpu"
+
+    if "$python" -c 'import onnxruntime' &>/dev/null; then
+        return 0
+    fi
+    if [[ "$SKIP_PYTHON" == true ]]; then
+        log_err "ONNX Runtime is missing or damaged, and --skip-python-deps prevents repairing it."
+        return 1
+    fi
+
+    log_warn "ONNX Runtime is missing or damaged; reinstalling ${runtime_package}."
+    uv pip install --reinstall --python "$python" "$runtime_package"
+    if ! "$python" -c 'import onnxruntime' &>/dev/null; then
+        log_err "${runtime_package} is still not importable after reinstall."
+        return 1
+    fi
+    log_success "${runtime_package} imports successfully."
+}
+
+ensure_torchaudio() {
+    local python="${SCRIPT_DIR}/.venv/bin/python"
+    if "$python" -c 'import torch, torchaudio' &>/dev/null; then
+        return 0
+    fi
+    if [[ "$SKIP_PYTHON" == true ]]; then
+        log_err "PyTorch/TorchAudio cannot be imported together, and --skip-python-deps prevents repairing them."
+        return 1
+    fi
+
+    log_warn "PyTorch/TorchAudio failed its import check; reinstalling the configured runtime dependencies."
+    local -a UV_ARGS=(sync --extra "$RUNTIME_EXTRA" --reinstall-package torchaudio)
+    [[ "$SKIP_SPEAKER_VERIFICATION" != true ]] && UV_ARGS+=(--extra speaker-verification)
+    [[ "$ENABLE_IDEA_ROUTING" == true ]] && UV_ARGS+=(--extra intent-routing)
+    [[ "$ENABLE_BROWSER_NAVIGATION" == true ]] && UV_ARGS+=(--extra browser-control)
+    uv "${UV_ARGS[@]}"
+    if ! "$python" -c 'import torch, torchaudio' &>/dev/null; then
+        log_err "PyTorch and TorchAudio are still not importable together."
+        return 1
+    fi
+    log_success "PyTorch and TorchAudio import successfully together."
+}
+
 setup_python_env() {
     export ADAM_SKIP_SPEAKER_VERIFICATION="$([[ "$SKIP_SPEAKER_VERIFICATION" == true ]] && echo 1 || echo 0)"
     export ADAM_SKIP_ENROLLMENT="$([[ "$SKIP_ENROLLMENT" == true ]] && echo 1 || echo 0)"
@@ -517,6 +562,8 @@ setup_python_env() {
         UV_ARGS+=(--extra browser-control)
     fi
     uv "${UV_ARGS[@]}"
+    ensure_onnxruntime
+    ensure_torchaudio
     log_success "Python virtual environment configured in $SCRIPT_DIR/.venv"
 }
 
@@ -595,6 +642,8 @@ generate_systemd_template() {
         log_info "Start Adam manually with: uv run python -m src.main"
         return 0
     fi
+    ensure_onnxruntime
+    ensure_torchaudio
     local user_systemd_dir="$HOME/.config/systemd/user"
     mkdir -p "$user_systemd_dir"
     local service_dest="${user_systemd_dir}/adam.service"

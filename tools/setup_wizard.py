@@ -1191,6 +1191,56 @@ def configure_computer_vision():
 
 # Step 14: Systemd Daemon Setup
 # ------------------------------------------------------------------------------
+def ensure_onnxruntime() -> bool:
+    """Repair a missing or damaged ONNX Runtime install before starting Adam."""
+    runtime_extra = os.environ.get("ADAM_RUNTIME_EXTRA", "runtime-cpu")
+    package = "onnxruntime-gpu" if runtime_extra == "runtime-nvidia" else "onnxruntime"
+    python = PROJECT_DIR / ".venv" / "bin" / "python"
+    check = [str(python), "-c", "import onnxruntime"]
+    if subprocess.run(check, cwd=PROJECT_DIR, capture_output=True).returncode == 0:
+        return True
+
+    if os.environ.get("ADAM_SKIP_PYTHON") == "1":
+        print(f"{CLR_RED}ONNX Runtime cannot be imported and Python dependency installation was skipped; Adam will not be started.{CLR_RESET}")
+        return False
+    uv = shutil.which("uv")
+    if not uv:
+        print(f"{CLR_RED}ONNX Runtime cannot be imported and uv is unavailable; Adam will not be started.{CLR_RESET}")
+        return False
+
+    print(f"{CLR_YELLOW}ONNX Runtime files are missing or damaged; reinstalling {package} before starting Adam.{CLR_RESET}")
+    try:
+        subprocess.run(
+            [uv, "pip", "install", "--reinstall", "--python", str(python), package],
+            cwd=PROJECT_DIR,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        print(f"{CLR_RED}Could not repair {package} ({exc}); Adam will not be started.{CLR_RESET}")
+        return False
+    if subprocess.run(check, cwd=PROJECT_DIR, capture_output=True).returncode != 0:
+        print(f"{CLR_RED}{package} is still not importable after reinstall; Adam will not be started.{CLR_RESET}")
+        return False
+    print(f"{CLR_GREEN}{package} is importable.{CLR_RESET}")
+    return True
+
+
+def ensure_torchaudio() -> bool:
+    """Do not start the service with mismatched/unloadable PyTorch audio wheels."""
+    python = PROJECT_DIR / ".venv" / "bin" / "python"
+    result = subprocess.run(
+        [str(python), "-c", "import torch, torchaudio"],
+        cwd=PROJECT_DIR,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return True
+    detail = (result.stderr or result.stdout or "import failed").strip().splitlines()[-1]
+    print(f"{CLR_RED}PyTorch/TorchAudio cannot be imported together ({detail}); Adam will not be started. Rerun ./setup.sh to repair the runtime.{CLR_RESET}")
+    return False
+
+
 def configure_systemd():
     print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 14: Systemd User Service ---{CLR_RESET}")
     if os.environ.get("ADAM_SKIP_SERVICE") == "1":
@@ -1210,6 +1260,8 @@ def configure_systemd():
         print(f"{CLR_CYAN}Disabling the retired local Kev service; desktop decisions now use Jev over OpenRouter.{CLR_RESET}")
         subprocess.run(["systemctl", "--user", "disable", "--now", "adam-kev.service"], capture_output=True)
     if prompt_yes_no("Enable and start Adam as an automatic background service (adam.service)?", default_yes=True):
+        if not ensure_onnxruntime() or not ensure_torchaudio():
+            return
         print(f"{CLR_CYAN}Enabling and starting adam.service...{CLR_RESET}")
         subprocess.run(["systemctl", "--user", "daemon-reload"])
         subprocess.run(["systemctl", "--user", "enable", "--now", "adam.service"])

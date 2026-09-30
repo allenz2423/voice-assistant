@@ -24,13 +24,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-runtime-cpu = ["onnxruntime>=1.20.0", "torch>=2.0"]
+runtime-cpu = ["onnxruntime>=1.20.0", "torch>=2.0", "torchaudio>=2.11.0"]
 runtime-nvidia = [
     "nvidia-cublas-cu12>=12.9.2.10",
     # cuDNN 9.26 dropped Pascal (compute capability 6.1); 9.10 keeps GTX 10xx support.
     "nvidia-cudnn-cu12>=9.10,<9.11",
     "onnxruntime-gpu>=1.20.0",
     "torch>=2.0",
+    "torchaudio>=2.11.0",
 ]
 speaker-verification = ["speechbrain>=1.0.3"]
 nemotron-diarization = [
@@ -52,6 +53,9 @@ conflicts = [[{ extra = "runtime-cpu" }, { extra = "runtime-nvidia" }]]
 
 [tool.uv.sources]
 torch = [
+    { index = "pytorch-cpu", extra = "runtime-cpu" },
+]
+torchaudio = [
     { index = "pytorch-cpu", extra = "runtime-cpu" },
 ]
 
