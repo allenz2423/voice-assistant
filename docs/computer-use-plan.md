@@ -151,7 +151,8 @@ The `computer_control` schema supports a model-selected `action="sequence"` with
 As currently implemented:
 
 - the configured default is at most eight actions per sequence, clamped in code to a maximum of eight;
-- the configured default timeout is 45 seconds, clamped in code to a maximum of 120 seconds;
+- the configured default text budget is 20,000 characters across all typing steps in one sequence; every individual typing step also has the existing `max_text_length` bound;
+- the configured default elapsed-time budget is 45 seconds, clamped in code to a maximum of 120 seconds and checked between steps; an in-flight action is allowed to finish under its own timeout;
 - cancellation is checked at action boundaries;
 - the executor allows coordinate-free continuations such as click then type, type then type, and a final key after typing;
 - it pauses before later spatial actions that would need Adam to select a new target from fresh state;

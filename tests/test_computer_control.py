@@ -4,6 +4,7 @@ import re
 import json
 import struct
 import subprocess
+import threading
 
 import pytest
 
@@ -133,6 +134,126 @@ def test_sequence_allows_selected_field_click_then_typing(monkeypatch):
     assert result.snapshot_id
     assert "Step 2/2 (type): ok" in result.message
     assert commands[-1] == ["xdotool", "type", "--clearmodifiers", "--delay", "1", "--", "search text"]
+
+
+def test_sequence_rejects_aggregate_text_over_limit_before_any_input(monkeypatch):
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+    commands = []
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    controller = computer.ComputerController(
+        screenshot_fn=_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        max_text_length=10,
+        max_sequence_text_length=10,
+    )
+    snapshot_id = controller.run("inspect").snapshot_id
+    result = controller.run_sequence(
+        snapshot_id=snapshot_id,
+        actions=[
+            {"action": "click", "x": 100, "y": 80},
+            {"action": "type", "text": "123456"},
+            {"action": "type", "text": "789012"},
+        ],
+    )
+
+    assert result.status == "invalid_input"
+    assert "No actions were run" in result.message
+    assert commands == []
+
+
+def test_sequence_rejects_single_text_action_over_limit_before_click(monkeypatch):
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+    commands = []
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    controller = computer.ComputerController(
+        screenshot_fn=_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        max_text_length=5,
+    )
+    snapshot_id = controller.run("inspect").snapshot_id
+    result = controller.run_sequence(
+        snapshot_id=snapshot_id,
+        actions=[{"action": "click", "x": 100, "y": 80}, {"action": "type", "text": "too long"}],
+    )
+
+    assert result.status == "invalid_input"
+    assert "per-action text limit" in result.message
+    assert commands == []
+
+
+def test_sequence_cancellation_stops_before_next_action(monkeypatch):
+    controller = computer.ComputerController(
+        screenshot_fn=_png,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+    )
+    cancellation = threading.Event()
+    actions_run = []
+
+    def run(action, **kwargs):
+        actions_run.append(action)
+        cancellation.set()
+        return computer.ComputerControlResult(
+            "Typed the requested text.", screenshot=_png(), status="ok", dispatched=True, snapshot_id="fresh"
+        )
+
+    controller.run = run
+    result = controller.run_sequence(
+        snapshot_id="initial",
+        actions=[{"action": "type", "text": "first"}, {"action": "type", "text": "second"}],
+        cancel_event=cancellation,
+    )
+
+    assert result.status == "cancelled"
+    assert result.dispatched is True
+    assert result.snapshot_id == "fresh"
+    assert actions_run == ["type"]
+
+
+def test_sequence_time_budget_is_checked_at_action_boundaries(monkeypatch):
+    controller = computer.ComputerController(
+        screenshot_fn=_png,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        sequence_timeout_seconds=1,
+    )
+    clock_values = iter([0.0, 0.0, 2.0])
+    monkeypatch.setattr(computer.time, "monotonic", lambda: next(clock_values))
+    actions_run = []
+
+    def run(action, **kwargs):
+        actions_run.append(action)
+        return computer.ComputerControlResult(
+            "Typed the requested text.", screenshot=_png(), status="ok", dispatched=True, snapshot_id="fresh"
+        )
+
+    controller.run = run
+    result = controller.run_sequence(
+        snapshot_id="initial",
+        actions=[{"action": "type", "text": "first"}, {"action": "type", "text": "second"}],
+    )
+
+    assert result.status == "timed_out"
+    assert "action boundary" in result.message
+    assert "active action was allowed to finish" in result.message
+    assert result.snapshot_id == "fresh"
+    assert actions_run == ["type"]
 
 
 def test_sequence_pauses_before_reusing_geometry_after_a_click(monkeypatch):

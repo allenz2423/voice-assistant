@@ -243,6 +243,7 @@ class AdamBrain:
             screenshot_delay_seconds=getattr(computer_cfg, "screenshot_delay_seconds", 0.25),
             browser_screenshot_delay_seconds=getattr(computer_cfg, "browser_screenshot_delay_seconds", 3.0),
             max_sequence_actions=getattr(computer_cfg, "max_sequence_actions", 8),
+            max_sequence_text_length=getattr(computer_cfg, "max_sequence_text_length", 20000),
             sequence_timeout_seconds=getattr(computer_cfg, "sequence_timeout_seconds", 45.0),
             ocr_only=self.ocr_only,
             ocr_reader=self.screen_ocr,

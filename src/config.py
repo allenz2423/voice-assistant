@@ -148,6 +148,7 @@ class ComputerControlConfig(BaseModel):
     ocr_device: Literal["cpu", "cuda"] | None = None
     ocr_gpu_uuid: str = ""
     max_sequence_actions: int = Field(default=8, ge=1, le=8)
+    max_sequence_text_length: int = Field(default=20000, ge=1, le=160000)
     sequence_timeout_seconds: float = Field(default=45.0, ge=1.0, le=120.0)
 
 class ComputerVisionConfig(BaseModel):

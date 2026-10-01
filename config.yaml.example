@@ -67,7 +67,8 @@ computer_control:
   screenshot_delay_seconds: 0.25 # Automatic wait after GUI actions before the next screenshot
   browser_screenshot_delay_seconds: 3.0 # Let browser navigation and controls settle before observing
   max_sequence_actions: 8 # Maximum sequential desktop inputs in one model-selected call
-  sequence_timeout_seconds: 45.0 # Stop a desktop input sequence at this elapsed-time ceiling
+  max_sequence_text_length: 20000 # Total characters typed across one sequence; each action also has max_text_length
+  sequence_timeout_seconds: 45.0 # Elapsed-time budget checked between actions; an active action finishes first
   ocr_only: false # When enabled, images stay internal and only OCR text/boxes reach the model
   jev_enabled: false # Use TypeSafe Jev 1.13 for desktop action and target decisions
   jev_api_base: "https://openrouter.ai/api/alpha/decisions"

@@ -111,6 +111,7 @@ class ComputerController:
         ocr_reader: ScreenOCR | None = None,
         target_selector: Callable[[str, str, str, list[OCRRegion]], tuple[OCRRegion | None, str]] | None = None,
         max_sequence_actions: int = 8,
+        max_sequence_text_length: int = 20000,
         sequence_timeout_seconds: float = 45.0,
     ) -> None:
         self.enabled = enabled
@@ -127,6 +128,7 @@ class ComputerController:
         self._ocr_reader = ocr_reader or (ScreenOCR() if self.ocr_only else None)
         self._target_selector = target_selector
         self.max_sequence_actions = min(max(int(max_sequence_actions), 1), 8)
+        self.max_sequence_text_length = min(max(int(max_sequence_text_length), 1), 160000)
         self.sequence_timeout_seconds = min(max(float(sequence_timeout_seconds), 1.0), 120.0)
         self._ocr_regions: list[OCRRegion] = []
         self._ocr_state = ""
@@ -720,6 +722,31 @@ class ComputerController:
                 f"Sequence has {len(actions)} actions; the current per-call limit is {self.max_sequence_actions}.",
                 status="invalid_input",
             )
+        sequence_text_length = 0
+        for index, step in enumerate(actions):
+            if not isinstance(step, dict):
+                return ComputerControlResult(
+                    f"Sequence action {index + 1} must be an object.", status="invalid_input"
+                )
+            if str(step.get("action", "")).strip().lower() != "type":
+                continue
+            text = step.get("text", "")
+            if not isinstance(text, str):
+                return ComputerControlResult(
+                    f"Sequence action {index + 1} text must be a string.", status="invalid_input"
+                )
+            if len(text) > self.max_text_length:
+                return ComputerControlResult(
+                    f"Sequence action {index + 1} exceeds the per-action text limit of "
+                    f"{self.max_text_length} characters.", status="invalid_input"
+                )
+            sequence_text_length += len(text)
+            if sequence_text_length > self.max_sequence_text_length:
+                return ComputerControlResult(
+                    f"Sequence text totals {sequence_text_length} characters; the per-sequence limit is "
+                    f"{self.max_sequence_text_length}. No actions were run.",
+                    status="invalid_input",
+                )
         started = time.monotonic()
         current_snapshot = snapshot_id
         results: list[str] = []
@@ -736,7 +763,8 @@ class ComputerController:
                 )
             if time.monotonic() - started >= self.sequence_timeout_seconds:
                 return ComputerControlResult(
-                    f"Sequence time limit reached after {index} action(s); inspect the current state before continuing.\n"
+                    f"Sequence time budget reached at an action boundary after {index} action(s); "
+                    "the active action was allowed to finish. Inspect the current state before continuing.\n"
                     + "\n".join(results),
                     latest.screenshot if latest else None,
                     status="timed_out",

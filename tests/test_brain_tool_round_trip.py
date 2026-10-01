@@ -146,6 +146,83 @@ async def test_agent_loop_supports_file_creation_then_readback(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_agent_loop_reobserves_between_desktop_sequence_and_goal_assessment():
+    from src.llm.brain import AdamBrain
+    from src.tools.computer_control import ComputerControlResult
+
+    screenshot = b"fresh-screen"
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+
+    class Controller:
+        available = True
+        coordinate_mode = "pixels"
+
+        def __init__(self):
+            self.calls = []
+
+        def run(self, action, **kwargs):
+            self.calls.append((action, kwargs))
+            return ComputerControlResult(
+                "Inspected the current application. Snapshot ID: snap-1",
+                screenshot=screenshot,
+                status="ok",
+                dispatched=False,
+                snapshot_id="snap-1",
+            )
+
+        def run_sequence(self, **kwargs):
+            self.calls.append(("sequence", kwargs))
+            return ComputerControlResult(
+                "Typed the requested search query. Snapshot ID: snap-2",
+                screenshot=screenshot,
+                status="ok",
+                dispatched=True,
+                snapshot_id="snap-2",
+            )
+
+        def invalidate_snapshot(self):
+            return None
+
+    controller = Controller()
+    brain.computer_controller = controller
+    brain.llm_client = _DummyClient("local", [
+        {
+            "content": "",
+            "tool_calls": [{"id": "observe", "function": {
+                "name": "computer_control",
+                "arguments": {"action": "inspect", "scope": "window", "snapshot_id": ""},
+            }}],
+        },
+        {
+            "content": "",
+            "tool_calls": [{"id": "input", "function": {
+                "name": "computer_control",
+                "arguments": {
+                    "action": "sequence",
+                    "snapshot_id": "snap-1",
+                    "actions": [
+                        {"action": "click", "x": 210, "y": 80},
+                        {"action": "type", "text": "requested search"},
+                    ],
+                },
+            }}],
+        },
+        {"content": "The query is entered in the search field.", "tool_calls": []},
+    ])
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Enter the requested search text")
+
+    assert [action for action, _ in controller.calls] == ["inspect", "sequence"]
+    sequence_call = controller.calls[1][1]
+    assert sequence_call["snapshot_id"] == "snap-1"
+    assert sequence_call["actions"][1]["text"] == "requested search"
+    assert any(message.get("images") == [screenshot] for message in brain.llm_client.requests[1])
+    assert any(message.get("images") == [screenshot] for message in brain.llm_client.requests[2])
+    assert brain.tts.spoken[-1] == "The query is entered in the search field."
+
+
+@pytest.mark.asyncio
 async def test_file_write_failure_returns_failed_execution_status(tmp_path):
     from src.llm.brain import AdamBrain
 

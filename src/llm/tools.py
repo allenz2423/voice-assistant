@@ -208,6 +208,8 @@ ADAM_TOOLS: list[CanonicalTool] = [
             "The controller carries a fresh snapshot between steps and pauses before a later spatial action that needs a new target choice. "
             "Coordinate-free follow-up inputs such as clicking a visibly editable text field then typing can be sequenced; press may follow typing only as the final step. For window movement use drag with "
             "modifier='window'; the controller reads the desktop's configured move modifier. Drag starts inside the active window. "
+            "A sequence is rejected before execution if its total typed text exceeds computer_control.max_sequence_text_length "
+            "(default 20000 characters). The sequence time budget is checked between steps; an active backend action is allowed to finish under its own timeout. "
             "Every action returns fresh state "
             "after an automatic app-aware wait (3 seconds for browsers, 0.25 otherwise by default). An optional "
             "screenshot_delay_seconds argument can override it from 0 to 10 seconds; inspect the fresh state before another action. "
