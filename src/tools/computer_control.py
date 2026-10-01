@@ -433,7 +433,7 @@ class ComputerController:
             if y <= top + 36 and x >= right - 40:
                 raise ValueError(
                     "Click rejected because it targets the window-close corner. "
-                    "Use the close_application tool only when the user asked to close that window."
+                    "Use close_application for an intentional window close; for visibility recovery, prefer hiding or moving an obstruction unless it is clearly disposable."
                 )
         buttons = {"left": (1, "0xC0"), "right": (3, "0xC1"), "middle": (2, "0xC2")}
         if button not in buttons:

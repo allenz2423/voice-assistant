@@ -7,7 +7,7 @@
 ## Universal Automation Standards
 
 ### Scope Restriction
-The commands below are technical references, not default actions for general app tasks. Use read-only commands to inspect state when relevant. Use window-manager or compositor commands only when the user explicitly requests window/workspace/layout management or that system action is itself the goal. Never use them to imitate an application's controls: a request to start recording means use the recorder's UI or direct app API, not fullscreen, workspace, or input-injection commands. For app tasks, focus the intended app, inspect its current UI, perform one requested action, and inspect the result.
+The commands below are technical references, not default actions for general app tasks. Use read-only commands to inspect state when relevant. Use window-manager or compositor commands for requested window/workspace/layout management and when a minimal layout change is needed to reveal or operate the task's target. Never use them to imitate an application's controls: a request to start recording means use the recorder's UI or direct app API, not fullscreen, workspace, or input-injection commands. For app tasks, focus the intended app, inspect its current UI, perform the requested action, and inspect the result. If the task view is too small or obstructed, resolve that visibility problem safely and re-observe before continuing.
 
 ### 1. Application Discovery & Launching (Freedesktop XDG)
 - Standard paths: `~/.local/share/applications`, `/usr/local/share/applications`, `/usr/share/applications`, `/var/lib/flatpak/exports/share/applications`

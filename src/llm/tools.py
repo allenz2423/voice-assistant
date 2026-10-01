@@ -213,7 +213,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
             "Every action returns fresh state "
             "after an automatic app-aware wait (3 seconds for browsers, 0.25 otherwise by default). An optional "
             "screenshot_delay_seconds argument can override it from 0 to 10 seconds; inspect the fresh state before another action. "
-            "Clicks are limited to the active window; use focus_window to choose another app, then inspect. "
+            "Clicks are limited to the active window; use focus_window to choose another app, then inspect. If the target is hard to see, inspect the monitor and use the window/workspace tools or visible app controls to clear or enlarge the view, then inspect again. "
             "Type only content the user asked to enter. Never send, post, upload, or share intimate/private content; "
             "ask for explicit confirmation before purchases, deletion, or external submission."
         ),
@@ -484,7 +484,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="close_application",
-        description="Closes an application or its window cleanly.",
+        description="Closes an application or its window cleanly. During visibility recovery, use only for a clearly disposable, unrelated obstruction when hiding or moving it is not a better option; do not close ambiguous windows or apps that may contain unsaved work.",
         parameters={
             "type": "object",
             "properties": {
@@ -498,7 +498,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="list_windows",
-        description="Lists all currently open desktop windows, their titles, applications, and workspace numbers.",
+        description="Lists open desktop windows, titles, applications, and workspaces. Use it with a monitor observation to identify windows that obstruct or constrain the requested app before changing the layout.",
         parameters={
             "type": "object",
             "properties": {}
@@ -554,7 +554,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="workspace_control",
-        description="Switches the active workspace or moves a specific window or active window to a workspace.",
+        description="Switches the active workspace or moves a specific window or active window to a workspace. For a task with an obstructed or crowded view, use this to isolate the relevant app or move an unrelated obstruction aside; prefer reversible moves and restore the prior workspace/layout when practical.",
         parameters={
             "type": "object",
             "properties": {
