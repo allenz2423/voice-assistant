@@ -1,240 +1,717 @@
-# Adam Computer Use Plan
+# Adam Computer Use: Detailed Implementation Handoff
 
-## Purpose
+**Document status:** Engineering handoff and follow-on plan
+**Last reviewed against code:** 2026-09-30
+**Audience:** Engineers working on Adam's model loop, desktop tools, voice interaction, and computer-use evaluation
+**Priority:** Agenticness and voice responsiveness, while preserving user intent, honest evidence, cancellation, and mechanical safety.
 
-Make Adam effective at open-ended computer tasks whose path and outcome can vary with the application, current screen, timing, and user intent. Adam should be able to form a plan, try an appropriate action, learn from what happened, revise its approach, and explain what it could or could not establish.
+## How to use this document
 
-Computer use is not a fixed script. The model makes uncertain judgments about goals, interface meaning, and next steps. The software around it should support those judgments and enforce narrow mechanical guarantees, while avoiding claims that it can make the task itself deterministic.
+This document describes the product problem, the intended behavior, the current implementation, and the recommended follow-on work. It is deliberately explicit about what already exists so an implementation handoff does not accidentally rebuild completed work or assume that a design proposal is already implemented.
 
-This is a design plan. It does not implement the interfaces or changes described here.
+The plan treats Adam as an adaptive model-led agent. The model owns task interpretation and strategy selection. The surrounding software makes the available state and actions useful, validates and executes the chosen actions, and reports what happened. It may enforce mechanical facts it can test; it must not pretend to make uncertain task reasoning deterministic.
 
-## Voice-first speed and autonomy
+The computer-use research overview is in [computer-use-agent-research.md](computer-use-agent-research.md). Tool protocol and cross-provider harness work is in [tool-calling-research.md](tool-calling-research.md). The OBS case study in [computer-use-obs-findings.md](computer-use-obs-findings.md) supplies one motivating failure scenario; its proposed architecture is not automatically the architecture to build.
 
-Agenticness and speed are co-equal goals. In voice use, a full model round trip between every ordinary input can make a capable agent feel unresponsive. Optimize time to useful completion and time to first acknowledgement, not only action count or error rate. Adam should carry out clear, low-risk work continuously without narrating every input or asking for approval between routine steps. Give brief progress updates when a task is long or the user needs to make a choice; pause at real ambiguity, a scope change, or a consequential-action boundary.
+## Executive summary
 
-Use adaptive checkpoints rather than a fixed inspect-after-every-input rule. For a clear target and a short, reversible sequence with predictable focus and no expected layout or permission boundary, Adam may perform a bounded micro-sequence before its next model decision. For example, focusing a clearly identified text field and entering the exact requested value can be one short sequence. Re-observe at meaningful state transitions and whenever uncertainty could change the next action. Stop the sequence on failed dispatch, unexpected state, changed focus/target assumptions, a permission or scope transition, or a consequential action. Keep sequences short and cancellable. This preserves adaptation without making each mouse or keyboard event a separate model turn.
+Adam needs to complete open-ended tasks in a live desktop environment. The next screen, control, permission prompt, and successful route may not be known in advance. In voice use, unnecessary model round trips between ordinary inputs are especially costly. Adam should be able to continue through clear, low-risk work, learn from fresh observations, change strategy when a reasonable attempt fails, ask only when a meaningful decision belongs to the user, and report exactly what the evidence supports.
 
-Avoid adding a separate model call solely to repeat an assessment when reliable task-relevant readback is already available. Use direct application or artifact evidence where it fits the claim; use model interpretation when the evidence requires interpretation, and communicate its limits. Measure any extra assessment call against the reduction in false completion it provides.
+The present code already includes several important pieces: a model/tool loop, desktop observation and visual input, short-lived screenshot snapshot IDs, active-window identity checks, per-action refreshes, model-selected coordinate-free CUA sequences, step outcomes, cancellation boundaries, and configured sequence ceilings. The plan should therefore focus on validating and improving this implementation with representative tasks, not replacing it with a universal controller.
 
-## Core approach: adaptive task loop
-
-Use this as a repeating reasoning pattern, not a mandatory sequence of fixed stages:
+The highest-priority engineering question is now: **Does the shipped tool loop let Adam complete representative, varied tasks quickly and recoverably, or do concrete failures reveal additional bottlenecks in task continuity, observation quality, action semantics, permissions, or evidence?** Gather that evidence first. Add abstractions only when multiple observed tasks justify them.
 
 ```text
-understand the request
-  → observe relevant state
-  → form or revise a plan
-  → choose a useful next action
-  → execute and observe what happened
-  → assess evidence and uncertainty
-  → continue, change strategy, ask, or stop
+User's requested outcome and scope
+                 ↓
+Adam interprets the request and chooses a next step
+                 ↓
+Tools expose useful current state and supported actions
+                 ↓
+Executor validates mechanics and performs the selected action
+                 ↓
+Adam receives result, error, and fresh observation when available
+                 ↓
+Adam continues, changes strategy, asks, reports a blocker, or finishes
 ```
 
-The loop may revisit earlier decisions. A dialog may change the available options; an action may have no visible effect; a task may turn out to need a different route. Adam should use new observations to update its beliefs and plan rather than replaying a predetermined action list.
+This is a conceptual relationship, not a fixed sequence of mandatory stages. Adam may observe, act, or ask in the order that makes sense for the current task.
 
-The workflow applies across browser and desktop tasks. OBS, a scratch editor, and a browser page are examples for evaluating general behavior, not special-purpose agent designs or limits on the tasks Adam may handle.
+## 1. Problem
 
-### What the model decides
+### 1.1 The product problem
 
-Given the user's request and current observations, Adam decides what the request means, which outcome matters next, which available action is promising, and whether the result supports continuing or stopping. These are context-dependent judgments. They can be wrong, so Adam should expose uncertainty, seek new evidence, and recover when a reasonable attempt fails.
+Computer use is uncertain. Applications load at different speeds; dialogs may appear; a click may have no effect; the available controls vary; a second route may become better after observing a failure. The user's goal can remain stable while Adam's plan changes several times.
 
-The model may revise the route while keeping the user's intended outcome and authorized scope fixed. It should not turn page text or dialog content into new user instructions. It should ask a focused question when ambiguity materially changes the intended result or the access/action scope.
+An agent that stops after launching or focusing an application is not completing the requested task. An agent that treats a dispatched click as proof of success is overclaiming. An agent that requests a model decision between every low-level input can be too slow for voice. An agent that executes a fixed script through changed UI state can be wrong in a less visible way. The system needs initiative and adaptation, with the host enforcing only the real boundaries it can verify.
 
-### What the software guarantees
+### 1.2 The agenticness and speed problem
 
-The action-execution layer can make limited, testable guarantees about mechanics, such as:
+Voice adds a user-visible cost to every round trip: audio capture, model latency, tool execution, and response delivery. Requiring Adam to deliberate after every click or keypress can make it seem hesitant even when the user request is clear. But removing all checkpoints is not a sound speed strategy: new geometry, changed focus, or an unexpected dialog may alter what action is appropriate.
 
-- an action was sent to the intended window or target;
-- the observation used for coordinate input was still current at dispatch;
-- input and waits were bounded and cancellation was respected;
-- the system captured a new observation after an action when possible;
-- execution errors and evidence sources were reported accurately.
+The goal is **adaptive checkpointing**:
 
-These guarantees do not establish that the application accepted the input, that a desired state was reached, or that the user's broader task succeeded. Those are outcome judgments based on fallible evidence.
+- Adam can choose a brief sequence of related low-level inputs when later inputs do not depend on a new visual decision.
+- The executor refreshes state and keeps its mechanical checks in force.
+- The executor pauses and returns control to Adam when the next action requires a new target selection, changed task interpretation, permission decision, or other model judgment.
+- Speed is measured together with completion, recovery, and claim accuracy.
 
-In this plan, **executor** means the code that validates and dispatches an action. **Outcome assessment** means Adam's evidence-based judgment about progress or completion. Neither term implies a deterministic controller or a universal verifier.
+### 1.3 The reliability problem
 
-## Observations, actions, and adaptation
+The system needs to distinguish at least four different things:
 
-Adam should use whatever relevant observations are currently available through its tools. Today the path is primarily screenshot and desktop input, alongside existing browser and read-only tools. DOM, accessibility, OCR, and application-specific state may be useful in future cases, but should be added when examples reveal a concrete gap.
+1. **Intent:** what result the user asked for and what scope they authorized.
+2. **Action choice:** what Adam decided to try based on current evidence.
+3. **Execution facts:** what the tool dispatched, rejected, cancelled, or observed.
+4. **Task outcome:** what the available evidence supports about the user's intended result.
 
-For each action, the executor should preserve the safeguards already available in the current desktop path: bind coordinate input to a fresh screenshot, validate window/focus/bounds as supported, serialize input, bound waits, and return execution facts. An action dispatch is an attempt, not a postcondition.
+Collapsing these into a single “success” flag causes errors. A click handler returning normally says something about dispatch; it may say nothing about the desired application state. A screenshot can show visible state while missing hidden or delayed state. A model reviewing a screenshot is another interpretation, not ground truth.
 
-Choose checkpoint frequency according to uncertainty and consequence, not a universal action count. A short micro-sequence can reduce model round trips for ordinary reversible steps; a meaningful state transition or increased uncertainty is a reason to observe and reconsider. Sequences should be bounded, cancellable, and interruptible on divergence. Do not batch through a permission change, an ambiguous target, or a consequential action that needs confirmation.
+### 1.4 Motivating general failure modes
 
-After acting, Adam should take the most useful next observation available. It can then continue the current plan, choose a different strategy, wait for a plausible transition, ask the user, or report a blocker. Avoid repeated retries without new evidence or a changed hypothesis. A bounded retry or time budget helps the system stop consuming resources; it does not determine whether the task succeeded.
+The OBS investigation documented a useful case: Adam could launch and focus OBS and a recording timer could be active while the intended display remained unselected in a screen-sharing chooser. The task's meaningful outcome was not simply “OBS is recording”; it involved the requested display being captured. The case illustrates general risks:
 
-## Outcome assessment and evidence
+- mistaking intermediate progress for completion;
+- sending too much irrelevant window or accessibility state to a small model;
+- using a stale screenshot after focus changes;
+- failing to expose the needed target through the current observation source;
+- conflicting short instructions that encourage an early “done” response;
+- confusing tool execution facts with task evidence.
 
-There is no single verifier that can prove every computer-use outcome. Evidence has different strengths and scope:
+Treat this case as one diagnostic fixture. Do not design a one-off OBS workflow or require every future task to have an app-specific verifier.
 
-- A screenshot can support claims about visible state, but may omit hidden, delayed, or off-screen state.
-- OCR or a vision model can interpret pixels, but may misread them.
-- DOM or accessibility data can expose structured controls and values, but may be incomplete or stale.
-- An application API or output artifact can establish some facts more directly, but only within its defined contract.
-- A successful input call establishes dispatch, not the effect of the input.
-- A second judgment from the same or another language model is another interpretation of evidence, not ground truth.
+## 2. Goals and non-goals
 
-Adam should state what it observed, where that evidence came from, and what remains unknown. It may tell the user a task is complete when the available evidence is sufficiently strong for the requested outcome, while avoiding any implication of certainty that the evidence does not support. If only part of the requested result is supported, describe the partial result. If evidence is inconclusive, say so and decide whether another observation or safe action could reduce uncertainty.
+### 2.1 Goals
 
-An internal result can distinguish `supported`, `partial`, `blocked`, and `uncertain`, with the evidence and rationale attached. These labels describe the assessment given current evidence; they are not a promise of objective truth. User-facing language should remain natural and specific rather than exposing labels without explanation.
+The computer-use path should:
 
-Examples of evidence appropriate to different claims:
+1. Let Adam choose actions and adapt its strategy throughout an active request.
+2. Avoid a model round trip after every primitive input when Adam has selected a safe related sequence.
+3. Return useful current observations and clear capability gaps at a reasonable context and latency cost.
+4. Preserve existing freshness, focus, bounds, serialization, and cancellation mechanics.
+5. Return per-action execution facts and partial progress clearly.
+6. Distinguish a requested result from intermediate app state and action dispatch.
+7. Support recovery from failure without blind retries of possibly completed side effects.
+8. Make permission handling follow the user's actual scope and the existing confirmation policy.
+9. Let Adam finish when evidence supports the requested outcomes and express partial or uncertain results naturally.
+10. Measure voice responsiveness and task quality together.
 
-| Example request | Evidence that may support the outcome | Limits to communicate |
+### 2.2 Non-goals
+
+This handoff does not require:
+
+- a deterministic controller that selects the task strategy;
+- a mandatory observe → target → act → verify stage sequence for every task;
+- a universal semantic target namespace or normalized UI tree;
+- one universal verifier or task predicate service;
+- a fixed action path for a particular app such as OBS;
+- inspection or model deliberation after every click, keypress, or scroll;
+- a replacement of the current desktop driver before evidence demonstrates its limits;
+- automatic background CUA after Adam has returned to the user;
+- adoption of DOM, AT-SPI, a new driver, a vision model, or an application adapter just because it is available elsewhere;
+- a large benchmark platform before a small repeatable evaluation has shown a need.
+
+## 3. Current implementation: verified starting point
+
+This section records the implementation visible in the repository at the review date. Treat function names and behavior as a starting point for an implementation pass; check the current branch before editing.
+
+### 3.1 Model loop and tool surface
+
+`src/llm/brain.py` owns the conversation/tool loop. Adam can use multiple tool/model rounds during an active request, retains tool-call history with matching result messages, normalizes call IDs, validates calls through the shared tool validation code, and emits structured execution status metadata to the model. The brain maintains recent task context for desktop operations and can stop a batch after a handoff or policy boundary.
+
+The model-facing computer-use options include:
+
+- `observe_desktop` for available window, accessibility, and browser information;
+- `capture_screenshot` for a fresh visual observation;
+- `computer_control` for visual inspection and input;
+- `focus_window` and `launch_application` for locating/focusing an application;
+- optional `desktop_task` using the configured OCR/Jev path.
+
+The installed tools are filtered by runtime availability. The `desktop_task` path is distinct from the general model-led `computer_control` path; its status should be treated according to its contract and not mistaken for a mandatory architecture.
+
+### 3.2 Desktop observation and action mechanics
+
+`src/tools/computer_control.py` implements `ComputerController`. The controller supports desktop backends according to availability, captures screenshots, maintains the active window identity and bounds where supported, and associates an actionable observation with a short-lived `snapshot_id`.
+
+Before a mutation, it checks that the submitted snapshot is the latest token and that the active window identity still matches. Pointer coordinates are checked against screenshot bounds and active-window bounds where available. Actions run through a serialized path. The controller refreshes a screenshot after actions according to configured, app-aware delays and returns a new token only when focus stability can be confirmed. These are useful mechanical protections; they do not prove the app accepted the input or reached the user's intended state.
+
+The current snapshot design should be understood narrowly:
+
+- it ties an action to a recent captured state and window identity;
+- it catches stale tokens and detected focus/window changes;
+- it does not prove that no visual/layout change occurred inside the same window;
+- it does not authorize an action;
+- it is not durable across requests and must not be treated as a future-session credential.
+
+### 3.3 Current sequence support
+
+The `computer_control` schema supports a model-selected `action="sequence"` with an `actions` list. `ComputerController.run_sequence` executes supported steps sequentially, calls the same single-action path for each step, and carries forward the newly returned snapshot token. It reports which steps ran and returns the most recent observation where available.
+
+As currently implemented:
+
+- the configured default is at most eight actions per sequence, clamped in code to a maximum of eight;
+- the configured default timeout is 45 seconds, clamped in code to a maximum of 120 seconds;
+- cancellation is checked at action boundaries;
+- the executor allows coordinate-free continuations such as click then type, type then type, and a final key after typing;
+- it pauses before later spatial actions that would need Adam to select a new target from fresh state;
+- each dispatched step uses the regular action path, with its snapshot validation and fresh observation behavior;
+- a sequence result describes execution and observations, not task completion.
+
+These sequence rules intentionally limit reuse of old target geometry. They are not a semantic workflow engine. The next work should evaluate whether this balance is useful across ordinary tasks and whether the returned partial result gives Adam enough context to continue efficiently.
+
+### 3.4 Prompt and skill guidance
+
+`SYSTEM_PROMPT` in `src/llm/brain.py` tells Adam to keep track of requested outcomes, continue beyond intermediate launch/focus/click steps, use fresh observations, avoid stale coordinates, handle failures deliberately, and avoid claims beyond evidence. It permits short coordinate-free sequences and contextual selection of narrow temporary permission options when user intent is clear and policy allows it.
+
+`skills/computer_use.md` provides a longer operational guide covering tool choice, observation, current snapshots, relevant app actions, permission dialogs, prompt injection in screen content, consequential actions, and evidence-based completion. Keep the system prompt concise enough for the model to use reliably; put detailed procedures in the skill or tool descriptions where that improves clarity without creating contradictory instructions.
+
+### 3.5 Tool results and request bounds
+
+The brain wraps tool output in correlated metadata such as call ID, origin, status, result completeness, effect status, and duration. This gives Adam meaningful distinctions such as invalid input, denied, partial, cancelled, timed out, uncertain, unavailable, and ordinary execution output.
+
+The active model loop has a generous `max_tool_rounds` ceiling. Hitting it is a resource limit, not evidence that the task completed. The implementation should preserve partial-progress reporting and cancellation rather than lower the ceiling to create artificial responsiveness.
+
+### 3.6 Existing tests and configuration
+
+Relevant current code and test locations include:
+
+| Area | Starting point |
+| --- | --- |
+| Brain/tool orchestration | `src/llm/brain.py` |
+| Desktop observation and input | `src/tools/computer_control.py` |
+| Tool definitions and argument validation | `src/llm/tools.py` |
+| Behavioral guide | `skills/computer_use.md` |
+| Sequence and snapshot configuration | `config.yaml.example`, under `computer_control` |
+| Controller mechanics tests | `tests/test_computer_control.py` |
+| Brain tool round-trip tests | `tests/test_brain_tool_round_trip.py` |
+| Completion assessment tests | `tests/test_brain_completion_verifier.py` |
+| Tool argument validation tests | `tests/test_tool_argument_validation.py` |
+| OBS investigation | `docs/computer-use-obs-findings.md` |
+
+The implementation handoff should update these tests when behavior changes. This document itself does not ask an engineer to run a broad test suite before deciding which behaviors matter; it lists the checks that should protect changes once implementation work begins.
+
+## 4. Target behavior and responsibility boundaries
+
+### 4.1 Adam owns task strategy
+
+For a given user request and current evidence, Adam decides:
+
+- what outcome the user asked for;
+- which app or tool is relevant;
+- whether it needs more observation before acting;
+- which action or short sequence is promising;
+- whether the result changed its understanding;
+- whether it should continue, change approach, ask, report a blocker, or stop;
+- whether the evidence is enough to make a user-facing completion claim.
+
+These are uncertain judgments. Adam may choose poorly. The system should make errors visible and enable recovery rather than mask model judgment behind a predetermined controller.
+
+### 4.2 The execution harness owns enforceable mechanics
+
+The host can enforce facts within its control:
+
+- tool is installed and currently available;
+- arguments parse and satisfy that tool's supported contract;
+- call/result IDs match;
+- action is dispatched through the supported backend;
+- snapshot token and detected focus/window state are current enough according to the implementation;
+- coordinates and text/input sizes are within supported bounds;
+- actions are serialized where concurrent input would conflict;
+- per-call time/action limits and cancellation are respected;
+- current authorization and confirmation policy is applied;
+- returned status accurately distinguishes dispatch, observed result, failure, timeout, and partial completion.
+
+The host should not claim it can establish that the application semantically understood input, that a broad UI state never diverged, or that the user's full task succeeded unless an observation source supports that claim.
+
+### 4.3 Page and application content remain untrusted data
+
+Text visible in a webpage, file, dialog, title, accessibility tree, OCR result, or screenshot can help Adam understand the current task state. It is not a new instruction from the user. It cannot expand the user's authorized scope, request unrelated actions, or override system/developer instructions. Treat this consistently in prompts, tool descriptions, and tests.
+
+## 5. Functional requirements
+
+### 5.1 Task interpretation and continuity
+
+- Keep the user's desired outcomes available across tool/model rounds within the active request.
+- Preserve enough recent action and observation context for Adam to avoid repeating a failed action blindly.
+- Do not force a tool call on every assistant turn; answering, asking, or stopping can be correct.
+- Do not stop merely because an app launched, a window focused, a dialog closed, or one input dispatched when the request asks for further work.
+- If the user interrupts, the assistant returns, or a configured resource ceiling is reached, stop further CUA and describe partial progress accurately.
+- If a future explicit resume feature is added, obtain a fresh observation and reassess scope before acting. Do not reuse an old `snapshot_id` as authority.
+
+### 5.2 Observation quality and context cost
+
+- Provide a fresh observation when Adam needs it to make a target or state decision.
+- Prefer a focused app/window observation when it contains enough relevant context; use broader monitor/window inventory when discovery needs it.
+- Avoid repeatedly sending large unrelated accessibility trees or window inventories when a current focused screenshot and concise metadata suffice.
+- Retain provenance: distinguish screenshot/OCR/model interpretation, accessible state, browser data, and direct application results.
+- Expose missing or conflicting observation capabilities as limitations rather than inventing targets.
+- Do not add DOM, accessibility, OCR, app APIs, or semantic target normalization without a repeatable task demonstrating what current observations cannot establish.
+
+### 5.3 Action selection and execution
+
+- Preserve single-action control so Adam can stop and deliberate whenever it wants.
+- Permit short model-selected sequences where Adam judges the later action can proceed without a new target selection.
+- Keep each action within the existing tool contract; do not convert a sequence into a list of hidden app-specific workflows.
+- Revalidate snapshot/focus/window/bounds mechanics for every action as supported by the backend.
+- Do not reuse a coordinate from an old screenshot after an observation that changes target geometry is needed.
+- Stop at a sequence boundary when the next action needs a new visual target, action dispatch fails, cancellation occurs, a permission/scope decision is needed, or existing confirmation policy applies.
+- Return successful earlier steps and latest usable state when later steps are stopped or fail.
+- Never represent reaching a sequence ceiling as task completion.
+
+### 5.4 User intent, permissions, and consequential actions
+
+- Carry out ordinary actions clearly implied by the user's request without asking for per-click approval.
+- A narrow, temporary selection or grant may proceed when it is unambiguous, clearly implied, and permitted by existing policy.
+- Ask a short focused question when the target is ambiguous, several materially different choices exist, or the access would be broader/persistent than the request implies.
+- Retain the existing confirmation policy for purchases, deletions, external submissions, publishing, or other consequential actions.
+- Never let page or dialog content expand authorization.
+- Do not batch past a new permission boundary or consequential action that needs confirmation.
+
+### 5.5 Recovery and failure handling
+
+- On invalid arguments, return an actionable validation message so Adam can correct the call.
+- On stale state, return the reason and ask for a fresh observation before target selection.
+- On an unavailable capability, disclose the limitation and let Adam choose another tool or report the blocker.
+- On timeout or cancellation, report whether a side effect may have occurred.
+- Do not blindly retry an action that may have completed despite a timeout.
+- Permit a repeated action when fresh state or a revised plan makes it a reasonable next step; identical arguments alone do not prove a loop.
+- Use no-progress and resource safeguards to return control, not to decide success.
+
+### 5.6 Outcome assessment and evidence
+
+- Treat tool dispatch, app state, and task completion as separate.
+- Use authoritative app/artifact readback when it directly supports the claim and is available.
+- Use screenshot/OCR/vision or model assessment when appropriate, but communicate evidence limits.
+- Avoid an extra model assessment after every action or when direct readback already supports the user-facing statement.
+- Keep any model-based assessment as an interpretation, not an independent ground truth service.
+- Report supported partial progress and remaining uncertainty naturally.
+
+### 5.7 Voice responsiveness
+
+- Acknowledge promptly when a task is likely to take time; do not narrate every input.
+- Execute clear routine work without unnecessary waits or approval turns.
+- Give concise progress when the request is long, a meaningful decision is needed, or silence would make the user unsure that Adam is working.
+- Minimize model round trips where the next input is already clear and mechanically safe.
+- Measure time to first acknowledgement, total task latency, and interruption/clarification burden alongside task success.
+
+## 6. Workstreams and proposed implementation methods
+
+The workstreams are ordered by expected user impact and dependency. Workstream 1 is substantially implemented in the current branch; its immediate task is validation and focused hardening. Other items are follow-on only when evaluation or source review confirms the gap.
+
+### Workstream 1 — Validate and harden adaptive CUA sequences
+
+**Status:** Initial implementation exists in `ComputerController.run_sequence`, the `computer_control` schema, brain dispatch, config, and tests.
+**Priority:** Highest. Direct impact on model round trips and voice latency.
+
+#### Problem
+
+One model decision for every click or keypress creates avoidable latency. A sequence that freely reuses old coordinates, however, can act on an unexpected screen. The implementation must remove needless round trips without silently turning into a script executor.
+
+#### Solution
+
+Keep the model in charge of sequence choice. Execute a short ordered group of related inputs with the same single-action mechanics, then return step results and fresh state. Pause when the next step needs Adam to choose a new visual target or when an actual boundary prevents safe continuation.
+
+#### Justification
+
+Voice users feel model latency directly. A clear click-then-type action may not need another model call in between. A second click usually does need a new target decision from a fresh observation. Distinguishing those cases improves speed while preserving adaptive reasoning.
+
+#### What will change
+
+First, no large redesign is required. Review real traces and existing tests for sequence behavior, then fix concrete correctness or usability gaps. Maintain a backward-compatible single-action API. If policy changes are needed, update the controller, schema descriptions, skill, prompt, and tests together so they agree.
+
+#### Proposed methods of implementation
+
+1. Exercise the existing supported cases: one action; click then type; type then type; type then a final press; later spatial input returning `partial` with the latest screenshot/token; stale start token; focus identity change; malformed step; timeout; cancellation.
+2. Confirm that each actual mutation enters `run`, therefore using the normal snapshot validation and capture path. Confirm the tool result returns the latest screenshot and token to Adam.
+3. Check cancellation responsiveness at action boundaries. If an individual action can block beyond the sequence ceiling, identify the subprocess/driver timeout and make the limit honest; do not imply the sequence timeout preempts a currently blocking call if it only checks between steps.
+4. Review size bounds as well as action-count bounds. Text input has a per-action maximum; confirm aggregate sequence input is also bounded enough for the model context and execution service.
+5. Verify expected focus changes within a sequence are not misclassified as failure, while genuine focus/window uncertainty prevents spatial input.
+6. Keep a sequence as a list of ordinary actions, not a macro name, an app-specific procedure, or a hidden plan. Adam can always request an observation and choose a new route.
+7. Confirm ceiling results include completed step outcomes and do not claim the user's task completed.
+8. Update tool descriptions and `skills/computer_use.md` if runtime behavior changes. Avoid conflicting instructions about whether another screenshot is needed.
+
+#### Acceptance criteria
+
+- Adam can choose a short related sequence without a model round trip between every primitive input.
+- Single-action calls and explicit observation remain available.
+- Later coordinate-bearing actions pause for a new target choice instead of reusing old geometry.
+- Each step preserves snapshot/focus/bounds checks available in the controller.
+- A partial result identifies completed steps and includes current usable state where possible.
+- Cancellation and time limits stop future actions; limits are described accurately at their actual enforcement boundary.
+- No sequence result is treated as proof of task-level completion.
+- Evaluation shows lower latency or fewer turns on suitable tasks without reduced success, recovery, or claim accuracy.
+
+### Workstream 2 — Build a representative CUA baseline and evaluation set
+
+**Status:** The repository has an OBS case study and controller/brain tests; a compact end-to-end task baseline remains the key measurement task.
+**Priority:** Start alongside sequence hardening; use results to decide later work.
+
+#### Problem
+
+Individual unit tests can prove snapshot rejection or result serialization but do not establish that Adam can complete an open-ended task through the live voice/model/tool loop. One OBS scenario alone cannot show that an architectural change generalizes.
+
+#### Solution
+
+Create three to five disposable, repeatable scenarios across at least two task types. Give each scenario an allowed outcome and reliable test-time observations, while allowing more than one valid action path.
+
+#### Justification
+
+Agenticness and speed can trade off. Measuring only action count rewards short but incomplete behavior; measuring only success can conceal unacceptable voice latency. A small fixture set can expose actual bottlenecks without creating a benchmark project.
+
+#### What will change
+
+Use existing test conventions and temporary apps/files. Add a small evaluation helper only if needed to capture traces and timing consistently. Keep private user screens, personal browser profiles, and real consequential operations out of the fixtures.
+
+#### Proposed methods of implementation
+
+Use scenarios such as:
+
+1. **Exact text entry:** focus a scratch editor field, enter a harmless specified string, and read it back. Check saved bytes only when saving is part of the request.
+2. **Desktop choice:** select a named item among visually similar choices. Include an ambiguity variant where Adam should ask rather than guess.
+3. **Permission/dialog:** complete a task requiring a narrow temporary selection, then a separate case where the requested scope is ambiguous or broad.
+4. **Browser task:** navigate to a local/test page, use its ordinary UI, and report a requested title or visible state from a fresh observation.
+5. **Recovery/blocker:** make an action fail or a capability unavailable and verify Adam inspects, changes approach, asks, or reports the blocker honestly.
+6. **OBS-style end state:** test “record the requested display,” where recording active and correct display selected are distinct facts. Use a disposable configuration and inspect captured output only as a test oracle where feasible.
+
+Record the exact request, intended scope, tool/model turns, timestamps, sequence steps, action/evidence status, final explanation, interruptions, and failure category. Measure at minimum:
+
+- task completion and partial completion;
+- recovery following failed or uncertain action;
+- false completion/unsupported claims;
+- unnecessary approval and clarification turns;
+- time to first acknowledgement;
+- end-to-end latency, including model, screenshot, wait, and driver time where distinguishable;
+- cancellation behavior and post-cancellation actions.
+
+For meaningful comparison, compare inspect-after-every-input with adaptive checkpoints on the same fixture. Change one factor at a time when comparing prompt, model, observation source, or action policy. Report p50/p95 only after enough trials to make them useful.
+
+#### Acceptance criteria
+
+- Scenarios permit multiple valid paths and judge requested outcomes rather than exact click sequences.
+- At least one scenario exercises sequence behavior and one exercises a real user decision boundary.
+- Latency and task quality are reported together.
+- Evaluation traces identify which evidence supported the final claim without retaining unnecessary screen content.
+
+### Workstream 3 — Improve observations only where tasks show a gap
+
+**Status:** Current general path is screenshot-guided; `observe_desktop` exposes available desktop/browser state. Optional OCR/visual grounding and a Jev path exist behind configuration.
+**Priority:** Evidence-driven; do not start with adapter consolidation.
+
+#### Problem
+
+A screenshot provides broad visual coverage but requires interpretation. Accessibility, browser DOM, OCR, and app APIs can expose useful structure but vary in coverage and may be stale or incomplete. Sending all available state can overwhelm a smaller model; hiding gaps can force it to guess.
+
+#### Solution
+
+Use the narrowest observation that answers Adam's current question, with provenance and limitations. Add a read-only source when a repeatable scenario demonstrates that current tools cannot expose a needed fact or target reliably.
+
+#### Justification
+
+The best source depends on the task and application. No single adapter or vision model is universally strongest. A hybrid approach may help, but each additional integration has maintenance, privacy, permission, and ambiguity costs.
+
+#### What will change
+
+Initially, improve only prompt/tool result details or focused observation selection demonstrated by the baseline. If repeated failures remain, add one source or capability at a time and retain the baseline for comparison.
+
+#### Proposed methods of implementation
+
+1. For every failed task, classify the cause: discovery, observation relevance, visual interpretation, target ambiguity, action mechanics, timing, authorization, or outcome evidence.
+2. Check actual target coverage rather than assuming that a running process or recognized application exposes a DOM/accessibility node.
+3. Scope broad window discovery separately from focused work. Use relevant window identity, dialog state, and a screenshot when that is what the decision needs.
+4. Return concise accessible/browser facts rather than full unrelated trees where possible. Preserve details needed for disambiguating repeated labels.
+5. If adding a source (for example, AT-SPI, browser DOM/CDP, app API, OCR, or a vision model), evaluate it on the failure fixture and record freshness, coverage, ambiguity, permission requirements, and latency.
+6. When sources disagree, present disagreement as uncertainty. Do not merge them into a falsely authoritative “unified state.”
+7. Do not expose raw backend IDs to Adam unless the tool contract requires them; retain local provenance to explain what produced a result.
+
+#### Acceptance criteria
+
+- The added observation source resolves a repeated failure that the old source could not.
+- Adam receives enough relevant context to choose correctly without routine unrelated-state flooding.
+- Staleness, missing capability, and source disagreement remain visible.
+- Added latency and privacy/logging costs are measured and justified.
+
+### Workstream 4 — Calibrate task completion and evidence
+
+**Status:** Tool results explicitly leave `goal_status` as `not_assessed`; Adam receives fresh screenshots and is instructed to assess the requested outcome. There is no separate per-action computer outcome model call in the current path.
+**Priority:** High where false completion occurs; do not add a universal verifier.
+
+#### Problem
+
+Adam can stop after intermediate progress or claim more than an observation supports. A separate model call may help interpret complex evidence but can add latency and share the same model weaknesses. An action handler cannot verify all task semantics.
+
+#### Solution
+
+Keep task-level outcome judgment with Adam, grounded in relevant evidence. Use direct application/artifact readback when available. Do not add a separate model-based assessment call unless the evaluation shows a meaningful accuracy benefit that justifies its latency.
+
+#### Justification
+
+Evidence differs by claim. An OBS recording timer does not prove the intended display was captured; visible buffer content does not prove a requested file was saved. Conversely, demanding an extra model check for every routine action adds cost without guaranteeing truth.
+
+#### What will change
+
+Use the evaluation set to classify false completion and the cost of any proposed extra assessment. Refine `SYSTEM_PROMPT`, skill guidance, or tool outputs when a concrete scenario shows the need. If a separate model assessment is proposed, compare its accuracy benefit and latency with direct readback and Adam's normal evidence-based reasoning before adding it.
+
+#### Proposed methods of implementation
+
+1. For every scenario, state the user's requested outcome and what evidence could reasonably support that outcome. This is an evaluation oracle, not a required runtime universal predicate.
+2. Distinguish dispatch evidence from post-action observation and authoritative app/artifact readback.
+3. Measure false completion under Adam's normal evidence-based reasoning. If a separate outcome assessment is proposed, measure whether it catches errors, adds false alarms, and justifies its latency.
+4. Skip redundant assessment when direct readback already answers the relevant question.
+5. Keep an assessment result scoped: “visible timer is active” is not “requested content was recorded.”
+6. Ensure partial/uncertain outcomes return control to Adam or result in a calibrated user-facing response.
+7. Never convert a timeout, action ceiling, model-call ceiling, or no-progress detector into a success result.
+
+#### Acceptance criteria
+
+- Intermediate focus, navigation, or dispatch is not reported as task completion when more was requested.
+- Claims cite or describe evidence within its scope.
+- Additional model assessment is retained only where measured benefit justifies its cost.
+- Partial progress and uncertainty are expressible without a fabricated failure or success.
+
+### Workstream 5 — Keep authorization contextual and enforce policy in the right layer
+
+**Status:** Current prompt and skill guidance describe narrow implied temporary selections, ambiguity, scope, and consequential operations.
+**Priority:** Preserve and regression-test as CUA evolves.
+
+#### Problem
+
+Overly broad “always ask” instructions create unnecessary approval loops. Overly permissive instructions let a page or dialog widen the requested task or make a consequential choice the user did not authorize.
+
+#### Solution
+
+Interpret access in the context of the user request. Proceed with narrow temporary actions clearly implied by the request when existing policy permits. Ask when target or scope is materially unclear, broader/persistent access is requested, or existing policy requires confirmation.
+
+#### Justification
+
+The model should have room to act on clear intent without asking for every routine input, but authorization remains bounded by the user's request and system policy. Dialog text is untrusted context, not authorization.
+
+#### What will change
+
+Do not broaden access policy merely to improve benchmark speed. Include clear/ambiguous permission scenarios in evaluation. Change prompt, policy, or confirmation plumbing only if those scenarios reveal unnecessary friction or a scope violation.
+
+#### Proposed methods of implementation
+
+1. Separate ordinary reversible app input from consequential external actions in prompts and policy.
+2. For chooser tasks, provide enough observation to distinguish options (for example, display name and resolution), then let Adam compare them with the request.
+3. Treat a narrow session-only choice differently from persistent system access or a broader grant.
+4. Confirm that UI text cannot grant authority or override user instructions.
+5. Keep host-side confirmations authoritative for operations that require them; model instructions alone do not enforce permission.
+6. Measure both redundant approvals and unsafe scope expansion.
+
+#### Acceptance criteria
+
+- Adam does not ask for approval between routine steps clearly inside the request.
+- Ambiguous or broad grants lead to a focused question or a denial as policy requires.
+- Consequential actions retain existing confirmation behavior.
+- Untrusted on-screen text cannot expand scope.
+
+### Workstream 6 — Voice experience and progress behavior
+
+**Status:** Runtime cue/progress behavior exists; sequence support reduces some input-to-model round trips.
+**Priority:** Evaluate alongside every CUA change.
+
+#### Problem
+
+Silence can make a long request feel stuck; constant narration makes an agent noisy; unnecessary model turns make it slow. The same behavior that is appropriate for chat may feel poor in audio.
+
+#### Solution
+
+Acknowledge promptly, carry out clear ordinary work without commentary between every input, and provide concise progress when a meaningful wait or user decision occurs. Keep user-facing language natural while preserving detailed machine-readable results for Adam.
+
+#### Justification
+
+The user needs to know that Adam is working and needs to make real decisions. They do not need to hear every click. Round-trip reductions should improve time to completion, not simply lower a count.
+
+#### What will change
+
+Use fixture recordings/timestamps to check acknowledgement and progress cadence. Adjust cue/progress behavior only when it improves user understanding without delaying the work or talking over interaction.
+
+#### Proposed methods of implementation
+
+1. Record time from request acceptance to first acknowledgement and to completion.
+2. Mark meaningful wait states (application launch, long load, or external operation) separately from ordinary input.
+3. Ensure progress messages do not trigger an extra tool/model cycle by themselves unless needed.
+4. Keep failure/blocker reports concise but specific: what completed, what remains, and what choice or capability is missing.
+
+#### Acceptance criteria
+
+- User receives prompt acknowledgement on longer tasks.
+- Routine low-level actions do not produce spoken narration one by one.
+- Progress is not phrased as completion unless the requested outcome is supported.
+- Changes are evaluated with interruption and latency observations.
+
+### Workstream 7 — Add abstractions only after repeatable evidence
+
+**Status:** Possible future direction. No universal controller or target framework is a prerequisite.
+**Priority:** Deferred until earlier evaluation identifies a repeated cross-task need.
+
+#### Problem
+
+Multiple sources and app-specific operations may eventually improve coverage. Premature abstractions can hide uncertainty, multiply integration paths, and create a large amount of code before proving that the current path is insufficient.
+
+#### Solution
+
+Add the smallest shared capability that resolves a repeated task failure across more than one scenario. Keep the model-facing contract understandable and keep provenance visible.
+
+#### Justification
+
+Architecture should follow demonstrated reliability, latency, or coverage needs. A capability adapter may be worthwhile when several tasks benefit; an adapter framework is not useful merely because several integrations are imaginable.
+
+#### What will change
+
+Potential future additions include a focused browser observation, richer accessibility support, task-specific app APIs, event-driven wait/state capture, or a different desktop driver. Each requires its own evidence and rollout plan.
+
+#### Proposed methods of implementation
+
+1. Require at least one repeatable failure and identify whether it is app-specific or general.
+2. Prototype the smallest interface that can address it.
+3. Compare with the baseline for outcome success, recovery, maintenance burden, access scope, and voice latency.
+4. Preserve fallback to current screenshot/input paths where possible.
+5. Keep model strategy outside the adapter: adapters expose concrete facts and operations, not a task plan.
+6. For Cua Driver or another replacement driver, evaluate in a disposable Linux/Wayland environment before considering migration. Check focus, coordinates, screenshot freshness, cancellation, dependencies, and session ownership.
+
+#### Acceptance criteria
+
+- A new abstraction addresses repeated evidence, not a hypothetical future need.
+- The model still chooses task strategy and can change route.
+- The new source or driver reports capability limits and evidence provenance.
+- Improvement is visible in task outcome or latency without unacceptable new access or maintenance costs.
+
+## 7. Delivery sequence
+
+### Phase 0 — Code and behavior audit
+
+Confirm the current branch still matches Section 3. Trace a single action, a coordinate-free sequence, a sequence pause before a later target, a timeout/cancellation, and a completed task. Check prompt/skill consistency and configured sequence values.
+
+**Deliverable:** a short baseline report with current behavior, any mismatch from this document, and a small disposable scenario list.
+
+**Exit condition:** engineers know which planned pieces are already shipped and which user-visible gaps remain.
+
+### Phase 1 — CUA sequence hardening and baseline runs
+
+Run the selected scenarios through the active brain/tool path. Check step-by-step state freshness, returned screenshots/tokens, cancellation, sequence ceilings, coordinate reuse, and single-action fallback. Fix only demonstrated correctness gaps.
+
+**Deliverable:** test coverage for mechanical behavior and trace measurements for turn count, latency, completion, and recovery.
+
+**Exit condition:** adaptive sequences reduce unnecessary round trips on suitable work and stop before a new spatial decision is guessed.
+
+### Phase 2 — Prompt, permission, and completion calibration
+
+Review failures for over-asking, premature completion, unsupported evidence, unnecessary assessment calls, or failure to ask at genuine ambiguity. Update system prompt, skill, tool descriptions, or assessment call conditions together and avoid contradictions.
+
+**Deliverable:** scenario-backed prompt/policy adjustments and before/after behavior notes.
+
+**Exit condition:** Adam proceeds on clear in-scope work, pauses at real boundaries, and makes evidence-calibrated claims.
+
+### Phase 3 — Targeted observation improvements
+
+Only after repeatable observation failures remain, add or refine one source at a time. Keep task context focused and preserve source provenance. Compare against Phase 0/1 traces.
+
+**Deliverable:** a small capability addition with a specific failure it resolves and measurements of the tradeoff.
+
+**Exit condition:** added observation materially improves coverage, target resolution, or claim quality for more than one relevant task or is clearly justified for a high-value specific task.
+
+### Phase 4 — Generalize and maintain
+
+Review task corpus and failures periodically. Promote patterns into shared tools only when several tasks benefit. Recheck behavior when providers, model, desktop backend, permission system, or input driver changes.
+
+**Deliverable:** a maintained set of representative tasks and an evidence-backed backlog.
+
+**Exit condition:** no generalization is adopted without an owner, a user-visible objective, and a way to detect regressions.
+
+## 8. Observability and evaluation details
+
+### 8.1 What to record
+
+For each test run, retain enough data to explain the outcome:
+
+- anonymized scenario/request identifier;
+- model/provider and relevant configuration version;
+- tool name, call ID, parser origin if available, and duration;
+- action type and whether it was dispatched;
+- sequence step index and stop reason;
+- observation type, timestamp/freshness metadata, and source provenance;
+- whether the result was complete, partial, uncertain, blocked, or unavailable;
+- final task assessment and evidence summary;
+- acknowledgement, progress, and end-to-end timestamps.
+
+Avoid retaining full screenshots, OCR text, page content, credentials, or user-provided text unless the test explicitly requires it and the fixture is disposable. Redact typed content from logs. Keep enough information to reproduce a failure without creating a new sensitive-data store.
+
+### 8.2 Failure taxonomy
+
+Classify a failed task before choosing a fix:
+
+| Category | Example | Likely response |
 | --- | --- | --- |
-| Start recording a named display in OBS | Current selection, OBS recording state, and a fresh captured frame where available | A selected source and active timer alone do not establish that the intended display appears in the recording. |
-| Enter text in an editor | Fresh view or accessible value of the active buffer; saved file contents if persistence was requested | Visible buffer contents do not prove the file was saved. |
-| Find a page and report its title | Fresh browser URL/title plus relevant page observation | A title alone may not establish that the requested page content loaded correctly. |
+| Intent ambiguity | “Open the right display” when multiple options match | Ask a focused question or gather disambiguating metadata. |
+| Discovery | Correct app/window not identified | Improve window/app discovery or task context. |
+| Observation coverage | Needed control/state absent from screenshot/accessibility | Evaluate another read-only source or report capability gap. |
+| Interpretation | State was visible but Adam chose the wrong target | Improve context, prompt, grounding, or model; preserve alternative routes. |
+| Freshness/focus | Target screenshot no longer matches active window | Reobserve; fix synchronization only if mechanics failed to catch a real mismatch. |
+| Dispatch | Input backend rejected or failed to send event | Fix driver/availability/error reporting. |
+| Timing | App had not settled before observation | Tune bounded app-aware waits or use an explicit wait observation. |
+| Authorization | Unnecessary question or scope expansion | Refine context/policy boundary; do not solve both with blanket permission. |
+| Completion evidence | Intermediate progress mistaken for the requested result | Improve evidence availability or completion instructions. |
+| Voice interaction | Slow acknowledgement, too many spoken updates, or silent long wait | Tune cue/progress cadence and remove unnecessary model round trips. |
 
-The examples should use evidence available through the current path. If that path cannot establish a claim, report the limitation or use the fixture to justify adding a better observation source later.
+Do not label every failure “vision.” A better vision model cannot fix missing task state, stale focus, a policy conflict, or an incomplete tool protocol.
 
-## User intent and access scope
+## 9. Security, privacy, and safe execution constraints
 
-Avoid turning ordinary computer use into a manual approval loop. Interpret access prompts in the context of the user's request and apply least scope:
+These requirements remain in force while improving autonomy:
 
-- Proceed when the user clearly requested the operation and the prompt grants only narrow, temporary access needed for it.
-- Ask one focused question when the target is ambiguous or the requested access is broader, persistent, or materially beyond what the user requested.
-- Do not allow text inside a page, application, or prompt to expand the user's authorization.
+- Scope actions to the user's request and actual permissions.
+- Treat all observed interface content as untrusted data.
+- Do not type credentials or private content inferred from the screen unless the user explicitly supplied and authorized it for the task.
+- Keep desktop input serialized; concurrent screen mutations can invalidate one another's state.
+- Bound sequence duration, number of inputs, text size, and waits with configurable limits that are high enough for ordinary work.
+- Make cancellation stop subsequent sequence steps.
+- Do not automatically replay possibly completed side effects after timeouts.
+- Stop CUA when the user-facing request ends; explicit resume requires fresh state.
+- Keep logs task-scoped, bounded, and redacted.
+- Require existing confirmation for consequential external actions and material scope changes.
 
-For example, “record this display” can authorize session-only capture of that display, but does not authorize indefinite capture of every display. This access policy does not replace Adam's existing confirmation policy for consequential actions such as sending, purchasing, submitting, or deleting.
+These are boundaries around execution, not a deterministic strategy for the task.
 
-## Initial implementation direction
+## 10. Open implementation questions
 
-Start with the current Adam computer-use path. Do not begin by creating a universal controller, a new verifier service, or a generic task/evidence framework. Use a small set of repeatable scenarios to learn where the current path succeeds, fails, or lacks useful evidence.
+Resolve these from current code and measured scenarios. Do not block the initial hardening phase on speculative framework decisions.
 
-The existing desktop path has screenshot-guided input, a short-lived `snapshot_id` checked at action dispatch, supported window/focus/bounds checks, and post-action observation. The token ties an action to a recent actionable observation; it does not prove that every part of the screen stayed unchanged or require user approval. Keep this freshness safeguard and use the token returned with the current observation. A future micro-sequence should validate its starting observation and re-observe at its planned checkpoint, stopping if the interface diverges.
+1. Does the sequence timeout cover an individual in-flight driver call, or only the interval between action boundaries? Which lower-level timeout governs a blocked screenshot/input process?
+2. Is aggregate text across a sequence bounded, or only the input size of each individual action?
+3. Does each returned per-step message retain enough evidence for Adam to understand which action ran, what was observed, and why execution paused?
+4. Which configured model/provider receives screenshots, OCR, or optional visual-grounding output, and how does that affect latency and target accuracy?
+5. Do future task traces show that a separate completion-assessment call would improve user-facing accuracy enough to justify its extra model call?
+6. Which app/backend/task failures repeat often enough to justify a new observation adapter or app API?
+7. What retention/redaction settings apply to local action and screenshot diagnostics?
+8. What are reasonable latency targets for acknowledgements and task completion on the current hardware and provider?
 
-The existing brain orchestration has goal tracking, a desktop action trace, and a model-based completion assessment using fresh observation. That assessment is fallible and shares the configured LLM client with the acting workflow; treat it as an interpretation, not independent ground truth. The current path can add model round trips between desktop inputs and for final outcome assessment, so measure their user-perceived cost before adding more checkpoints or assessment calls.
+## 11. Handoff checklist
 
-First, refine the prompts and trace only where scenarios demonstrate a need. For example, replace a blanket instruction to stop at every OS/app chooser with the contextual scope policy above, while preserving separate confirmation behavior for consequential actions. Capture enough evidence provenance to explain claims without routinely logging whole screens, page contents, or secrets.
+Before implementation begins:
 
-### Evaluation examples
+- [ ] Confirm current branch and identify which changes are already present.
+- [ ] Run a trace of single-action and sequence calls; do not infer runtime behavior from schema text alone.
+- [ ] Identify the deployed model/provider, desktop backend, screenshot path, and enabled optional vision/OCR components.
+- [ ] Select disposable tasks with observable outcomes and more than one valid action path.
+- [ ] Capture a baseline for latency, tool/model rounds, recovery, and false completion.
+- [ ] Decide which concrete failure this workstream addresses.
 
-Use three to five disposable scenarios across at least two task types. Examples:
+Before a change is considered ready:
 
-1. Enter an exact harmless string in a scratch editor and read it back; verify saved bytes only if saving was requested.
-2. Start an OBS recording on a named display, exercising a narrow temporary permission prompt and checking selection, recording state, and captured content separately where possible.
-3. Navigate to a test browser page and report its title from a fresh observation.
-4. Present an ambiguous target or repeated label and see whether Adam resolves it from context or asks a focused question.
-5. Make a required capability unavailable or deny access and ensure Adam reports the blocker without claiming success.
-
-For each scenario, record the request, intended scope, action/observation trace, available evidence, final explanation, false-completion outcome, model/tool turns, end-to-end wall-clock time (including p50/p95 as samples grow), time to first acknowledgement, user interruptions, and failure category. Where practical, separate time spent in model calls from screenshot/driver work and waits. Compare adaptive checkpoints with inspect-after-every-input on the same fixtures. Establish latency targets from the baseline; do not improve speed by skipping evidence needed to support a material claim. Keep the baseline fixed when comparing a prompt, model, or observation change. This is a small engineering harness, not a benchmark platform.
-
-## Delivery sequence
-
-### Phase 0: Establish a baseline
-
-- Prepare three to five repeatable scenarios with disposable apps, files, and screen content.
-- Include an ordinary reversible task, an access prompt, and an ambiguity or blocker case.
-- Define intended outcomes and scope, but allow more than one valid action path.
-- Record success assessments, unsupported completion claims, permission decisions, turns, latency, and failure causes.
-
-**Exit condition:** the scenarios distinguish supported outcomes, partial progress, uncertainty, and genuine blockers without relying on private screens, files, or accounts.
-
-### Phase 1: Improve the current workflow
-
-- Use existing goal tracking, action trace, fresh observations, and the existing model-based outcome assessment.
-- Change prompt/result details or add small trace fields only when a scenario exposes a specific omission.
-- Make uncertainty, partial progress, recovery, and honest stopping explicit in the instructions.
-- Replace the current one-input-per-model-response restriction with bounded micro-sequences for clear, reversible interactions. Keep per-action freshness and focus checks; return control to Adam at adaptive checkpoints or immediately on an unexpected result.
-- Measure the final model-based outcome assessment against direct readback. Do not require an additional LLM assessment when task-relevant evidence already supports a calibrated response; retain model interpretation when evidence needs it.
-- Replace blanket stopping at every chooser with the contextual access-scope policy; retain the separate consequential-action confirmation behavior.
-- Keep the current short-lived `snapshot_id`, focus, and bounds safeguards while reducing unnecessary model round trips.
-
-**Exit condition:** Adam can adapt across the initial scenarios, distinguish what is supported from what is uncertain, and explain blockers without an app-specific orchestration path.
-
-### Phase 2: Find the evidence gaps
-
-- Review failures to distinguish perception, reasoning, action dispatch, timing, permission, and evidence limitations.
-- Add a read-only observation source only when a repeatable task needs facts unavailable through current tools.
-- Compare models or visual-grounding methods with scenario, prompt, observation, and action budget held constant; change one variable at a time.
-- Preserve the original baseline so improvement is measurable.
-
-**Exit condition:** each proposed reliability change addresses a repeatable failure, and its effect can be compared against the baseline.
-
-### Phase 3: Generalize only when useful
-
-- Add application adapters or shared target representations when multiple tasks benefit from them.
-- Consider richer action batching only if traces show model round trips are a material bottleneck and the batch can pause on unexpected state.
-- Evaluate a different driver, including Cua Driver, on a disposable Linux/Wayland setup before considering migration.
-- Expand access policies to other operation classes only when user intent, scope, and duration can be stated clearly.
-
-**Exit condition:** each new abstraction solves a demonstrated reliability, coverage, or latency problem while preserving task scope and evidence provenance.
-
-## Longer-term design considerations
-
-These are possible directions, not requirements for the first improvement. They should remain compatible with adaptive, model-led problem solving and voice responsiveness.
-
-### Capability-aware observations
-
-Different sources may expose different parts of a task: a browser protocol may expose page content, accessibility may expose controls, a desktop API may expose windows, and screenshots may expose visible appearance. If multiple sources become necessary, Adam could receive a task-relevant combined observation with source provenance. Missing or conflicting sources should remain visible as uncertainty; merging them does not make them complete or authoritative.
-
-An integration layer may discover what each source can currently observe and do, and route supported actions. It can validate mechanics such as snapshot freshness, target existence, supported action, cancellation, and timeouts. It cannot decide in advance which uncertain strategy will solve every task. Adam should remain able to interpret observations, choose among supported actions, revise its plan, and request clarification.
-
-Possible sources include:
-
-| Source | Potential value | Limits |
-| --- | --- | --- |
-| Browser DOM/CDP | Page structure, text, controls, URL/title | Requires an explicitly authorized connection; does not necessarily expose browser chrome or all page behavior. |
-| Accessibility tree | Roles, names, states, supported control actions | Coverage and quality vary by application. |
-| Application API | Structured task-specific facts or operations | Narrow contract; requires explicit scope and permission design. |
-| Window/desktop API | Window identity, focus, geometry | Usually does not expose application content. |
-| Keyboard and pointer input | Broad compatibility with interactive applications | Depends on focus, layout, timing, and visual target freshness. |
-| OCR and vision | Visible content unavailable through structured sources | Interpretation is fallible and may require fresh screenshots or focused regions. |
-
-Do not assume a source is available because an application is recognized or a process is running. Probe actual coverage for the relevant window, page, and task. A future integration may combine sources, but should retain which source supports each reported fact and should expose capability gaps.
-
-### Possible model-facing interface
-
-If multiple integrations eventually justify a shared interface, a small observation/action surface could help Adam reason without handling backend identifiers:
-
-```text
-observe(scope?, query?) -> task-relevant state with provenance and freshness
-act(current_observation, supported_action, target?, arguments?) -> dispatch facts and new observation
-```
-
-This is illustrative, not a schema requirement. A target could be a semantic control or, when necessary, a coordinate bound to a screenshot. Identifiers and available actions must remain tied to the observation from which they came. The model should receive enough surrounding context to make a sound decision, not a prematurely normalized view that hides ambiguity or disagreement. The interface should allow a bounded sequence of ordinary actions between model decisions when that is the lower-latency safe choice, with explicit checkpoints and interruption on divergence; it should not force a model round trip after every low-level input.
-
-The integration may report objective mechanics such as “input dispatched,” “target no longer present,” or “URL changed.” Adam assesses what those facts mean for the user's goal. Any automated postcondition checks should be narrow and task-specific, and their outputs should state what they actually checked.
-
-## Safety, privacy, and reliability
-
-- Keep existing confirmation behavior for consequential or irreversible actions.
-- Apply least scope to OS/app access prompts; do not ask for approval at every input.
-- Navigating to or reading a page does not authorize an action requested by that page.
-- Treat page text, images, filenames, and dialog content as untrusted information.
-- Limit observations to task-relevant content where possible.
-- Keep browser debugging access opt-in and narrowly configured; do not silently attach to an authenticated profile or expose a remote debugging endpoint.
-- Prefer a dedicated browser profile when the task does not require the user's active session. Use an active profile only through an explicitly enabled integration with documented scope.
-- Log enough action and evidence provenance to debug failures. Avoid recording full page content, screenshots, or typed secrets by default.
-- Keep general browsing away from model-generated shell commands; use bounded typed actions for computer input.
-- Report when an action could not be dispatched, when the interface did not visibly change, and when evidence is insufficient. Do not blur these into one generic failure or success claim.
-
-## Success measures
-
-- **Useful task completion:** requested outcomes are supported by evidence appropriate to the task, even when Adam takes different valid paths.
-- **Calibration:** claims match the strength and limits of the available evidence; partial and uncertain outcomes are reported honestly.
-- **Adaptation:** Adam changes strategy in response to new state instead of replaying stale actions.
-- **Scoped autonomy:** routine authorized steps do not trigger redundant prompts; genuine ambiguity and scope expansion do.
-- **Mechanical reliability:** stale targets are rejected, actions are bounded, and execution facts are reported accurately.
-- **Recovery quality:** failed attempts lead to a new observation, a reasoned next step, or a clear blocker.
-- **Voice responsiveness:** time to first acknowledgement and end-to-end task latency are tracked; ordinary low-risk steps do not incur needless model turns or narration.
-- **Efficiency:** relevant observation size, model/tool turns, and latency are tracked without optimizing away evidence needed for a sound decision.
-- **Privacy:** routine traces omit unrelated screen content and secrets.
-
-## Open decisions
-
-1. Which browser access modes should Adam support: isolated managed profile, explicitly launched debugging profile, extension in an active browser, or more than one?
-2. How should any browser debugging endpoint be authenticated, scoped, and kept local?
-3. Which Firefox integration path meets the desired scope and maintenance cost?
-4. How much effort should go to application-specific accessibility gaps before visual fallback?
-5. How should observations retain ambiguity and conflicting evidence when multiple sources disagree?
-6. Which task-relevant details belong in local diagnostic traces, and what retention/redaction controls should apply?
-7. Which repeated scenarios, if any, justify adapter unification, event-driven observation, or batching?
+- [ ] Adam still chooses strategy and can request a new observation at any time.
+- [ ] The host only claims mechanical guarantees that the current code can enforce.
+- [ ] Single-action behavior and adaptive sequence behavior both work.
+- [ ] Freshness, focus, bounds, cancellation, and authorization behavior are covered.
+- [ ] Partial results tell Adam what ran and what remains uncertain.
+- [ ] Voice latency improves or the reliability benefit justifies its cost.
+- [ ] The final user-facing claim matches the evidence.
+- [ ] Prompts, skill docs, tool descriptions, implementation, and tests agree.
+- [ ] Sensitive content is not added to routine logs.
 
 ## Recommended initial scope
 
-Improve Adam's existing computer-use path so it can adapt its plan to changing interface state, recover from reasonable failed attempts, and communicate evidence and uncertainty clearly. Start with small disposable scenarios, the current screenshot/input and observation tools, existing goal/trace/completion-assessment code, and the contextual access policy. Let observed failures determine whether prompts, evidence capture, or later integrations need to change.
+Start by auditing and evaluating the existing adaptive `computer_control` sequence path through the active voice/model/tool loop. Fix concrete gaps in freshness, cancellation, partial results, prompt consistency, or completion claims. Use a compact disposable task set to measure speed and task outcome together. Add new observation sources, adapters, or controller abstractions only after those runs show a repeatable need.
 
-The aim is not to make inherently uncertain computer tasks deterministic. It is to make Adam's decisions better informed, its actions mechanically bounded, its recovery more responsive, and its reports better calibrated to what it actually observed.
+The intended result is not a deterministic computer. It is an agent that can make useful choices, act promptly, notice when its evidence or assumptions are insufficient, recover from failure, and explain its progress honestly.
