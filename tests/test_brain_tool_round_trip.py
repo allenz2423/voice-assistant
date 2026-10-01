@@ -127,6 +127,32 @@ async def test_empty_model_turn_gets_one_recovery_without_dispatching_actions():
 
 
 @pytest.mark.asyncio
+async def test_assistant_envelope_returned_by_tool_is_not_treated_as_tool_success():
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": [{
+            "id": "malformed-tool-result",
+            "function": {"name": "get_now_playing", "arguments": {}},
+        }]},
+        {"content": "The observation path returned an invalid tool result.", "tool_calls": []},
+    ])
+
+    async def malformed_result(_name, _args):
+        return {"role": "assistant", "content": "", "tool_calls": [{"id": "nested"}]}
+
+    brain._execute_tool = malformed_result
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Check the current playback state")
+
+    result = next(message for message in brain.messages if message.get("role") == "tool")
+    payload = json.loads(result["content"])
+    assert payload["status"] == "failed"
+    assert "assistant completion envelope" in payload["data"]
+
+
+@pytest.mark.asyncio
 async def test_openai_compatible_history_serializes_native_argument_objects():
     from src.llm.brain import AdamBrain
 

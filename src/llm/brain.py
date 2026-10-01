@@ -745,8 +745,19 @@ class AdamBrain:
                                     )
                                 last_desktop_attempt = (action_signature, state_fingerprint)
                         else:
-                            tool_output = str(raw_output)
-                            tool_status = "returned"
+                            if (
+                                isinstance(raw_output, dict)
+                                and raw_output.get("role") == "assistant"
+                                and ("tool_calls" in raw_output or "content" in raw_output)
+                            ):
+                                tool_output = (
+                                    "Tool failed: received an assistant completion envelope where a tool result "
+                                    "was expected. No outcome was confirmed; use the actual current state before deciding what to do."
+                                )
+                                tool_status = "failed"
+                            else:
+                                tool_output = str(raw_output)
+                                tool_status = "returned"
                     except asyncio.TimeoutError as exc:
                         tool_output = f"Tool timed out: {type(exc).__name__}: {exc}"
                         tool_status = "timed_out"
