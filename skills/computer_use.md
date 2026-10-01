@@ -11,7 +11,7 @@ Use this workflow for any desktop application, window, or browser. Adam owns the
 5. Compare returned evidence with the requested outcomes. Inspect again when the next decision needs new information, geometry, or target selection.
 6. Continue until the requested outcomes are evidenced or a real blocker requires the user.
 
-Do not report success because a tool accepted an action. Verify the outcome in the app or through an authoritative app result. Do not stop after opening/focusing/navigating when the user asked for a further action. Do not perform speculative actions just to appear busy. If a step fails, inspect before trying another route. Never repeat a click or reuse a target/snapshot from an old observation.
+Do not report success because a tool accepted an action. Verify the outcome in the app or through an authoritative app result. Before answering, revisit every requested outcome and deliverable. When the user asks for information, include the observed information in the answer; saying that the relevant screen is open is not enough. If content is unreadable or evidence is missing, inspect further where possible and explain what remains uncertain. Do not stop after opening/focusing/navigating when the user asked for a further action. Do not perform speculative actions just to appear busy. If a step fails, inspect before trying another route. Never repeat a click or reuse a target/snapshot from an old observation.
 
 ## Choose actions that match the request
 
