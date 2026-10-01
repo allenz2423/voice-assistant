@@ -132,6 +132,7 @@ class ComputerController:
         self.sequence_timeout_seconds = min(max(float(sequence_timeout_seconds), 1.0), 120.0)
         self._ocr_regions: list[OCRRegion] = []
         self._ocr_state = ""
+        self._include_ocr = True
         if coordinate_mode not in {"pixels", "normalized_1000"}:
             raise ValueError("coordinate_mode must be 'pixels' or 'normalized_1000'.")
         self.coordinate_mode = coordinate_mode
@@ -274,16 +275,19 @@ class ComputerController:
         self._snapshot_identity = after_identity if issue_action_token else None
         self._ocr_regions = []
         self._ocr_state = ""
-        if self.ocr_only:
+        if self.ocr_only and self._include_ocr:
             try:
                 self._ocr_regions = self._ocr_reader.read(image) if self._ocr_reader else []
                 self._ocr_state = ScreenOCR.format(self._ocr_regions)
             except Exception as exc:
                 self._ocr_state = f"OCR unavailable: {type(exc).__name__}: {str(exc)[:180]}"
             image_for_model = None
+        elif self.ocr_only:
+            self._ocr_state = "OCR and visual parsing were skipped by request; screenshot pixels are withheld by OCR-only mode."
+            image_for_model = None
         else:
             image_for_model = image
-            if self._ocr_reader is not None:
+            if self._include_ocr and self._ocr_reader is not None:
                 try:
                     header_regions = self._ocr_reader.read_zoomed_band(image, self._active_bounds)
                     panel_regions: list[OCRRegion] = []
@@ -318,7 +322,7 @@ class ComputerController:
                 except Exception as exc:
                     self._ocr_state = f"Focused-window OCR unavailable: {type(exc).__name__}: {str(exc)[:180]}"
         visual_details = ""
-        if self._visual_grounder is not None and not self.ocr_only:
+        if self._include_ocr and self._visual_grounder is not None and not self.ocr_only:
             try:
                 image, visual_details = self._visual_grounder(image)
             except Exception as exc:
@@ -873,6 +877,7 @@ class ComputerController:
         screenshot_delay_seconds: float | None = None,
         target_text: str = "",
         ocr_region_ref: str = "",
+        include_ocr: bool | None = None,
         goal: str = "",
         expected_application: str | None = None,
     ) -> ComputerControlResult:
@@ -881,6 +886,10 @@ class ComputerController:
                 "Computer control is disabled in config.yaml.", status="unavailable"
             )
         action = (action or "inspect").strip().lower()
+        if action == "inspect":
+            self._include_ocr = True if include_ocr is None else bool(include_ocr)
+        elif include_ocr is not None:
+            self._include_ocr = bool(include_ocr)
         if screenshot_delay_seconds is None:
             delay = screenshot_delay_for_focused_window(
                 self.screenshot_delay_seconds,

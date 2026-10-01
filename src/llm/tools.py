@@ -182,19 +182,23 @@ ADAM_TOOLS: list[CanonicalTool] = [
         description=(
             "Read windows across the desktop using available window metadata and AT-SPI, plus browser DOM when "
             "a local CDP endpoint is configured; with OCR-only computer use enabled, screen text is returned without "
-            "attaching screenshot pixels. Read-only."
+            "attaching screenshot pixels. Read-only. Set include_ocr=false to skip screenshot OCR and OmniParser; "
+            "structured AT-SPI and browser DOM data remain available. Use it when text extraction from pixels will not "
+            "affect the next decision."
         ),
         parameters={"type": "object", "properties": {
             "scope": {"type": "string", "enum": ["monitor", "window"], "description": "monitor (default) reads desktop window metadata/AT-SPI and captures the focused monitor; window limits window metadata, AT-SPI, browser DOM, and capture to the focused application window."},
-            "screenshot_delay_seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "Optional 0–10 second override for the controller's automatic delay based on the focused app."}
+            "screenshot_delay_seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "Optional 0–10 second override for the controller's automatic delay based on the focused app."},
+            "include_ocr": {"type": "boolean", "description": "False skips screenshot OCR and region parsing; true extracts visible text/regions when they affect the task."}
         }},
     ),
     CanonicalTool(
         name="capture_screenshot",
-        description="Reads the focused monitor or app window. With OCR-only computer use enabled, screenshot pixels stay internal and only OCR text/locations are returned.",
+        description="Captures the focused monitor or app window. Set include_ocr=false for a visual-only check; this skips OCR and visual-region parsing. With OCR-only computer use enabled, screenshot pixels stay internal.",
         parameters={"type": "object", "properties": {
             "scope": {"type": "string", "enum": ["monitor", "window"], "description": "Capture the focused monitor (default) or only the focused application window."},
-            "screenshot_delay_seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "Optional 0–10 second override for the controller's automatic delay based on the focused app."}
+            "screenshot_delay_seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "Optional 0–10 second override for the controller's automatic delay based on the focused app."},
+            "include_ocr": {"type": "boolean", "description": "False returns the screenshot without OCR text or visual-region parsing; true when screen text/regions are needed."}
         }}
     ),
     CanonicalTool(
@@ -210,7 +214,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
             "modifier='window'; the controller reads the desktop's configured move modifier. Drag starts inside the active window. "
             "A sequence is rejected before execution if its total typed text exceeds computer_control.max_sequence_text_length "
             "(default 20000 characters). The sequence time budget is checked between steps; an active backend action is allowed to finish under its own timeout. "
-            "Every action returns fresh state "
+            "For inspect, set include_ocr=false when the screenshot alone can answer the question (such as checking whether a window appeared); set true when text or extracted regions affect the decision. Screenshot-only mode skips OCR and OmniParser. Every action returns fresh state "
             "after an automatic app-aware wait (3 seconds for browsers, 0.25 otherwise by default). An optional "
             "screenshot_delay_seconds argument can override it from 0 to 10 seconds; inspect the fresh state before another action. "
             "Clicks are limited to the active window; use focus_window to choose another app, then inspect. If the target is hard to see, inspect the monitor and use the window/workspace tools or visible app controls to clear or enlarge the view, then inspect again. "
@@ -238,6 +242,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
                     "type": "number", "minimum": 0, "maximum": 10,
                     "description": "Optional override for the controller's app-aware automatic wait before the fresh screenshot, from 0 to 10 seconds.",
                 },
+                "include_ocr": {"type": "boolean", "description": "For inspect and post-action screenshots, false returns screenshot only and skips OCR/OmniParser; true extracts text and regions. Defaults to the previous observation mode."},
                 "actions": {
                     "type": "array",
                     "minItems": 1,
@@ -458,7 +463,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="launch_application",
-        description="Launches any installed application, desktop tool, or game by name. Always set screenshot=true if you need to inspect or interact with the opened app next; set screenshot=false if launching is the whole task. When true, waits until the app window is ready, then applies an automatic app-aware delay before attaching a screenshot. An optional screenshot_delay_seconds can override that wait (0–10 seconds).",
+        description="Launches any installed application, desktop tool, or game by name. Always set screenshot=true if you need to inspect or interact with the opened app next; set screenshot=false if launching is the whole task. When true, waits until the app window is ready, then applies an automatic app-aware delay before attaching a screenshot. Set include_ocr=false if only checking that the app appeared; set true when reading screen text or locating a text-labeled control. An optional screenshot_delay_seconds can override that wait (0–10 seconds).",
         parameters={
             "type": "object",
             "properties": {
@@ -477,6 +482,10 @@ ADAM_TOOLS: list[CanonicalTool] = [
                 "screenshot_delay_seconds": {
                     "type": "number", "minimum": 0, "maximum": 10,
                     "description": "Optional override for the automatic delay before the screenshot, from 0 to 10 seconds."
+                },
+                "include_ocr": {
+                    "type": "boolean",
+                    "description": "When screenshot=true, false attaches screenshot pixels only and skips OCR/OmniParser; true also extracts text/regions when needed."
                 },
             },
             "required": ["app_name", "screenshot"]
@@ -506,7 +515,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="focus_window",
-        description="Brings an open window to the front by matching its title or application name. Always set screenshot=true if you need to inspect or interact with it next; set screenshot=false if focusing is the whole task. When true, waits until the window is ready, then applies an automatic app-aware delay before attaching a screenshot. An optional screenshot_delay_seconds can override that wait (0–10 seconds).",
+        description="Brings an open window to the front by matching its title or application name. Always set screenshot=true if you need to inspect or interact with it next; set screenshot=false if focusing is the whole task. When true, waits until the window is ready, then applies an automatic app-aware delay before attaching a screenshot. Set include_ocr=false for a visual-only check; set true when screen text or text-labeled controls matter. An optional screenshot_delay_seconds can override that wait (0–10 seconds).",
         parameters={
             "type": "object",
             "properties": {
@@ -521,6 +530,10 @@ ADAM_TOOLS: list[CanonicalTool] = [
                 "screenshot_delay_seconds": {
                     "type": "number", "minimum": 0, "maximum": 10,
                     "description": "Optional override for the automatic delay before the screenshot, from 0 to 10 seconds."
+                },
+                "include_ocr": {
+                    "type": "boolean",
+                    "description": "When screenshot=true, false attaches screenshot pixels only and skips OCR/OmniParser; true also extracts text/regions when needed."
                 },
             },
             "required": ["target", "screenshot"]

@@ -437,7 +437,7 @@ async def test_brain_reprompts_for_summary_instead_of_speaking_raw_tool_result()
 
 
 @pytest.mark.asyncio
-async def test_brain_uses_generic_fallback_if_summary_retry_is_empty():
+async def test_brain_stops_after_one_empty_completion_recovery():
     from src.llm.brain import AdamBrain
 
     class DummyClient:
@@ -480,7 +480,11 @@ async def test_brain_uses_generic_fallback_if_summary_retry_is_empty():
     with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Test desktop"):
         await brain.process_user_utterance("What's on my browser right now?")
 
-    assert tts.spoken == ["I got the result, but couldn't summarize it just now."]
+    assert tts.spoken == [
+        "The model returned no usable answer or action after one recovery attempt. "
+        "I stopped without repeating any desktop actions. Please try again."
+    ]
+    assert brain.llm_client.chat_calls == 3
     assert "SENSITIVE RAW RESULT" not in " ".join(tts.spoken)
 
 def test_multilingual_wake_word_detection():

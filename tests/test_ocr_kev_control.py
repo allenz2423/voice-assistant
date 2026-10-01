@@ -253,3 +253,37 @@ def test_ocr_only_computer_control_withholds_image_and_requires_kev_text_target(
     )
     assert clicks == [(50, 45, "left")]
     assert "Kev selected O1" in clicked.message
+
+
+def test_visual_inspection_can_skip_ocr_and_region_grounding():
+    calls = {"ocr": 0, "grounder": 0}
+
+    class Reader:
+        def read_zoomed_band(self, *_args, **_kwargs):
+            calls["ocr"] += 1
+            return [OCRRegion("P1", "Ready", 0.99, 5, 5, 50, 25)]
+
+    def grounder(image):
+        calls["grounder"] += 1
+        return image, "Visual regions"
+
+    screenshot = png_bytes()
+    controller = ComputerController(
+        screenshot_fn=lambda: screenshot,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"},
+        ocr_reader=Reader(),
+        visual_grounder=grounder,
+    )
+    controller._read_active_window_state = lambda: ("test-window", (0, 0, 320, 200))
+
+    visual_only = controller.run("inspect", include_ocr=False, screenshot_delay_seconds=0)
+    assert visual_only.screenshot == screenshot
+    assert "Ready" not in visual_only.message
+    assert "Visual regions" not in visual_only.message
+    assert calls == {"ocr": 0, "grounder": 0}
+
+    with_details = controller.run("inspect", include_ocr=True, screenshot_delay_seconds=0)
+    assert with_details.screenshot is not None
+    assert "Ready" in with_details.message
+    assert "Visual regions" in with_details.message
+    assert calls == {"ocr": 2, "grounder": 1}

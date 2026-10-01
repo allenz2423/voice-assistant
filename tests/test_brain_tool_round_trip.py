@@ -81,6 +81,52 @@ async def test_confirmation_pause_correlates_every_call_in_the_tool_batch():
 
 
 @pytest.mark.asyncio
+async def test_current_request_is_active_task_and_prior_dialogue_is_context_only():
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.messages.extend([
+        {"role": "user", "content": "Play a video and pause it."},
+        {"role": "assistant", "content": "I could not confirm playback."},
+    ])
+    brain.llm_client = _DummyClient("local", [
+        {"content": "Spotify is open.", "tool_calls": []},
+    ])
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Open Spotify")
+
+    prompt = next(
+        message["content"] for message in brain.llm_client.requests[0]
+        if message.get("role") == "user" and "Current User Request" in message.get("content", "")
+    )
+    assert "[Current User Request — active task for this run]\nOpen Spotify" in prompt
+    system_prompt = brain.llm_client.requests[0][0]["content"]
+    assert "Earlier dialogue is context for resolving references, not a queue of unfinished work" in system_prompt
+    assert brain.tts.spoken == ["Spotify is open."]
+
+
+@pytest.mark.asyncio
+async def test_empty_model_turn_gets_one_recovery_without_dispatching_actions():
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": []},
+        {"content": "", "tool_calls": []},
+    ])
+    executed = []
+    brain._execute_tool = lambda name, args: executed.append((name, args))
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Open Spotify")
+
+    assert brain.llm_client.requests.__len__() == 2
+    assert executed == []
+    assert "one recovery attempt" in brain.tts.spoken[0]
+
+
+@pytest.mark.asyncio
 async def test_openai_compatible_history_serializes_native_argument_objects():
     from src.llm.brain import AdamBrain
 
