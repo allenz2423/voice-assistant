@@ -3,7 +3,7 @@ import json
 import pytest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 from src.skills import SkillManager
 from src.tools.desktop import (
     workspace_control,
@@ -326,14 +326,16 @@ def test_sway_targeted_window_move(monkeypatch):
         assert "Moved 'Spotify Premium' to workspace 2 in Sway" in res
 
 @pytest.mark.asyncio
-async def test_brain_verifies_workspace_action_before_claiming_completion():
+async def test_brain_leaves_workspace_completion_assessment_to_main_agent_turn():
     from src.llm.brain import AdamBrain
 
     class DummyClient:
         def __init__(self):
             self.chat_calls = 0
+            self.last_messages = None
         async def chat(self, messages, tools=None):
             self.chat_calls += 1
+            self.last_messages = messages
             if self.chat_calls == 1:
                 return {
                     "content": "",
@@ -368,32 +370,18 @@ async def test_brain_verifies_workspace_action_before_claiming_completion():
     brain = AdamBrain(config=dummy_config, supervisor=None, probe=None, confirmation_mgr=None, tts_engine=DummyTTS())
     brain.llm_client = DummyClient()
 
-    with (
-        patch("src.llm.brain.workspace_control", return_value="Moved 'Spotify Premium' to workspace 1."),
-        patch.object(
-            brain,
-            "_verify_computer_outcome",
-            new=AsyncMock(return_value=(
-                {
-                    "status": "complete",
-                    "reason": "The window listing shows Spotify on workspace 1.",
-                    "outcomes": [{
-                        "outcome": "Move Spotify to workspace 1",
-                        "status": "complete",
-                        "evidence": ["Spotify is listed on workspace 1."],
-                    }],
-                    "evidence": ["Spotify is listed on workspace 1."],
-                },
-                "Open windows: Spotify — workspace 1",
-                None,
-                "obs_123",
-            )),
-        ),
+    with patch(
+        "src.llm.brain.workspace_control",
+        return_value="Moved 'Spotify Premium' to workspace 1.",
     ):
         await brain.process_user_utterance("could you move Spotify to Workspace One?")
 
     assert brain.tts.spoken == ["The workspace move is complete."]
     assert brain.llm_client.chat_calls == 2
+    tool_result = next(message for message in brain.llm_client.last_messages if message.get("role") == "tool")
+    payload = json.loads(tool_result["content"])
+    assert payload["goal_status"] == "not_assessed"
+    assert payload["data"] == "Moved 'Spotify Premium' to workspace 1."
 
 @pytest.mark.asyncio
 async def test_brain_reprompts_for_summary_instead_of_speaking_raw_tool_result():

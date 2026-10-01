@@ -53,7 +53,7 @@ def test_x11_actions_require_fresh_screenshot_and_use_xdotool(monkeypatch):
     first = controller.run("inspect")
     snapshot_id = re.search(r"Snapshot ID: (\w+)", first.message).group(1)
     stale = controller.run("click", snapshot_id="old-id", x=10, y=20)
-    assert "screen changed" in stale.message.lower()
+    assert "latest observation" in stale.message.lower()
     assert commands == []
     assert controller.snapshot_id == ""
     assert "call inspect" in stale.message.lower()
@@ -67,7 +67,7 @@ def test_x11_actions_require_fresh_screenshot_and_use_xdotool(monkeypatch):
     ]
 
     stale_input = controller.run("type", snapshot_id=current_id, text="This must be rejected as stale")
-    assert "screen changed" in stale_input.message.lower()
+    assert "latest observation" in stale_input.message.lower()
 
 
 def test_x11_type_shortcut_and_scroll_have_xdotool_counterparts(monkeypatch):
@@ -103,6 +103,121 @@ def test_x11_type_shortcut_and_scroll_have_xdotool_counterparts(monkeypatch):
         ["xdotool", "click", "--repeat", "2", "5"],
         ["xdotool", "key", "--clearmodifiers", "ctrl+shift+equal"],
     ]
+
+
+def test_sequence_allows_selected_field_click_then_typing(monkeypatch):
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+    commands = []
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    controller = computer.ComputerController(
+        screenshot_fn=_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+    )
+    snapshot_id = controller.run("inspect").snapshot_id
+    result = controller.run_sequence(
+        snapshot_id=snapshot_id,
+        actions=[{"action": "click", "x": 100, "y": 80}, {"action": "type", "text": "search text"}],
+    )
+
+    assert result.status == "ok"
+    assert result.dispatched is True
+    assert result.snapshot_id
+    assert "Step 2/2 (type): ok" in result.message
+    assert commands[-1] == ["xdotool", "type", "--clearmodifiers", "--delay", "1", "--", "search text"]
+
+
+def test_sequence_pauses_before_reusing_geometry_after_a_click(monkeypatch):
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+    commands = []
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    controller = computer.ComputerController(
+        screenshot_fn=_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+    )
+    snapshot_id = controller.run("inspect").snapshot_id
+    result = controller.run_sequence(
+        snapshot_id=snapshot_id,
+        actions=[{"action": "click", "x": 100, "y": 80}, {"action": "click", "x": 200, "y": 90}],
+    )
+
+    assert result.status == "partial"
+    assert result.dispatched is True
+    assert result.snapshot_id
+    assert "paused before this input" in result.message
+    assert commands == [
+        ["xdotool", "mousemove", "--sync", "100", "80"],
+        ["xdotool", "click", "--delay", "80", "1"],
+    ]
+
+
+def test_sequence_does_not_press_a_key_after_click_without_reobservation(monkeypatch):
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+    commands = []
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    controller = computer.ComputerController(
+        screenshot_fn=_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+    )
+    snapshot_id = controller.run("inspect").snapshot_id
+    result = controller.run_sequence(
+        snapshot_id=snapshot_id,
+        actions=[{"action": "click", "x": 100, "y": 80}, {"action": "press", "key": "enter"}],
+    )
+
+    assert result.status == "partial"
+    assert "paused before this input" in result.message
+    assert len(commands) == 2
+
+
+def test_action_is_uncertain_if_post_action_focus_is_not_stable(monkeypatch):
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+    commands = []
+
+    def runner(args, **kwargs):
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    controller = computer.ComputerController(
+        screenshot_fn=_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+    )
+    identities = iter(["window-a", "window-a", "window-a", "window-a", "window-b"])
+    controller._read_active_window_state = lambda: (next(identities), (0, 0, 1000, 700))
+    snapshot_id = controller.run("inspect").snapshot_id
+    result = controller.run("click", snapshot_id=snapshot_id, x=100, y=80)
+
+    assert result.status == "uncertain"
+    assert result.dispatched is True
+    assert not result.snapshot_id
+    assert "focus could not be confirmed stable" in result.message.lower()
 
 
 def test_wayland_actions_use_ydotool_mouse_and_wtype_keyboard(monkeypatch):
@@ -504,5 +619,6 @@ def test_adam_brain_dispatches_computer_control_tool():
     brain._pending_screenshot = None
     brain.messages = []
     response = asyncio.run(brain._execute_tool("computer_control", {"action": "inspect"}))
-    assert response == "controlled: inspect"
+    assert isinstance(response, computer.ComputerControlResult)
+    assert response.message == "controlled: inspect"
     assert brain._pending_screenshot == _png()

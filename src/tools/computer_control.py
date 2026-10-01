@@ -87,6 +87,9 @@ def _png_size(image: bytes) -> tuple[int, int]:
 class ComputerControlResult:
     message: str
     screenshot: bytes | None = None
+    status: str = "ok"
+    dispatched: bool | None = False
+    snapshot_id: str = ""
 
 
 class ComputerController:
@@ -107,6 +110,8 @@ class ComputerController:
         ocr_only: bool = False,
         ocr_reader: ScreenOCR | None = None,
         target_selector: Callable[[str, str, str, list[OCRRegion]], tuple[OCRRegion | None, str]] | None = None,
+        max_sequence_actions: int = 8,
+        sequence_timeout_seconds: float = 45.0,
     ) -> None:
         self.enabled = enabled
         self.max_text_length = max(1, int(max_text_length))
@@ -121,6 +126,8 @@ class ComputerController:
         self.ocr_only = bool(ocr_only)
         self._ocr_reader = ocr_reader or (ScreenOCR() if self.ocr_only else None)
         self._target_selector = target_selector
+        self.max_sequence_actions = min(max(int(max_sequence_actions), 1), 8)
+        self.sequence_timeout_seconds = min(max(float(sequence_timeout_seconds), 1.0), 120.0)
         self._ocr_regions: list[OCRRegion] = []
         self._ocr_state = ""
         if coordinate_mode not in {"pixels", "normalized_1000"}:
@@ -338,7 +345,7 @@ class ComputerController:
         token_text = (
             f"Snapshot ID: {self._snapshot_id}\n"
             if issue_action_token
-            else "No action token was issued because the preceding action failed or focus was not stable. Call inspect before input.\n"
+            else "No action token was issued because focus was not confirmed stable. Inspect again before input.\n"
         )
         next_action_hint = (
             "For the next action, copy the Snapshot ID exactly. "
@@ -353,6 +360,9 @@ class ComputerController:
             + (f"\n{self._ocr_state}" if self._ocr_state else "")
             + (f"\n{visual_details}" if visual_details else ""),
             image_for_model,
+            status="ok" if issue_action_token else "uncertain",
+            dispatched=False,
+            snapshot_id=self._snapshot_id,
         )
 
     def _call(self, args: list[str], timeout: float = 5.0, **kwargs) -> subprocess.CompletedProcess:
@@ -393,7 +403,7 @@ class ComputerController:
         if not self._snapshot_id:
             raise ValueError("Inspect the desktop before sending input.")
         if snapshot_id != self._snapshot_id:
-            raise ValueError("The screen changed since that screenshot. Inspect it and retry with its current snapshot_id.")
+            raise ValueError("This snapshot_id is not the controller's latest observation. Inspect again and use the returned ID.")
         current_identity, _ = self._read_active_window_state()
         if not self._snapshot_identity or current_identity != self._snapshot_identity:
             raise ValueError(
@@ -692,6 +702,131 @@ class ComputerController:
             raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
 
     @_serialized
+    def run_sequence(
+        self,
+        snapshot_id: str,
+        actions: list[dict],
+        *,
+        screenshot_delay_seconds: float | None = None,
+        goal: str = "",
+        expected_application: str | None = None,
+        cancel_event: threading.Event | None = None,
+    ) -> ComputerControlResult:
+        """Execute a model-selected sequence while refusing to reuse old geometry."""
+        if not isinstance(actions, list) or not actions:
+            return ComputerControlResult("Sequence needs at least one action.", status="invalid_input")
+        if len(actions) > self.max_sequence_actions:
+            return ComputerControlResult(
+                f"Sequence has {len(actions)} actions; the current per-call limit is {self.max_sequence_actions}.",
+                status="invalid_input",
+            )
+        started = time.monotonic()
+        current_snapshot = snapshot_id
+        results: list[str] = []
+        latest: ComputerControlResult | None = None
+        any_dispatched: bool | None = False
+        for index, step in enumerate(actions):
+            if cancel_event and cancel_event.is_set():
+                return ComputerControlResult(
+                    "Sequence cancelled at an action boundary.\n" + "\n".join(results),
+                    latest.screenshot if latest else None,
+                    status="cancelled",
+                    dispatched=any_dispatched,
+                    snapshot_id=latest.snapshot_id if latest else "",
+                )
+            if time.monotonic() - started >= self.sequence_timeout_seconds:
+                return ComputerControlResult(
+                    f"Sequence time limit reached after {index} action(s); inspect the current state before continuing.\n"
+                    + "\n".join(results),
+                    latest.screenshot if latest else None,
+                    status="timed_out",
+                    dispatched=any_dispatched,
+                    snapshot_id=latest.snapshot_id if latest else "",
+                )
+            if not isinstance(step, dict):
+                return ComputerControlResult(
+                    f"Sequence action {index + 1} must be an object.\n" + "\n".join(results),
+                    latest.screenshot if latest else None,
+                    status="invalid_input",
+                    dispatched=any_dispatched,
+                    snapshot_id=latest.snapshot_id if latest else "",
+                )
+            action = str(step.get("action", "")).strip().lower()
+            previous_action = (
+                actions[index - 1].get("action", "").strip().lower() if index else ""
+            )
+            # Keyboard/text input has no reusable screen coordinates. Let Adam
+            # plan a click followed by typing into that selected control, and
+            # allow a final keypress after typing (for example, submitting a
+            # search). Never execute a later spatial target from old UI state.
+            coordinate_free_continuation = (
+                previous_action in {"click", "type"}
+                and action == "type"
+            ) or (
+                previous_action == "type"
+                and action == "press"
+                and index == len(actions) - 1
+            )
+            if index and not coordinate_free_continuation:
+                return ComputerControlResult(
+                    "Sequence paused before this input because continuing could reuse a target or assume focus. "
+                    "Adam must choose the next action from the fresh observation.\n"
+                    + "\n".join(results) + "\n" + (latest.message if latest else ""),
+                    latest.screenshot if latest else None,
+                    status="partial",
+                    dispatched=any_dispatched,
+                    snapshot_id=latest.snapshot_id if latest else "",
+                )
+            if action not in {"click", "drag", "type", "press", "scroll"}:
+                return ComputerControlResult(
+                    f"Sequence action {index + 1} has unsupported operation {action!r}.\n" + "\n".join(results),
+                    latest.screenshot if latest else None,
+                    status="invalid_input",
+                    dispatched=any_dispatched,
+                    snapshot_id=latest.snapshot_id if latest else "",
+                )
+            kwargs = {key: value for key, value in step.items() if key != "action"}
+            latest = self.run(
+                action=action,
+                snapshot_id=current_snapshot,
+                screenshot_delay_seconds=screenshot_delay_seconds,
+                goal=goal,
+                expected_application=expected_application,
+                **kwargs,
+            )
+            if latest.dispatched is True:
+                any_dispatched = True
+            elif latest.dispatched is None and any_dispatched is False:
+                any_dispatched = None
+            results.append(f"Step {index + 1}/{len(actions)} ({action}): {latest.status}; {latest.message}")
+            if latest.status != "ok":
+                return ComputerControlResult(
+                    "Sequence stopped after a step did not complete successfully.\n" + "\n".join(results),
+                    latest.screenshot,
+                    status=latest.status,
+                    dispatched=any_dispatched,
+                    snapshot_id=latest.snapshot_id,
+                )
+            if not latest.snapshot_id:
+                return ComputerControlResult(
+                    "Sequence stopped because the latest action did not produce a usable fresh snapshot.\n"
+                    + "\n".join(results),
+                    latest.screenshot,
+                    status="partial",
+                    dispatched=True,
+                    snapshot_id=latest.snapshot_id,
+                )
+            current_snapshot = latest.snapshot_id
+        return ComputerControlResult(
+            f"Sequence executed {len(actions)} action(s). This reports dispatch and observations, not task completion.\n"
+            + "\n".join(results) + "\n" + (latest.message if latest else ""),
+            latest.screenshot if latest else None,
+            status="ok",
+            dispatched=any_dispatched,
+            snapshot_id=latest.snapshot_id if latest else "",
+        )
+
+    @_serialized
     def run(
         self,
         action: str,
@@ -714,7 +849,9 @@ class ComputerController:
         expected_application: str | None = None,
     ) -> ComputerControlResult:
         if not self.enabled:
-            return ComputerControlResult("Computer control is disabled in config.yaml.")
+            return ComputerControlResult(
+                "Computer control is disabled in config.yaml.", status="unavailable"
+            )
         action = (action or "inspect").strip().lower()
         if screenshot_delay_seconds is None:
             delay = screenshot_delay_for_focused_window(
@@ -747,9 +884,14 @@ class ComputerController:
                 )
             except Exception as exc:
                 self._snapshot_id = ""
-                return ComputerControlResult(f"Could not capture the desktop screenshot: {type(exc).__name__}: {str(exc)[:240]}")
+                return ComputerControlResult(
+                    f"Could not capture the desktop screenshot: {type(exc).__name__}: {str(exc)[:240]}",
+                    status="failed",
+                )
         message = ""
         action_succeeded = False
+        action_attempted = False
+        failure_status = "failed"
         try:
             if not self.available:
                 raise RuntimeError(f"Computer input is unavailable for the detected {self.backend} session.")
@@ -786,6 +928,7 @@ class ComputerController:
                     if internal_ocr_target
                     else self._click_coordinates_to_pixels(requested_x, requested_y)
                 )
+                action_attempted = True
                 self._click(pixel_x, pixel_y, button.lower())
                 if self.coordinate_mode == "normalized_1000":
                     message = (
@@ -808,6 +951,7 @@ class ComputerController:
                     drag_modifier = self._window_move_modifier()
                 if drag_modifier not in {"none", "alt", "super"}:
                     raise ValueError("Drag modifier must be none, alt, super, or window (detect the WM's move modifier).")
+                action_attempted = True
                 if drag_modifier == "none":
                     self._drag(start_x, start_y, finish_x, finish_y, button.lower())
                 else:
@@ -828,30 +972,46 @@ class ComputerController:
                             self._call(["ydotool", "key", f"{_MODIFIER_CODES[drag_modifier]}:0"])
                 message = f"Dragged {button} from ({start_x}, {start_y}) to ({finish_x}, {finish_y}) with {drag_modifier} modifier."
             elif action == "type":
+                action_attempted = True
                 self._type(text)
                 message = f"Typed {len(text)} characters into the currently focused control."
             elif action == "press":
+                action_attempted = True
                 self._press(key)
                 message = f"Pressed {key}."
             elif action == "scroll":
+                action_attempted = True
                 self._scroll(direction.lower(), amount)
                 message = f"Scrolled {direction} by {min(max(int(amount), 1), 8)} steps."
             else:
                 raise ValueError("Action must be inspect, click, drag, type, press, or scroll.")
             action_succeeded = True
-        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        except ValueError as exc:
+            failure_status = "invalid_input"
+            message = f"Action stopped: {exc}"
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            failure_status = "uncertain" if action_attempted else "failed"
             message = f"Action stopped: {exc}"
         if delay:
             time.sleep(delay)
         try:
-            return self._capture(
+            captured = self._capture(
                 f"{message or 'Action dispatched.'} Fresh screenshot captured after {delay:g}s.",
                 issue_action_token=action_succeeded,
                 expected_application=expected_application,
             )
+            captured.status = (
+                "ok" if action_succeeded and captured.snapshot_id
+                else "uncertain" if action_succeeded
+                else failure_status
+            )
+            captured.dispatched = action_succeeded if action_succeeded else (None if action_attempted else False)
+            return captured
         except Exception as exc:
             self._snapshot_id = ""
             return ComputerControlResult(
                 f"{message or 'The action may have been dispatched.'} Screenshot refresh failed; inspect again before another action. "
-                f"{type(exc).__name__}: {str(exc)[:180]}"
+                f"{type(exc).__name__}: {str(exc)[:180]}",
+                status="uncertain" if action_succeeded or action_attempted else "failed",
+                dispatched=True if action_succeeded else (None if action_attempted else False),
             )

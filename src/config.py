@@ -147,6 +147,8 @@ class ComputerControlConfig(BaseModel):
     ocr_max_regions: int = 100
     ocr_device: Literal["cpu", "cuda"] | None = None
     ocr_gpu_uuid: str = ""
+    max_sequence_actions: int = Field(default=8, ge=1, le=8)
+    sequence_timeout_seconds: float = Field(default=45.0, ge=1.0, le=120.0)
 
 class ComputerVisionConfig(BaseModel):
     enabled: bool = False
@@ -203,6 +205,7 @@ class LLMConfig(BaseModel):
     num_ctx: int = 65536
     temperature: float = 0.1
     think: Union[bool, str] = False
+    max_tool_rounds: int = Field(default=64, ge=1, le=256)
 
 class ExecutionConfig(BaseModel):
     workspace_dir: str = "~/workspace"

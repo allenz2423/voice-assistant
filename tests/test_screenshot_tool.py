@@ -1,4 +1,3 @@
-import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -92,7 +91,7 @@ async def test_screenshot_tool_attaches_image_to_followup_turn():
     assert image_message["role"] == "user"
     assert image_message["images"] == [PNG_FIXTURE]
     assert followup_messages[-2]["role"] == "tool"
-    assert brain.tts.spoken == ["The desktop is open with several application windows."]
+    assert brain.tts.spoken == ["I can see the desktop."]
 
 
 @pytest.mark.asyncio
@@ -112,18 +111,6 @@ async def test_chat_inspection_does_not_stop_after_focusing_window():
                 }]}
             if len(self.calls) == 2:
                 return {"content": "Looking at the chat, I can see a discussion about the event.", "tool_calls": []}
-            if len(self.calls) == 3:
-                return {"content": json.dumps({
-                        "status": "complete",
-                        "reason": "The requested conversation is visible in the current observation.",
-                        "evidence": ["Fresh screenshot and accessibility state."],
-                        "outcomes": [{
-                            "outcome": "The requested conversation is visible",
-                            "status": "complete",
-                            "evidence": ["Fresh screenshot and accessibility state."],
-                        }],
-                        "observation_id": "test-snapshot",
-                }), "tool_calls": []}
             return {"content": "They're discussing the event.", "tool_calls": []}
 
         def format_tool_response(self, tool_call_id, tool_name, result):
@@ -156,3 +143,4 @@ async def test_chat_inspection_does_not_stop_after_focusing_window():
     assert capture.call_args.kwargs["scope"] == "window"
     assert "after opening the browser" not in brain.llm_client.calls[1][-1]["content"]
     assert tts.spoken == ["Looking at the chat, I can see a discussion about the event."]
+    assert len(brain.llm_client.calls) == 2

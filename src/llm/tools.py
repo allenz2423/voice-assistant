@@ -1,5 +1,101 @@
 from pydantic import BaseModel, Field
 from typing import Any
+import math
+
+
+def validate_tool_arguments(tool: "CanonicalTool", arguments: Any) -> str | None:
+    """Validate the JSON Schema subset used by Adam's advertised tools.
+
+    Provider-side schema enforcement is inconsistent, so the execution boundary
+    validates required fields and common JSON types/constraints locally.
+    Returns a concise correction message, or None when valid.
+    """
+    if not isinstance(arguments, dict):
+        return "Tool arguments must be a JSON object."
+
+    def check(value: Any, schema: dict, path: str) -> str | None:
+        expected = schema.get("type")
+        matches = {
+            "object": lambda v: isinstance(v, dict),
+            "array": lambda v: isinstance(v, list),
+            "string": lambda v: isinstance(v, str),
+            "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+            "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+            "boolean": lambda v: isinstance(v, bool),
+            "null": lambda v: v is None,
+        }
+        if expected in matches and not matches[expected](value):
+            return f"{path} must be {expected}."
+        if "enum" in schema and value not in schema["enum"]:
+            return f"{path} must be one of: {', '.join(map(str, schema['enum']))}."
+        if isinstance(value, float) and not math.isfinite(value):
+            return f"{path} must be a finite number."
+        if isinstance(value, str):
+            if len(value) < schema.get("minLength", 0):
+                return f"{path} is shorter than the minimum length {schema['minLength']}."
+            if len(value) > schema.get("maxLength", float("inf")):
+                return f"{path} exceeds the maximum length {schema['maxLength']}."
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            if value < schema.get("minimum", float("-inf")):
+                return f"{path} is below the minimum {schema['minimum']}."
+            if value > schema.get("maximum", float("inf")):
+                return f"{path} exceeds the maximum {schema['maximum']}."
+        if isinstance(value, list):
+            if len(value) < schema.get("minItems", 0):
+                return f"{path} needs at least {schema['minItems']} item(s)."
+            if len(value) > schema.get("maxItems", float("inf")):
+                return f"{path} accepts at most {schema['maxItems']} item(s)."
+            item_schema = schema.get("items")
+            if isinstance(item_schema, dict):
+                for index, item in enumerate(value):
+                    error = check(item, item_schema, f"{path}[{index}]")
+                    if error:
+                        return error
+        if isinstance(value, dict):
+            properties = schema.get("properties", {})
+            for key in schema.get("required", []):
+                if key not in value:
+                    return f"Missing required argument: {path}.{key}."
+            for key, child in value.items():
+                child_schema = properties.get(key)
+                if child_schema is not None:
+                    error = check(child, child_schema, f"{path}.{key}")
+                    if error:
+                        return error
+                elif schema.get("additionalProperties") is False:
+                    return f"{path}.{key} is not an accepted argument."
+        return None
+
+    error = check(arguments, tool.parameters, tool.name)
+    if error:
+        return error
+
+    def validate_action(action: Any, path: str) -> str | None:
+        if not isinstance(action, dict):
+            return f"{path} must be an object."
+        operation = action.get("action")
+        required_fields = {
+            "click": ("x", "y"),
+            "drag": ("x", "y", "end_x", "end_y"),
+            "type": ("text",),
+            "press": ("key",),
+        }.get(operation, ())
+        if operation == "click" and action.get("target_text"):
+            return None
+        missing = [key for key in required_fields if key not in action]
+        if missing:
+            return f"{path} action {operation!r} is missing: {', '.join(missing)}."
+        return None
+
+    if tool.name == "computer_control":
+        if arguments.get("action") == "sequence":
+            for index, action in enumerate(arguments.get("actions", [])):
+                error = validate_action(action, f"{tool.name}.actions[{index}]")
+                if error:
+                    return error
+        elif arguments.get("action") != "inspect":
+            return validate_action(arguments, tool.name)
+    return None
 
 class CanonicalTool(BaseModel):
     name: str
@@ -108,7 +204,9 @@ ADAM_TOOLS: list[CanonicalTool] = [
             "with numbered text-region boxes, and screenshot pixels are withheld from the model; there, provide target_text "
             "for a visible OCR label and let the configured selector choose the region. In screenshot/visual mode, "
             "target_text is not supported: click using x/y pixel coordinates from the latest screenshot. First inspect, then use "
-            "the returned snapshot_id for one click, drag, type, key press, or scroll action. For window movement use drag with "
+            "the returned snapshot_id for one action, or action='sequence' with a short actions list for related inputs. "
+            "The controller carries a fresh snapshot between steps and pauses before a later spatial action that needs a new target choice. "
+            "Coordinate-free follow-up inputs such as clicking a visibly editable text field then typing can be sequenced; press may follow typing only as the final step. For window movement use drag with "
             "modifier='window'; the controller reads the desktop's configured move modifier. Drag starts inside the active window. "
             "Every action returns fresh state "
             "after an automatic app-aware wait (3 seconds for browsers, 0.25 otherwise by default). An optional "
@@ -120,7 +218,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
         parameters={
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["inspect", "click", "drag", "type", "press", "scroll"]},
+                "action": {"type": "string", "enum": ["inspect", "click", "drag", "type", "press", "scroll", "sequence"]},
                 "scope": {"type": "string", "enum": ["monitor", "window"], "description": "For inspect, use the focused monitor (default) or limit the capture/OCR to the focused application window. The chosen scope persists for follow-up actions."},
                 "snapshot_id": {"type": "string", "description": "Copy the exact ID returned with the latest screenshot. Required for all actions; use an empty string for the first inspect."},
                 "x": {"type": "integer", "description": "Horizontal click coordinate, using the units stated in the latest screenshot response."},
@@ -137,6 +235,34 @@ ADAM_TOOLS: list[CanonicalTool] = [
                 "screenshot_delay_seconds": {
                     "type": "number", "minimum": 0, "maximum": 10,
                     "description": "Optional override for the controller's app-aware automatic wait before the fresh screenshot, from 0 to 10 seconds.",
+                },
+                "actions": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 8,
+                    "description": (
+                        "Optional model-selected micro-sequence for related inputs. Each step uses the same "
+                        "arguments as a single action, except snapshot_id is carried forward by the controller. "
+                        "The controller refreshes state after each step. It can continue with coordinate-free "
+                        "inputs against the selected control, but pauses before later clicks/drags/scrolls that "
+                        "need a new target decision from Adam."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "action": {"type": "string", "enum": ["click", "drag", "type", "press", "scroll"]},
+                            "x": {"type": "integer"}, "y": {"type": "integer"},
+                            "end_x": {"type": "integer"}, "end_y": {"type": "integer"},
+                            "target_text": {"type": "string"},
+                            "button": {"type": "string", "enum": ["left", "right", "middle"]},
+                            "modifier": {"type": "string", "enum": ["none", "alt", "super", "window"]},
+                            "text": {"type": "string"}, "key": {"type": "string"},
+                            "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
+                            "amount": {"type": "integer", "minimum": 1, "maximum": 8},
+                        },
+                        "required": ["action"],
+                        "additionalProperties": False,
+                    },
                 },
             },
             "required": ["action", "snapshot_id"],

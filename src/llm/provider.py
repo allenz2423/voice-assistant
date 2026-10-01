@@ -495,8 +495,10 @@ class UniversalLLMClient:
                 args_raw = m.group(2)
                 try:
                     args_parsed = json.loads(args_raw)
-                except Exception:
-                    args_parsed = {}
+                except json.JSONDecodeError:
+                    # Preserve invalid input so the host can return a correction
+                    # instead of executing a different call with empty args.
+                    args_parsed = args_raw
                 tool_calls.append({"function": {"name": fn_name, "arguments": args_parsed}})
                 cleaned_text = (text[:m.start()].strip() + " " + text[m.end():].strip()).strip()
 
