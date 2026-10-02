@@ -6,6 +6,7 @@ from collections import deque
 import numpy as np
 from src.audio.vad import SileroVAD
 from src.audio.earcon import resolve_pulse_device_index
+from src.telemetry.events import emit_event, new_span_id
 
 
 def _take_audio_tail(chunks: list[np.ndarray], sample_count: int) -> list[np.ndarray]:
@@ -280,7 +281,7 @@ class AudioStreamManager:
     def record_utterance(
         self,
         silence_duration=1.25,
-        max_duration=45.0,
+        max_duration=60.0,
         idle_threshold=0.25,
         speaking_threshold=0.85,
         initial_chunk=None,
@@ -299,6 +300,8 @@ class AudioStreamManager:
 
         frames = []
         speech_started = False
+        speech_start_emitted = False
+        endpoint_reason = "max_duration"
         silence_start = None
         start_time = time.time()
         last_partial_time = start_time
@@ -308,6 +311,8 @@ class AudioStreamManager:
         if initial_chunk is not None and len(initial_chunk) > 0:
             frames.append(initial_chunk)
             speech_started = True
+            speech_start_emitted = True
+            emit_event("audio.speech_started", component="audio", status="ok", attributes={"source": "initial_chunk"})
 
         while time.time() - start_time < max_duration:
             chunk = self.get_chunk(timeout=0.1)
@@ -324,6 +329,9 @@ class AudioStreamManager:
 
             if is_speech:
                 speech_started = True
+                if not speech_start_emitted:
+                    speech_start_emitted = True
+                    emit_event("audio.speech_started", component="audio", status="ok", attributes={"source": "vad"})
                 silence_start = None
             else:
                 if speech_started:
@@ -331,6 +339,7 @@ class AudioStreamManager:
                         silence_start = time.time()
                     elif time.time() - silence_start >= silence_duration:
                         # User stopped speaking
+                        endpoint_reason = "silence"
                         break
                 else:
                     # Keep rolling window of pre-speech frames
@@ -343,13 +352,38 @@ class AudioStreamManager:
                     last_partial_time = now
                     # Only invoke if at least 0.25s of speech accumulated
                     if len(frames) * self.chunk_size >= int(0.25 * self.sample_rate):
+                        callback_span = new_span_id()
+                        emit_event("audio.partial_callback_started", span_id=callback_span, component="audio")
                         try:
                             partial_arr = np.concatenate(frames)
                             new_silence = on_partial_audio(partial_arr)
                             if new_silence is not None and isinstance(new_silence, (int, float)):
                                 silence_duration = float(new_silence)
-                        except Exception:
+                                emit_event(
+                                    "audio.endpoint_candidate_applied", span_id=callback_span,
+                                    component="endpoint", status="ok",
+                                    attributes={"target_silence_s": silence_duration},
+                                )
+                            emit_event(
+                                "audio.partial_callback_completed", span_id=callback_span,
+                                component="audio", status="ok",
+                            )
+                        except Exception as exc:
+                            emit_event(
+                                "audio.partial_callback_completed", span_id=callback_span,
+                                component="audio", status="error",
+                                attributes={"error_type": type(exc).__name__},
+                            )
                             pass
+
+        emit_event(
+            "audio.endpoint_decided", component="endpoint", status="ok",
+            attributes={
+                "reason": endpoint_reason,
+                "effective_silence_s": float(silence_duration),
+                "speech_started": bool(speech_started),
+            },
+        )
 
         if frames:
             audio_res = np.concatenate(frames)

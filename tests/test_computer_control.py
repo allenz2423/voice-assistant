@@ -317,6 +317,43 @@ def test_sequence_does_not_press_a_key_after_click_without_reobservation(monkeyp
     assert len(commands) == 2
 
 
+def test_sequence_allows_wait_step_and_captures_fresh_observation(monkeypatch):
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+    commands = []
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    slept = []
+    monkeypatch.setattr(computer.time, "sleep", lambda s: slept.append(s))
+
+    controller = computer.ComputerController(
+        screenshot_fn=_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+    )
+    snapshot_id = controller.run("inspect").snapshot_id
+    result = controller.run_sequence(
+        snapshot_id=snapshot_id,
+        actions=[
+            {"action": "click", "x": 100, "y": 80},
+            {"action": "type", "text": "deposit"},
+            {"action": "press", "key": "enter"},
+            {"action": "wait", "seconds": 3},
+        ],
+    )
+
+    assert result.status == "ok"
+    assert 3.0 in slept
+    assert "Step 4/4 (wait): ok; Waited 3s." in result.message
+    assert result.snapshot_id
+
+
 def test_action_is_uncertain_if_post_action_focus_is_not_stable(monkeypatch):
     monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
     commands = []
@@ -364,6 +401,8 @@ def test_wayland_actions_use_ydotool_mouse_and_wtype_keyboard(monkeypatch):
     typed = controller.run("type", snapshot_id=next_id, text="local sample")
     key_id = re.search(r"Snapshot ID: (\w+)", typed.message).group(1)
     pressed = controller.run("press", snapshot_id=key_id, key="ctrl+a")
+    scroll_id = re.search(r"Snapshot ID: (\w+)", pressed.message).group(1)
+    scrolled = controller.run("scroll", snapshot_id=scroll_id, direction="down", amount=3, x=150, y=250)
 
     assert commands[:2] == [
         ["ydotool", "mousemove", "--absolute", "99", "200"],
@@ -371,7 +410,11 @@ def test_wayland_actions_use_ydotool_mouse_and_wtype_keyboard(monkeypatch):
     ]
     assert commands[2] == ["wtype", "--", "local sample"]
     assert commands[3] == ["wtype", "-M", "ctrl", "a", "-m", "ctrl"]
-    assert "screenshot" in pressed.message.lower()
+    assert commands[4:6] == [
+        ["ydotool", "mousemove", "--absolute", "150", "250"],
+        ["ydotool", "mousemove", "-w", "--", "0", "-3"],
+    ]
+    assert "screenshot" in scrolled.message.lower()
 
 
 def test_wayland_adapter_uses_session_identity_when_multiple_tools_are_installed(monkeypatch):

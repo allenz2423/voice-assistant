@@ -12,6 +12,7 @@ class AudioConfig(BaseModel):
     vad_threshold_idle: float = 0.25
     vad_threshold_speaking: float = 0.85
     vad_silence_duration: float = 1.25
+    max_utterance_seconds: float = Field(default=60.0, ge=1.0, le=300.0)
 
 class WakeConfig(BaseModel):
     wake_word: str = "hey jarvis"
@@ -145,6 +146,7 @@ class ComputerControlConfig(BaseModel):
     jev_timeout_seconds: float = 20.0
     jev_min_confidence: float = 0.65
     ocr_max_regions: int = 100
+    ocr_max_candidates: int = Field(default=800, ge=1, le=5000)
     ocr_device: Literal["cpu", "cuda"] | None = None
     ocr_gpu_uuid: str = ""
     max_sequence_actions: int = Field(default=8, ge=1, le=8)
@@ -214,6 +216,10 @@ class ExecutionConfig(BaseModel):
     jobs_log_dir: str = "~/.local/state/adam/jobs"
     max_log_mb: int = 50
     preferred_video_codec: str = "av1"
+
+class TelemetryConfig(BaseModel):
+    enabled: bool = False
+    path: str = "~/.local/state/adam/telemetry/events.jsonl"
 
 DEFAULT_APPLICATION_ALIASES = {
     "discord": ["vesktop", "discord", "webcord", "armcord"],
@@ -290,6 +296,7 @@ class AppConfig(BaseModel):
     tts: TTSConfig = Field(default_factory=TTSConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
+    telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:

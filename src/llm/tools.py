@@ -183,22 +183,21 @@ ADAM_TOOLS: list[CanonicalTool] = [
             "Read windows across the desktop using available window metadata and AT-SPI, plus browser DOM when "
             "a local CDP endpoint is configured; with OCR-only computer use enabled, screen text is returned without "
             "attaching screenshot pixels. Read-only. Set include_ocr=false to skip screenshot OCR and OmniParser; "
-            "structured AT-SPI and browser DOM data remain available. Use it when text extraction from pixels will not "
-            "affect the next decision."
+            "structured AT-SPI and browser DOM data remain available. Set include_ocr=true when text extraction is needed."
         ),
         parameters={"type": "object", "properties": {
             "scope": {"type": "string", "enum": ["monitor", "window"], "description": "monitor (default) reads desktop window metadata/AT-SPI and captures the focused monitor; window limits window metadata, AT-SPI, browser DOM, and capture to the focused application window."},
             "screenshot_delay_seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "Optional 0–10 second override for the controller's automatic delay based on the focused app."},
-            "include_ocr": {"type": "boolean", "description": "False skips screenshot OCR and region parsing; true extracts visible text/regions when they affect the task."}
+            "include_ocr": {"type": "boolean", "description": "Set false for visual/layout checks and navigation; set true when the task requires reading, finding, or extracting text on screen. Defaults to false."}
         }},
     ),
     CanonicalTool(
         name="capture_screenshot",
-        description="Captures the focused monitor or app window. Set include_ocr=false for a visual-only check; this skips OCR and visual-region parsing. With OCR-only computer use enabled, screenshot pixels stay internal.",
+        description="Captures the focused monitor or app window. Set include_ocr=false for a visual-only check; set true when screen text needs to be read or extracted. With OCR-only computer use enabled, screenshot pixels stay internal.",
         parameters={"type": "object", "properties": {
             "scope": {"type": "string", "enum": ["monitor", "window"], "description": "Capture the focused monitor (default) or only the focused application window."},
             "screenshot_delay_seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "Optional 0–10 second override for the controller's automatic delay based on the focused app."},
-            "include_ocr": {"type": "boolean", "description": "False returns the screenshot without OCR text or visual-region parsing; true when screen text/regions are needed."}
+            "include_ocr": {"type": "boolean", "description": "False returns the screenshot without OCR text; set true when the task requires reading, finding, or extracting text on screen. Defaults to false."}
         }}
     ),
     CanonicalTool(
@@ -242,7 +241,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
                     "type": "number", "minimum": 0, "maximum": 10,
                     "description": "Optional override for the controller's app-aware automatic wait before the fresh screenshot, from 0 to 10 seconds.",
                 },
-                "include_ocr": {"type": "boolean", "description": "For inspect and post-action screenshots, false returns screenshot only and skips OCR/OmniParser; true extracts text and regions. Defaults to the previous observation mode."},
+                "include_ocr": {"type": "boolean", "description": "For inspect and post-action screenshots: false (default) skips OCR for normal navigation and clicking; set true when the task requires reading, finding, or extracting on-screen text (e.g. finding emails, reading message content, verifying numbers or values)."},
                 "actions": {
                     "type": "array",
                     "minItems": 1,
@@ -257,7 +256,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
                     "items": {
                         "type": "object",
                         "properties": {
-                            "action": {"type": "string", "enum": ["click", "drag", "type", "press", "scroll"]},
+                            "action": {"type": "string", "enum": ["click", "drag", "type", "press", "scroll", "wait"]},
                             "x": {"type": "integer"}, "y": {"type": "integer"},
                             "end_x": {"type": "integer"}, "end_y": {"type": "integer"},
                             "target_text": {"type": "string"},
@@ -266,6 +265,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
                             "text": {"type": "string"}, "key": {"type": "string"},
                             "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
                             "amount": {"type": "integer", "minimum": 1, "maximum": 8},
+                            "seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "Delay in seconds when action is 'wait'"},
                         },
                         "required": ["action"],
                         "additionalProperties": False,
@@ -376,7 +376,10 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="speak",
-        description="Speaks a conversational message to the user. The message must be strictly plain text with no markdown, asterisks, bullet points, or formatting.",
+        description=(
+            "Speaks a brief interim update while work continues. Do not use this for the final answer; Adam speaks the final answer automatically. "
+            "The message must be strictly plain text with no markdown, asterisks, bullet points, or formatting."
+        ),
         parameters={
             "type": "object",
             "properties": {
@@ -485,7 +488,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
                 },
                 "include_ocr": {
                     "type": "boolean",
-                    "description": "When screenshot=true, false attaches screenshot pixels only and skips OCR/OmniParser; true also extracts text/regions when needed."
+                    "description": "When screenshot=true, false attaches screenshot pixels only and skips OCR/OmniParser; true also extracts text/regions when needed. Defaults to false."
                 },
             },
             "required": ["app_name", "screenshot"]
@@ -533,7 +536,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
                 },
                 "include_ocr": {
                     "type": "boolean",
-                    "description": "When screenshot=true, false attaches screenshot pixels only and skips OCR/OmniParser; true also extracts text/regions when needed."
+                    "description": "When screenshot=true, false attaches screenshot pixels only and skips OCR/OmniParser; true also extracts text/regions when needed. Defaults to false."
                 },
             },
             "required": ["target", "screenshot"]
@@ -553,13 +556,13 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="desktop_macro",
-        description="Executes a desktop/window-manager macro only when the user explicitly requested that macro's effect. Never use this as a substitute for an app control (for example, do not toggle fullscreen when asked to record a full-screen video).",
+        description="Executes a desktop or window-manager layout action. Supported macros include 'fullscreen' (toggles maximize/fullscreen for the active window), 'toggle_floating', 'split', 'overview', 'show_desktop', and 'lock'. Use 'fullscreen' whenever an app is tiled too small or crowded to view and click its contents properly.",
         parameters={
             "type": "object",
             "properties": {
                 "macro": {
                     "type": "string",
-                    "description": "Name of the explicitly requested desktop macro effect. Use only when the user asked to perform this window/system action."
+                    "description": "Name of the desktop macro/action to execute: 'fullscreen' (maximize active window), 'toggle_floating', 'split', 'overview', 'show_desktop', or 'lock'."
                 }
             },
             "required": ["macro"]
@@ -567,7 +570,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="workspace_control",
-        description="Switches the active workspace or moves a specific window or active window to a workspace. For a task with an obstructed or crowded view, use this to isolate the relevant app or move an unrelated obstruction aside; prefer reversible moves and restore the prior workspace/layout when practical.",
+        description="Switches the active workspace or moves a window to a specified workspace. Use this when starting a task that would clutter the user's current workspace, to switch to an empty workspace (e.g. workspace 2 or 3) for a new app, or to move an obstructing window aside without closing it.",
         parameters={
             "type": "object",
             "properties": {
@@ -900,7 +903,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="list_skills",
-        description="Lists Adam's installed Markdown skills, including which are loaded at startup. The computer_use workflow and active desktop skill load automatically.",
+        description="Lists discovered Markdown skills from Adam's built-in and user skill directories, including which are loaded at startup. The computer_use workflow and detected desktop skill load automatically.",
         parameters={
             "type": "object",
             "properties": {}
@@ -908,7 +911,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="get_skill_context",
-        description="Loads a Markdown skill into the current conversation for specialized guidance. Use 'computer_use' for the general desktop workflow, a desktop name such as 'hyprland' for its details, or 'active' for the detected desktop.",
+        description="Loads a discovered Markdown skill into the current conversation for specialized guidance. Use 'computer_use' for the general desktop workflow, a desktop name such as 'hyprland' for its details, or 'active' for the detected desktop. Other matching skills may be retrieved automatically.",
         parameters={
             "type": "object",
             "properties": {
@@ -918,6 +921,32 @@ ADAM_TOOLS: list[CanonicalTool] = [
                 }
             },
             "required": ["skill_name"]
+        }
+    ),
+    CanonicalTool(
+        name="create_skill",
+        description=(
+            "Creates a user skill file only when the user's current request explicitly asks to create or save a skill. "
+            "Never call this merely because a task was completed or seems reusable. Existing skill files are not overwritten. "
+            "Created Markdown skills are stored in ~/.config/adam/skills and may be retrieved for matching requests."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "skill_name": {
+                    "type": "string",
+                    "description": "Short identifier for the explicitly requested skill (e.g. 'github_pr_workflow', 'obs_streaming', 'docker_cleanup')."
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Markdown guidance, recommended commands, rules, or step-by-step procedures."
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional short summary of what this skill does and its trigger conditions."
+                }
+            },
+            "required": ["skill_name", "content"]
         }
     ),
     CanonicalTool(
@@ -985,14 +1014,53 @@ ADAM_TOOLS: list[CanonicalTool] = [
         }
     ),
     CanonicalTool(
+        name="manage_memory",
+        description="Stores, searches, lists, updates, or deletes long-term user memories and facts (preferences, names, passwords, habits, personal details, system setups). Use whenever the user asks you to remember, recall, update, or forget personal information or facts.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "Action to perform on memory",
+                    "enum": ["save", "search", "list", "update", "delete"]
+                },
+                "text": {
+                    "type": "string",
+                    "description": "The exact fact or preference text to save or update (required for 'save' and 'update')"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search query or question to retrieve matching memories for (used with 'search')"
+                },
+                "memory_id": {
+                    "type": "string",
+                    "description": "The unique ID of the memory to update or delete"
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Optional category tag ('preference', 'fact', 'credentials', 'system', 'general')"
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum number of memories to return (defaults to 3 for search, 20 for list)"
+                }
+            },
+            "required": ["action"]
+        }
+    ),
+    CanonicalTool(
         name="open_in_browser",
-        description="Opens a website URL or performs a web search in the user's default browser (e.g. searching 'Santal 33', opening 'youtube.com', or any URL). Use whenever the user asks to search for something in their browser, look something up on the web in their browser, or open a website.",
+        description="Opens a website URL or performs a web search in the user's default browser (e.g. searching 'Santal 33', opening 'youtube.com', or any URL). Use whenever the user asks to search for something in their browser, look something up on the web in their browser, or open a website. Set include_ocr=true if the user's goal requires reading, finding, extracting, or summarizing text/emails/articles/data on the page.",
         parameters={
             "type": "object",
             "properties": {
                 "query_or_url": {
                     "type": "string",
                     "description": "Search query (e.g. 'Santal 33', 'RTX 5090 specs') or URL (e.g. 'https://youtube.com', 'reddit.com') to open in the default browser"
+                },
+                "include_ocr": {
+                    "type": "boolean",
+                    "description": "Set true if the task requires reading, searching, or reporting specific text from the page (e.g. emails, articles, deposit amounts, numbers). Defaults to false."
                 }
             },
             "required": ["query_or_url"]

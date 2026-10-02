@@ -150,7 +150,8 @@ def test_meeting_transcribes_original_mixed_turns_with_speaker_labels():
     daemon.stream = type("Stream", (), {"sample_rate": 16000})()
     captured_audio = []
 
-    def transcribe(samples):
+    def transcribe(samples, *, kind="final"):
+        assert kind == "meeting"
         captured_audio.append(samples.copy())
         return f"turn {len(captured_audio)}"
 

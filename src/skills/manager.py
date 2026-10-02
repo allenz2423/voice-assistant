@@ -1,7 +1,7 @@
 import os
 import shutil
 from pathlib import Path
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any, Tuple
 
 class SkillManager:
     """Manages modular capability skills (Markdown context files) for desktop environments,
@@ -10,6 +10,10 @@ class SkillManager:
     def __init__(self, custom_skills_dir: Optional[Path] = None):
         self.builtin_skills_dir = Path(__file__).resolve().parent.parent.parent / "skills"
         self.user_skills_dir = custom_skills_dir or (Path.home() / ".config" / "adam" / "skills")
+        self._index_dirty: bool = True
+        self._indexed_skills: Dict[str, Dict[str, Any]] = {}
+        self._bm25: Optional[Any] = None
+        self._indexed_file_signature: tuple[tuple[str, int, int], ...] = ()
 
     def get_skill_paths(self) -> List[Path]:
         """Returns all search directories for skills in order of priority (user custom first)."""
@@ -19,6 +23,19 @@ class SkillManager:
         if self.builtin_skills_dir.exists():
             paths.append(self.builtin_skills_dir)
         return paths
+
+    def _skill_file_signature(self) -> tuple[tuple[str, int, int], ...]:
+        """Tracks Markdown file additions, removals, and edits between matching queries."""
+        entries = []
+        for directory in self.get_skill_paths():
+            for path in directory.glob("*.md"):
+                try:
+                    if path.is_file():
+                        stat = path.stat()
+                        entries.append((str(path.resolve()), stat.st_mtime_ns, stat.st_size))
+                except OSError:
+                    continue
+        return tuple(sorted(entries))
 
     def detect_desktop_environment(self, refresh_env: bool = True) -> str:
         """Detects the currently running Desktop Environment or Window Manager."""
@@ -177,3 +194,178 @@ class SkillManager:
         header = f"=== ACTIVE DESKTOP & WINDOW MANAGER SKILL ({active_de.upper()}) ==="
         footer = "=== END DESKTOP SKILL ==="
         return f"{header}\n{content.strip()}\n{footer}"
+
+    def create_or_update_skill(
+        self,
+        skill_id: str,
+        content: str,
+        description: str = "",
+        overwrite: bool = True,
+    ) -> Path:
+        """Saves or updates a skill in the user's custom skills directory."""
+        import re
+        clean_id = re.sub(r"[^a-zA-Z0-9_-]", "_", str(skill_id).strip().lower()).strip("_-")
+        if not clean_id:
+            raise ValueError(f"Invalid skill ID: {skill_id!r}")
+
+        self.user_skills_dir.mkdir(parents=True, exist_ok=True)
+        target_path = self.user_skills_dir / f"{clean_id}.md"
+
+        if target_path.exists() and not overwrite:
+            raise FileExistsError(f"Skill file {target_path} already exists and overwrite=False.")
+
+        formatted_content = content.strip()
+        if description and description.strip():
+            desc_clean = description.strip()
+            if not formatted_content.startswith("#"):
+                title = clean_id.replace("_", " ").title()
+                formatted_content = f"# Skill: {title}\n\n> {desc_clean}\n\n{formatted_content}"
+            elif desc_clean not in formatted_content:
+                lines = formatted_content.splitlines()
+                title_line = lines[0]
+                body_lines = lines[1:]
+                formatted_content = f"{title_line}\n\n> {desc_clean}\n\n" + "\n".join(body_lines)
+
+        target_path.write_text(formatted_content + "\n", encoding="utf-8")
+        self._index_dirty = True
+        return target_path
+
+    def delete_skill(self, skill_id: str) -> bool:
+        """Deletes a custom user skill by ID. Returns True if deleted."""
+        clean_id = skill_id.strip().lower().replace(".md", "").replace(".skills", "")
+        for fname in [f"{clean_id}.md", f"{clean_id}.skills.md"]:
+            p = self.user_skills_dir / fname
+            if p.is_file():
+                try:
+                    p.unlink()
+                    self._index_dirty = True
+                    return True
+                except Exception:
+                    pass
+        return False
+
+    def _build_index(self) -> None:
+        """Builds in-memory lexical BM25 index over available non-default skills."""
+        try:
+            from src.memory.bm25 import BM25Index
+        except Exception:
+            class BM25Index:
+                def __init__(self, *args, **kwargs):
+                    self.doc_ids = []
+                    self.texts = []
+                def fit(self, doc_ids, texts):
+                    self.doc_ids = list(doc_ids)
+                    self.texts = list(texts)
+                def score(self, query):
+                    q_words = set(query.lower().split())
+                    scores = []
+                    for t in self.texts:
+                        overlap = sum(1 for w in q_words if w in t.lower())
+                        scores.append(overlap)
+                    return scores
+
+        active_de = self.detect_desktop_environment(refresh_env=False)
+        all_skills = self.list_skills()
+        self._indexed_skills.clear()
+
+        doc_ids = []
+        texts = []
+        for s in all_skills:
+            s_id = s["id"]
+            # Exclude skills already loaded by default at startup
+            if s.get("loaded_by_default") or s_id in {"computer_use", active_de, "generic_desktop"}:
+                continue
+            content = self.load_skill(s_id)
+            if not content:
+                continue
+
+            lines = [line.strip() for line in content.splitlines() if line.strip()]
+            header = lines[0] if lines else ""
+            desc = lines[1] if len(lines) > 1 else ""
+
+            # Index ID with extra weight, header, description, and body excerpt
+            index_text = f"{s_id} {s_id.replace('_', ' ')} {header} {desc} {content[:4000]}"
+            self._indexed_skills[s_id] = {
+                "id": s_id,
+                "header": header,
+                "desc": desc,
+                "content": content,
+                "path": s.get("path", ""),
+            }
+            doc_ids.append(s_id)
+            texts.append(index_text)
+
+        if doc_ids:
+            self._bm25 = BM25Index()
+            self._bm25.fit(doc_ids, texts)
+        else:
+            self._bm25 = None
+
+        self._indexed_file_signature = self._skill_file_signature()
+        self._index_dirty = False
+
+    def match_skills(
+        self,
+        query: str,
+        limit: int = 1,
+        min_score: float = 0.5,
+    ) -> List[Tuple[str, str]]:
+        """Finds matching specialized skills for a user query.
+
+        Returns a list of (skill_id, skill_content) tuples sorted by relevance.
+        Excludes skills already loaded at startup (computer_use and active desktop).
+        """
+        if not query or not query.strip():
+            return []
+
+        if self._skill_file_signature() != self._indexed_file_signature:
+            self._index_dirty = True
+        if self._index_dirty or self._bm25 is None:
+            self._build_index()
+
+        if not self._indexed_skills or self._bm25 is None:
+            return []
+
+        clean_query = query.strip().lower()
+        try:
+            from src.memory.bm25 import tokenize
+            query_tokens = set(tokenize(clean_query))
+        except Exception:
+            query_tokens = set(clean_query.split())
+
+        if not query_tokens:
+            return []
+
+        try:
+            bm25_scores = self._bm25.score(clean_query)
+        except Exception:
+            bm25_scores = [0.0] * len(self._indexed_skills)
+
+        scored_candidates = []
+        for (s_id, meta), bm25_s in zip(self._indexed_skills.items(), bm25_scores):
+            score = float(bm25_s)
+            id_tokens = set(s_id.replace("-", "_").split("_"))
+            shared_id_tokens = query_tokens.intersection(id_tokens)
+            if shared_id_tokens:
+                score += 2.0 * len(shared_id_tokens)
+            if s_id in clean_query or s_id.replace("_", " ") in clean_query:
+                score += 3.0
+
+            if score >= min_score:
+                scored_candidates.append((score, s_id, meta["content"]))
+
+        scored_candidates.sort(key=lambda x: x[0], reverse=True)
+        return [(s_id, content) for _, s_id, content in scored_candidates[:limit]]
+
+    def get_matched_skill_context(self, query: str, max_chars: int = 4000) -> Optional[str]:
+        """Returns formatted Markdown context for skills relevant to the query, or None."""
+        matches = self.match_skills(query, limit=1)
+        if not matches:
+            return None
+        skill_id, content = matches[0]
+        excerpt = content[:max_chars].strip()
+        if len(content) > max_chars:
+            excerpt += "\n\n[Skill guidance truncated for context brevity.]"
+        header = f"=== SPECIALIZED SKILL GUIDANCE ({skill_id.upper()}) ==="
+        footer = "=== END SPECIALIZED SKILL GUIDANCE ==="
+        return f"{header}\n{excerpt}\n{footer}"

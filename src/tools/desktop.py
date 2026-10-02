@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Optional, Any, Dict, List, Set
 
+from src.tools.desktop_timing import log_duration, timed_stage
+
 _HYPRLAND_LUA_DISPATCH: Optional[bool] = None
 
 
@@ -448,6 +450,23 @@ def _resolve_browser_entry(apps: dict[str, dict]) -> Optional[dict]:
     return None
 
 
+def _is_default_browser_target(target: str) -> bool:
+    """Recognize common aliases for the configured stable browser entry."""
+    def canonical(value: str) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+        return normalized[:-6] if normalized.endswith("stable") else normalized
+
+    target_names = {str(target or "").strip().lower()}
+    target_names.update(APPLICATION_ALIASES.get(next(iter(target_names)), []))
+    target_tokens = {canonical(name) for name in target_names}
+    for alias, values in APPLICATION_ALIASES.items():
+        if any(canonical(value) in target_tokens for value in values):
+            target_names.add(alias)
+
+    default_name = canonical(DEFAULT_BROWSER)
+    return bool(default_name) and any(canonical(name) == default_name for name in target_names)
+
+
 def _resolve_application_entry(target: str, apps: dict[str, dict]) -> Optional[dict]:
     """Resolves an app name to a desktop entry using exact matches, aliases, length-ranked substrings, and PATH fallback."""
     clean_target = (target or "").strip().lower()
@@ -459,7 +478,11 @@ def _resolve_application_entry(target: str, apps: dict[str, dict]) -> Optional[d
         browser_entry = _resolve_browser_entry(apps)
         if browser_entry:
             return browser_entry
-    elif clean_target == DEFAULT_BROWSER.lower() or clean_target == Path(DEFAULT_BROWSER.lower()).stem:
+    elif (
+        clean_target == DEFAULT_BROWSER.lower()
+        or clean_target == Path(DEFAULT_BROWSER.lower()).stem
+        or _is_default_browser_target(clean_target)
+    ):
         browser_entry = _resolve_browser_entry(apps)
         if browser_entry:
             return browser_entry
@@ -2167,22 +2190,38 @@ def _window_matches_application(window: dict[str, str], expected_names: set[str]
     return False
 
 
-def wait_for_application_ready(target: Optional[str] = None, timeout: float = 15.0) -> None:
-    """Wait until a focused app window exists and its identity/bounds settle."""
-    ensure_gui_environment()
-    deadline = time.monotonic() + max(0.5, timeout)
-    expected_names = _expected_application_names(target) if target else set()
+def wait_for_application_ready(target: Optional[str] = None, timeout: float | None = 15.0) -> None:
+    """Wait until a focused app window exists and its identity/bounds settle.
+
+    A finite timeout is appropriate while starting an application. A focus
+    transition can take as long as the compositor needs, so callers may pass
+    ``None`` to keep waiting until the requested window is actually focused.
+    """
+    started = time.perf_counter()
+    with timed_stage("desktop.readiness.gui_environment"):
+        ensure_gui_environment()
+    deadline = time.monotonic() + max(0.5, timeout) if timeout is not None else None
+    with timed_stage("desktop.readiness.target_resolution", target_requested=bool(target)):
+        expected_names = _expected_application_names(target) if target else set()
     previous: Optional[tuple[str, str, tuple[int, int, int, int]]] = None
     stable_polls = 0
-    while time.monotonic() < deadline:
+    poll_count = 0
+    metadata_ms = 0.0
+    geometry_ms = 0.0
+    while deadline is None or time.monotonic() < deadline:
         try:
+            poll_count += 1
+            probe_started = time.perf_counter()
             window = _active_window_metadata()
+            metadata_ms += (time.perf_counter() - probe_started) * 1000
             if expected_names and not _window_matches_application(window, expected_names):
                 stable_polls = 0
                 previous = None
             else:
                 try:
+                    geometry_started = time.perf_counter()
                     bounds = _active_window_geometry()
+                    geometry_ms += (time.perf_counter() - geometry_started) * 1000
                 except Exception:
                     bounds = tuple(window.get("bounds") or (0, 0, 0, 0))
                 identity = window.get("id") or f"{window.get('class', '')}:{window.get('title', '')}"
@@ -2193,12 +2232,23 @@ def wait_for_application_ready(target: Optional[str] = None, timeout: float = 15
                     stable_polls = 1 if identity.strip(":") else 0
                 previous = current
                 if stable_polls >= 3:
-                    time.sleep(0.2)  # Allow the compositor to present the mapped window.
+                    with timed_stage("desktop.readiness.presentation_settle"):
+                        time.sleep(0.2)  # Allow the compositor to present the mapped window.
+                    log_duration(
+                        "desktop.readiness.polls", started,
+                        status="ready", polls=poll_count,
+                        metadata_ms=round(metadata_ms, 1), geometry_ms=round(geometry_ms, 1),
+                    )
                     return
         except Exception:
             stable_polls = 0
             previous = None
         time.sleep(0.2)
+    log_duration(
+        "desktop.readiness.polls", started,
+        status="timeout", polls=poll_count,
+        metadata_ms=round(metadata_ms, 1), geometry_ms=round(geometry_ms, 1),
+    )
     target_text = f" matching '{target}'" if target else ""
     raise TimeoutError(f"The focused application{target_text} did not become ready for a screenshot within {timeout:g} seconds.")
 
@@ -2213,27 +2263,31 @@ def capture_screenshot_with_origin(
     ensure_gui_environment()
     if wait_until_ready:
         wait_for_application_ready(expected_application)
-    backend = get_active_backend()
-    image = backend.capture_screenshot()
+    with timed_stage("desktop.capture.backend_selection"):
+        backend = get_active_backend()
+    with timed_stage("desktop.capture.backend"):
+        image = backend.capture_screenshot()
     origin = getattr(backend, "last_screenshot_origin", (0, 0))
     if scope == "monitor":
         return image, origin
 
-    x, y, width, height = _active_window_geometry()
-    left, top = x - origin[0], y - origin[1]
+    with timed_stage("desktop.capture.window_geometry"):
+        x, y, width, height = _active_window_geometry()
+        left, top = x - origin[0], y - origin[1]
     try:
         from PIL import Image
         from io import BytesIO
 
-        with Image.open(BytesIO(image)) as screenshot:
-            bounds = (
-                max(0, left), max(0, top),
-                min(screenshot.width, left + width), min(screenshot.height, top + height),
-            )
-            if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
-                raise RuntimeError("The focused window is outside the captured monitor image.")
-            output = BytesIO()
-            screenshot.crop(bounds).save(output, format="PNG")
+        with timed_stage("desktop.capture.window_crop"):
+            with Image.open(BytesIO(image)) as screenshot:
+                bounds = (
+                    max(0, left), max(0, top),
+                    min(screenshot.width, left + width), min(screenshot.height, top + height),
+                )
+                if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+                    raise RuntimeError("The focused window is outside the captured monitor image.")
+                output = BytesIO()
+                screenshot.crop(bounds).save(output, format="PNG")
             return output.getvalue(), (origin[0] + bounds[0], origin[1] + bounds[1])
     except ImportError as exc:
         raise RuntimeError("Focused-window screenshots require Pillow; install the 'pillow' package.") from exc

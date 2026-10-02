@@ -16,6 +16,7 @@ class WakeWordDetector:
         self.model_key = None
         self.is_custom_mode = False
         self.custom_regex = None
+        self.explicit_wake_regex = self._build_explicit_wake_regex(self.raw_wake_word, self.aliases)
         self._load_model()
 
     def _load_model(self):
@@ -105,6 +106,24 @@ class WakeWordDetector:
                 patterns.append(inner)
 
         return re.compile("|".join(patterns), re.IGNORECASE)
+
+    @classmethod
+    def _build_explicit_wake_regex(cls, raw_wake_word: str, aliases: list[str] = None) -> re.Pattern:
+        """Build interruption patterns that require the explicit Hey prefix."""
+        phrases = [raw_wake_word, *(aliases or [])]
+        patterns = []
+        punct_sep = r"[\s,，、—–\.\-\'\’\"]*"
+        for phrase in phrases:
+            clean = re.sub(r"[_-]+", " ", str(phrase or "").lower().strip())
+            if not clean:
+                continue
+            if not clean.startswith("hey "):
+                clean = f"hey {clean}"
+            parts = re.findall(r"[\u4e00-\u9fff]|[\u3040-\u30ff]+|[a-zA-Z0-9]+", clean)
+            if parts:
+                inner = punct_sep.join(re.escape(part) for part in parts)
+                patterns.append(rf"(?<!\w){inner}(?!\w)")
+        return re.compile("|".join(dict.fromkeys(patterns)) or r"(?!x)x", re.IGNORECASE)
 
     @classmethod
     def _check_prefix_valid(cls, prefix_str: str) -> bool:
@@ -202,6 +221,18 @@ class WakeWordDetector:
             return True, remaining
 
         return False, text
+
+    def match_explicit_wake_word(self, text: str) -> tuple[bool, str]:
+        """Match an interruption only when the transcript includes the Hey prefix."""
+        if not text:
+            return False, text
+        matches = list(self.explicit_wake_regex.finditer(text))
+        if not matches:
+            return False, text
+        remainder = text[matches[-1].end():].strip()
+        remainder = self.LEADING_PUNCT.sub("", remainder).strip()
+        remainder = self.TRAILING_PUNCT.sub("", remainder).strip()
+        return True, remainder
 
     def is_interrupt_phrase(self, text: str) -> bool:
         """Checks if a short transcribed utterance is an immediate barge-in interrupt command."""

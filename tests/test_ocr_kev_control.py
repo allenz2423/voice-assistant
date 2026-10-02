@@ -1,5 +1,6 @@
 import io
 import json
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image
@@ -60,6 +61,46 @@ def test_screen_ocr_treats_modern_empty_result_as_no_text():
             return EmptyResult()
 
     assert ScreenOCR(engine=Engine()).read(png_bytes()) == []
+
+
+def test_screen_ocr_caps_candidates_before_recognition_and_reports_partial_read():
+    class Engine:
+        def __init__(self):
+            self.text_rec = SimpleNamespace(rec_batch_num=6)
+            self.recognized_count = 0
+
+        def detect_and_crop(self, image, op_record):
+            boxes = np.asarray([
+                [[0, 0], [10, 0], [10, 10], [0, 10]],
+                [[20, 0], [30, 0], [30, 10], [20, 10]],
+                [[40, 0], [50, 0], [50, 10], [40, 10]],
+            ], dtype=np.float32)
+            return [np.zeros((10, 10, 3), dtype=np.uint8) for _ in range(3)], SimpleNamespace(
+                boxes=boxes, scores=[0.1, 0.9, 0.8]
+            )
+
+        def recognize_txt(self, crops):
+            self.recognized_count = len(crops)
+            return SimpleNamespace(txts=[f"region-{i}" for i in range(len(crops))])
+
+        def __call__(self, image):
+            crops, detected = self.detect_and_crop(image, {})
+            recognized = self.recognize_txt(crops)
+            return SimpleNamespace(
+                boxes=detected.boxes,
+                txts=recognized.txts,
+                scores=[0.9] * len(recognized.txts),
+            )
+
+    engine = Engine()
+    ocr = ScreenOCR(max_regions=1, max_candidates=2, engine=engine)
+    regions = ocr.read(png_bytes())
+
+    assert engine.recognized_count == 2
+    assert len(regions) == 1
+    assert ocr.last_read_diagnostics["detected_candidates"] == 3
+    assert ocr.last_read_diagnostics["recognized_candidates"] == 2
+    assert ocr.last_read_diagnostics["candidate_limit_hit"] is True
 
 
 def test_kev_client_selects_only_a_listed_ocr_region():
@@ -287,3 +328,123 @@ def test_visual_inspection_can_skip_ocr_and_region_grounding():
     assert "Ready" in with_details.message
     assert "Visual regions" in with_details.message
     assert calls == {"ocr": 2, "grounder": 1}
+
+
+def test_screen_ocr_load_preloads_engine():
+    loaded = []
+
+    class MockEngine:
+        pass
+
+    class LazyOCR(ScreenOCR):
+        def _get_engine(self):
+            if self._engine is None:
+                engine = MockEngine()
+                loaded.append(engine)
+                self._engine = engine
+            return self._engine
+
+    ocr = LazyOCR(engine=None)
+    assert ocr._engine is None
+    engine = ocr.load()
+    assert ocr._engine is engine
+    assert len(loaded) == 1
+    # Calling load again returns cached engine
+    assert ocr.load() is engine
+    assert len(loaded) == 1
+
+
+def test_screen_ocr_preload_flag():
+    loaded = []
+
+    class MockEngine:
+        pass
+
+    class PreloadingOCR(ScreenOCR):
+        def _get_engine(self):
+            if self._engine is None:
+                engine = MockEngine()
+                loaded.append(engine)
+                self._engine = engine
+            return self._engine
+
+    ocr = PreloadingOCR(engine=None, preload=True)
+    assert ocr._engine is not None
+    assert len(loaded) == 1
+
+
+def test_cuda_ocr_uses_bounded_arena_and_lightweight_cudnn_search(monkeypatch):
+    import rapidocr
+
+    captured = {}
+
+    class Session:
+        def get_providers(self):
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    component = SimpleNamespace(session=SimpleNamespace(session=Session()))
+    engine = SimpleNamespace(text_det=component, text_cls=component, text_rec=component)
+
+    def build_engine(params):
+        captured.update(params)
+        return engine
+
+    monkeypatch.setattr(rapidocr, "RapidOCR", build_engine)
+    monkeypatch.setattr(ScreenOCR, "_resolve_gpu_index", staticmethod(lambda _uuid: 0))
+    ocr = ScreenOCR(device="cuda", gpu_uuid="GPU-test")
+
+    assert ocr.load() is engine
+    assert captured["EngineConfig.onnxruntime.cuda_ep_cfg.arena_extend_strategy"] == "kSameAsRequested"
+    assert captured["EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_algo_search"] == "HEURISTIC"
+    assert captured["EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_use_max_workspace"] is False
+
+
+def test_brain_preloads_ocr_at_startup():
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock, patch
+    from src.llm.brain import AdamBrain
+
+    cfg = SimpleNamespace(
+        computer_control=SimpleNamespace(enabled=True, ocr_only=True, ocr_device="cpu"),
+        computer_vision=None,
+        llm=SimpleNamespace(
+            provider="local",
+            local_model="test",
+            cloud_model="",
+            ollama_host="http://localhost:11434",
+            temperature=0.3,
+            num_ctx=16384,
+            think="low",
+            api_key="",
+        ),
+        desktop=SimpleNamespace(default_browser=""),
+    )
+
+    with patch.object(ScreenOCR, "load", autospec=True) as mock_load:
+        brain = AdamBrain(cfg, None, None, None, None, preload_ocr=True)
+        assert brain.screen_ocr is not None
+        mock_load.assert_called_once()
+
+
+def test_visual_inspection_uses_full_screen_ocr_reader_when_available():
+    calls = {"read": 0, "read_zoomed_band": 0}
+
+    class FullReader:
+        def read(self, _image):
+            calls["read"] += 1
+            return [OCRRegion("O1", "Latest Deposit: $1,250", 0.99, 100, 200, 400, 240)]
+
+        def read_zoomed_band(self, *_args, **_kwargs):
+            calls["read_zoomed_band"] += 1
+            return []
+
+    screenshot = png_bytes()
+    controller = ComputerController(
+        screenshot_fn=lambda: screenshot,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":0"},
+        ocr_reader=FullReader(),
+    )
+    res = controller.run("inspect", include_ocr=True, screenshot_delay_seconds=0)
+    assert calls["read"] == 1
+    assert calls["read_zoomed_band"] == 0
+    assert "Latest Deposit: $1,250" in res.message

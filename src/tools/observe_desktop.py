@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from src.tools.desktop_timing import timed_stage, timing_operation
+
 
 @dataclass
 class DesktopObservation:
@@ -117,23 +119,26 @@ def _screenshot(scope: str = "monitor") -> tuple[bytes | None, str]:
         return None, str(exc)[:180]
 
 
-def observe_desktop(scope: str = "monitor", include_screenshot: bool = True) -> DesktopObservation:
+def _observe_desktop_impl(scope: str = "monitor", include_screenshot: bool = True) -> DesktopObservation:
     """Read desktop state; window scope limits structured reads and capture to the focused window."""
     scope = (scope or "monitor").strip().lower()
     if scope not in {"monitor", "window"}:
         return DesktopObservation("Screenshot scope must be 'monitor' or 'window'.", None)
-    windows, wm = _windows()
+    with timed_stage("observer.window_enumeration"):
+        windows, wm = _windows()
     if not windows:
         message = "Window metadata unavailable."
         screenshot = None
         if include_screenshot:
-            screenshot, status = _screenshot(scope)
+            with timed_stage("observer.screenshot_subprocess"):
+                screenshot, status = _screenshot(scope)
             message += " Screenshot attached." if screenshot else f" Screenshot unavailable: {status}."
         return DesktopObservation(message, screenshot)
 
     active = windows[0]
     inspected_windows = [active] if scope == "window" else windows[:30]
-    accessibility = _read_atspi(inspected_windows)
+    with timed_stage("observer.atspi", window_count=len(inspected_windows)):
+        accessibility = _read_atspi(inspected_windows)
     if scope == "window":
         sections = [f"Window manager: {wm}. Focused window only: {active['app']} — {active['title'] or '(untitled)'}."]
     else:
@@ -145,12 +150,20 @@ def observe_desktop(scope: str = "monitor", include_screenshot: bool = True) -> 
         row = accessibility[index] if index < len(accessibility) else {"ok": False, "error": "no AT-SPI result"}
         sections.append(f"\n{label}\nAT-SPI: {row.get('tree') if row.get('ok') else row.get('error', 'unavailable')}")
 
-    dom, dom_status = _read_browser_dom(active)
+    with timed_stage("observer.browser_dom"):
+        dom, dom_status = _read_browser_dom(active)
     sections.append(f"\nBrowser DOM: {dom_status}.")
     if dom:
         sections.append(dom)
     screenshot = None
     if include_screenshot:
-        screenshot, screenshot_status = _screenshot(scope)
+        with timed_stage("observer.screenshot_subprocess"):
+            screenshot, screenshot_status = _screenshot(scope)
         sections.append("Screenshot attached." if screenshot else f"Screenshot unavailable: {screenshot_status}.")
     return DesktopObservation("\n".join(sections), screenshot)
+
+
+def observe_desktop(scope: str = "monitor", include_screenshot: bool = True) -> DesktopObservation:
+    """Read desktop state while emitting stage timings without screen contents."""
+    with timing_operation("observer.operation"):
+        return _observe_desktop_impl(scope, include_screenshot)

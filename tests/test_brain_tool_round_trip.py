@@ -18,9 +18,15 @@ class _DummyClient:
         self.provider = provider
         self.responses = list(responses)
         self.requests = []
+        self.request_tools = []
 
-    async def chat(self, messages, tools=None):
+    async def chat(self, messages, tools=None, max_tokens=None, think=None):
         self.requests.append([dict(message) for message in messages])
+        self.request_tools.append(tools)
+        self.request_max_tokens = getattr(self, "request_max_tokens", [])
+        self.request_max_tokens.append(max_tokens)
+        self.request_think = getattr(self, "request_think", [])
+        self.request_think.append(think)
         return self.responses.pop(0)
 
     def format_tool_response(self, tool_call_id, tool_name, result):
@@ -124,6 +130,74 @@ async def test_empty_model_turn_gets_one_recovery_without_dispatching_actions():
     assert brain.llm_client.requests.__len__() == 2
     assert executed == []
     assert "one recovery attempt" in brain.tts.spoken[0]
+
+
+@pytest.mark.asyncio
+async def test_explicit_screen_read_uses_ocr_evidence_without_tools_or_image():
+    from src.llm.brain import AdamBrain, _is_explicit_screen_read_request
+
+    class Controller:
+        def __init__(self):
+            self.kwargs = None
+
+        def run(self, **kwargs):
+            self.kwargs = kwargs
+            return SimpleNamespace(
+                status="ok",
+                ocr_regions=[SimpleNamespace(
+                    text="Quarterly revenue: $1.2M", top=100, left=200,
+                )],
+                message=(
+                    "Current monitor capture is 1920x1080.\n"
+                    "Extracted screen text:\n"
+                    "R1 text='Quarterly revenue: $1.2M' confidence=0.98"
+                ),
+            )
+
+    request = "What is on my screen, can you read it to me?"
+    assert _is_explicit_screen_read_request(request)
+    assert not _is_explicit_screen_read_request("What's on my screen right now?")
+
+    brain = AdamBrain.__new__(AdamBrain)
+    brain.system_prompt = "System"
+    brain.messages = [{"role": "system", "content": "System"}]
+    brain.screen_ocr = object()
+    brain.computer_controller = Controller()
+    brain.config = SimpleNamespace(computer_control=SimpleNamespace(screenshot_delay_seconds=0.25))
+    brain.tts = _DummyTTS()
+    brain._is_interrupted = False
+    brain.llm_client = _DummyClient("custom", [])
+
+    await brain._process_user_utterance_impl(request)
+
+    assert brain.computer_controller.kwargs["include_ocr"] is True
+    assert brain.computer_controller.kwargs["include_visual_grounding"] is False
+    assert brain.llm_client.requests == []
+    assert brain.tts.spoken == ["The readable text on the screen is: Quarterly revenue: $1.2M"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_screen_read_reports_capture_failure_without_calling_llm():
+    from src.llm.brain import AdamBrain
+
+    class Controller:
+        def run(self, **kwargs):
+            raise RuntimeError("display server unavailable")
+
+    brain = AdamBrain.__new__(AdamBrain)
+    brain.system_prompt = "System"
+    brain.messages = [{"role": "system", "content": "System"}]
+    brain.screen_ocr = object()
+    brain.computer_controller = Controller()
+    brain.config = SimpleNamespace(computer_control=SimpleNamespace(screenshot_delay_seconds=0.25))
+    brain.tts = _DummyTTS()
+    brain._is_interrupted = False
+    brain.llm_client = _DummyClient("custom", [])
+
+    await brain._process_user_utterance_impl("Please read my screen to me")
+
+    assert brain.llm_client.requests == []
+    assert "couldn't capture" in brain.tts.spoken[0]
 
 
 @pytest.mark.asyncio

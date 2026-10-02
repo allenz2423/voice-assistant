@@ -11,7 +11,7 @@ import subprocess
 import threading
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -21,6 +21,7 @@ from src.tools.desktop import (
     wait_for_application_ready,
 )
 from src.tools.ocr import OCRRegion, ScreenOCR
+from src.tools.desktop_timing import log_duration, timed_stage, timing_operation
 
 
 _X11_KEYS = {
@@ -56,8 +57,15 @@ _ALLOWED_COMBOS = {
 def _serialized(method):
     """Keep snapshot validation, input dispatch, and recapture in one controller turn."""
     def call(self, *args, **kwargs):
-        with self._action_lock:
-            return method(self, *args, **kwargs)
+        with timing_operation("controller.operation"):
+            lock_started = time.perf_counter()
+            self._action_lock.acquire()
+            log_duration("controller.lock_wait", lock_started)
+            try:
+                with timed_stage("controller.run"):
+                    return method(self, *args, **kwargs)
+            finally:
+                self._action_lock.release()
     return call
 
 
@@ -90,6 +98,7 @@ class ComputerControlResult:
     status: str = "ok"
     dispatched: bool | None = False
     snapshot_id: str = ""
+    ocr_regions: list[OCRRegion] = field(default_factory=list, repr=False)
 
 
 class ComputerController:
@@ -132,7 +141,8 @@ class ComputerController:
         self.sequence_timeout_seconds = min(max(float(sequence_timeout_seconds), 1.0), 120.0)
         self._ocr_regions: list[OCRRegion] = []
         self._ocr_state = ""
-        self._include_ocr = True
+        self._include_visual_grounding = True
+        self._include_ocr = bool(self.ocr_only)
         if coordinate_mode not in {"pixels", "normalized_1000"}:
             raise ValueError("coordinate_mode must be 'pixels' or 'normalized_1000'.")
         self.coordinate_mode = coordinate_mode
@@ -251,21 +261,32 @@ class ComputerController:
         *,
         issue_action_token: bool = True,
         expected_application: str | None = None,
+        wait_until_ready: bool = True,
+        readiness_timeout_seconds: float | None = 15.0,
     ) -> ComputerControlResult:
-        if self._screenshot_fn is None:
-            wait_for_application_ready(expected_application)
-        before_identity, _ = self._read_active_window_state()
-        captured = (
-            self._screenshot_fn() if self._screenshot_fn is not None
-            else capture_screenshot_with_origin(self._scope, wait_until_ready=False)
-        )
+        if self._screenshot_fn is None and wait_until_ready:
+            with timed_stage("controller.application_ready", expected_application=bool(expected_application)):
+                wait_for_application_ready(expected_application, timeout=readiness_timeout_seconds)
+        with timed_stage("controller.window_state_before"):
+            before_identity, _ = self._read_active_window_state()
+        with timed_stage("controller.capture"):
+            captured = (
+                self._screenshot_fn() if self._screenshot_fn is not None
+                else capture_screenshot_with_origin(self._scope, wait_until_ready=False)
+            )
         if isinstance(captured, tuple):
             image, (self._origin_x, self._origin_y) = captured
         else:
             image = captured
             self._origin_x = self._origin_y = 0
+        metadata_started = time.perf_counter()
         self._width, self._height = _png_size(image)
-        after_identity, self._active_bounds = self._read_active_window_state()
+        log_duration(
+            "controller.image_dimensions", metadata_started,
+            width=self._width, height=self._height, image_bytes=len(image),
+        )
+        with timed_stage("controller.window_state_after"):
+            after_identity, self._active_bounds = self._read_active_window_state()
         self._active_identity = after_identity
         focus_stable = bool(before_identity and before_identity == after_identity)
         issue_action_token = issue_action_token and focus_stable
@@ -277,10 +298,17 @@ class ComputerController:
         self._ocr_state = ""
         if self.ocr_only and self._include_ocr:
             try:
-                self._ocr_regions = self._ocr_reader.read(image) if self._ocr_reader else []
+                with timed_stage("controller.ocr"):
+                    self._ocr_regions = self._ocr_reader.read(image) if self._ocr_reader else []
                 self._ocr_state = ScreenOCR.format(self._ocr_regions)
             except Exception as exc:
-                self._ocr_state = f"OCR unavailable: {type(exc).__name__}: {str(exc)[:180]}"
+                error_lines = str(exc).strip().splitlines()
+                error_detail = (error_lines[-1] if error_lines else "inference failed")[:180]
+                print(
+                    f"[OCR] Inference failed: {type(exc).__name__}: {error_detail}",
+                    flush=True,
+                )
+                self._ocr_state = f"OCR unavailable: {type(exc).__name__}: {error_detail}"
             image_for_model = None
         elif self.ocr_only:
             self._ocr_state = "OCR and visual parsing were skipped by request; screenshot pixels are withheld by OCR-only mode."
@@ -289,42 +317,65 @@ class ComputerController:
             image_for_model = image
             if self._include_ocr and self._ocr_reader is not None:
                 try:
-                    header_regions = self._ocr_reader.read_zoomed_band(image, self._active_bounds)
-                    panel_regions: list[OCRRegion] = []
-                    if self._active_bounds:
-                        left, top, right, bottom = self._active_bounds
-                        panel_bounds = (
-                            left,
-                            min(bottom, top + 96),
-                            min(right, left + 320),
-                            min(bottom, top + 1000),
-                        )
-                        if panel_bounds[2] > panel_bounds[0] and panel_bounds[3] > panel_bounds[1]:
-                            panel_regions = self._ocr_reader.read_zoomed_band(
-                                image,
-                                panel_bounds,
-                                band_height=panel_bounds[3] - panel_bounds[1],
-                                tile_width=panel_bounds[2] - panel_bounds[0],
-                                tile_step=panel_bounds[2] - panel_bounds[0],
-                                scale=2,
-                            )
-                    panel_regions = [
-                        OCRRegion(f"P{index}", region.text, region.confidence,
-                                  region.left, region.top, region.right, region.bottom)
-                        for index, region in enumerate(panel_regions[:50], 1)
-                    ]
-                    self._ocr_regions = header_regions + panel_regions
+                    with timed_stage("controller.ocr"):
+                        if hasattr(self._ocr_reader, "read"):
+                            self._ocr_regions = self._ocr_reader.read(image)
+                        elif hasattr(self._ocr_reader, "read_zoomed_band"):
+                            header_regions = self._ocr_reader.read_zoomed_band(image, self._active_bounds)
+                            panel_regions: list[OCRRegion] = []
+                            if self._active_bounds:
+                                left, top, right, bottom = self._active_bounds
+                                panel_bounds = (
+                                    left,
+                                    min(bottom, top + 96),
+                                    min(right, left + 320),
+                                    min(bottom, top + 1000),
+                                )
+                                if panel_bounds[2] > panel_bounds[0] and panel_bounds[3] > panel_bounds[1]:
+                                    panel_regions = self._ocr_reader.read_zoomed_band(
+                                        image,
+                                        panel_bounds,
+                                        band_height=panel_bounds[3] - panel_bounds[1],
+                                        tile_width=panel_bounds[2] - panel_bounds[0],
+                                        tile_step=panel_bounds[2] - panel_bounds[0],
+                                        scale=2,
+                                    )
+                            panel_regions = [
+                                OCRRegion(f"P{index}", region.text, region.confidence,
+                                          region.left, region.top, region.right, region.bottom)
+                                for index, region in enumerate(panel_regions[:50], 1)
+                            ]
+                            self._ocr_regions = header_regions + panel_regions
+                        else:
+                            self._ocr_regions = []
+
                     if self._ocr_regions:
                         self._ocr_state = (
-                            "Focused-window OCR: enlarged tab/header strip and upper-left UI panel.\n"
+                            "Extracted screen text:\n"
                             + ScreenOCR.format(self._ocr_regions)
                         )
                 except Exception as exc:
-                    self._ocr_state = f"Focused-window OCR unavailable: {type(exc).__name__}: {str(exc)[:180]}"
+                    error_lines = str(exc).strip().splitlines()
+                    error_detail = (error_lines[-1] if error_lines else "inference failed")[:180]
+                    print(
+                        f"[OCR] Inference failed: {type(exc).__name__}: {error_detail}",
+                        flush=True,
+                    )
+                    self._ocr_state = f"Screen OCR unavailable: {type(exc).__name__}: {error_detail}"
+        if self._include_ocr and self._ocr_reader is not None:
+            diagnostics = getattr(self._ocr_reader, "last_read_diagnostics", {})
+            if diagnostics.get("candidate_limit_hit"):
+                detected = int(diagnostics.get("detected_candidates", 0))
+                recognized = int(diagnostics.get("recognized_candidates", 0))
+                self._ocr_state += (
+                    f"\nOCR workload was bounded: recognized {recognized} of {detected} detected text candidates. "
+                    "This screen read may omit lower-confidence text."
+                )
         visual_details = ""
-        if self._include_ocr and self._visual_grounder is not None and not self.ocr_only:
+        if self._include_visual_grounding and self._visual_grounder is not None and not self.ocr_only:
             try:
-                image, visual_details = self._visual_grounder(image)
+                with timed_stage("controller.visual_grounder"):
+                    image, visual_details = self._visual_grounder(image)
             except Exception as exc:
                 visual_details = (
                     f"OmniParser grounding unavailable ({type(exc).__name__}: {str(exc)[:180]}). "
@@ -369,6 +420,7 @@ class ComputerController:
             status="ok" if issue_action_token else "uncertain",
             dispatched=False,
             snapshot_id=self._snapshot_id,
+            ocr_regions=list(self._ocr_regions),
         )
 
     def _call(self, args: list[str], timeout: float = 5.0, **kwargs) -> subprocess.CompletedProcess:
@@ -442,9 +494,18 @@ class ComputerController:
         buttons = {"left": (1, "0xC0"), "right": (3, "0xC1"), "middle": (2, "0xC2")}
         if button not in buttons:
             raise ValueError("Mouse button must be left, right, or middle.")
+        self._position_cursor(x, y)
+        if self.backend == "x11":
+            self._call(["xdotool", "click", "--delay", "80", str(buttons[button][0])])
+            return
+        if self.backend == "wayland":
+            self._call(["ydotool", "click", "--next-delay", "80", buttons[button][1]])
+            return
+        raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
+
+    def _position_cursor(self, x: int, y: int) -> None:
         if self.backend == "x11":
             self._call(["xdotool", "mousemove", "--sync", str(x + self._origin_x), str(y + self._origin_y)])
-            self._call(["xdotool", "click", "--delay", "80", str(buttons[button][0])])
             return
         if self.backend == "wayland":
             if not self._ensure_ydotoold():
@@ -465,7 +526,6 @@ class ComputerController:
                     "ydotool", "mousemove", "--absolute",
                     str(x + self._origin_x), str(y + self._origin_y),
                 ])
-            self._call(["ydotool", "click", "--next-delay", "80", buttons[button][1]])
             return
         raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
 
@@ -701,9 +761,19 @@ class ComputerController:
         elif self.backend == "wayland":
             if not self._ensure_ydotoold():
                 raise RuntimeError("Wayland scrolling needs ydotoold and access to /dev/uinput.")
-            # Linux input button codes 8/9 are vertical wheel directions.
-            button = {"up": 8, "down": 9, "left": 10, "right": 11}[direction]
-            self._call(["ydotool", "click", "--repeat", str(amount), f"0xC{button:X}"])
+            # In Linux uinput / ydotool mousemove -w:
+            # Vertical wheel: positive dy = up, negative dy = down.
+            # Horizontal wheel: positive dx = right, negative dx = left.
+            dx, dy = 0, 0
+            if direction == "up":
+                dy = amount
+            elif direction == "down":
+                dy = -amount
+            elif direction == "left":
+                dx = -amount
+            elif direction == "right":
+                dx = amount
+            self._call(["ydotool", "mousemove", "-w", "--", str(dx), str(dy)])
         else:
             raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
 
@@ -756,6 +826,7 @@ class ComputerController:
         results: list[str] = []
         latest: ComputerControlResult | None = None
         any_dispatched: bool | None = False
+        last_concrete_action = ""
         for index, step in enumerate(actions):
             if cancel_event and cancel_event.is_set():
                 return ComputerControlResult(
@@ -784,20 +855,25 @@ class ComputerController:
                     snapshot_id=latest.snapshot_id if latest else "",
                 )
             action = str(step.get("action", "")).strip().lower()
-            previous_action = (
-                actions[index - 1].get("action", "").strip().lower() if index else ""
-            )
-            # Keyboard/text input has no reusable screen coordinates. Let Adam
-            # plan a click followed by typing into that selected control, and
-            # allow a final keypress after typing (for example, submitting a
-            # search). Never execute a later spatial target from old UI state.
+            if action not in {"click", "drag", "type", "press", "scroll", "wait"}:
+                return ComputerControlResult(
+                    f"Sequence action {index + 1} has unsupported operation {action!r}.\n" + "\n".join(results),
+                    latest.screenshot if latest else None,
+                    status="invalid_input",
+                    dispatched=any_dispatched,
+                    snapshot_id=latest.snapshot_id if latest else "",
+                )
+            # Keyboard/text input and pauses have no reusable screen coordinates.
+            # Allow click followed by typing into the selected control, keypresses
+            # such as Enter to submit, and wait/delay pauses between or after.
             coordinate_free_continuation = (
-                previous_action in {"click", "type"}
+                action == "wait"
+            ) or (
+                last_concrete_action in {"click", "type"}
                 and action == "type"
             ) or (
-                previous_action == "type"
+                last_concrete_action == "type"
                 and action == "press"
-                and index == len(actions) - 1
             )
             if index and not coordinate_free_continuation:
                 return ComputerControlResult(
@@ -809,14 +885,20 @@ class ComputerController:
                     dispatched=any_dispatched,
                     snapshot_id=latest.snapshot_id if latest else "",
                 )
-            if action not in {"click", "drag", "type", "press", "scroll"}:
-                return ComputerControlResult(
-                    f"Sequence action {index + 1} has unsupported operation {action!r}.\n" + "\n".join(results),
-                    latest.screenshot if latest else None,
-                    status="invalid_input",
-                    dispatched=any_dispatched,
-                    snapshot_id=latest.snapshot_id if latest else "",
-                )
+            if action == "wait":
+                delay_sec = min(max(float(step.get("seconds") or step.get("amount") or 1.0), 0.0), 10.0)
+                time.sleep(delay_sec)
+                results.append(f"Step {index + 1}/{len(actions)} (wait): ok; Waited {delay_sec:g}s.")
+                if index == len(actions) - 1:
+                    latest = self.run(
+                        action="inspect",
+                        snapshot_id="",
+                        screenshot_delay_seconds=0,
+                        goal=goal,
+                        expected_application=expected_application,
+                    )
+                continue
+            last_concrete_action = action
             kwargs = {key: value for key, value in step.items() if key != "action"}
             latest = self.run(
                 action=action,
@@ -878,8 +960,10 @@ class ComputerController:
         target_text: str = "",
         ocr_region_ref: str = "",
         include_ocr: bool | None = None,
+        include_visual_grounding: bool | None = None,
         goal: str = "",
         expected_application: str | None = None,
+        readiness_timeout_seconds: float | None = 15.0,
     ) -> ComputerControlResult:
         if not self.enabled:
             return ComputerControlResult(
@@ -887,25 +971,32 @@ class ComputerController:
             )
         action = (action or "inspect").strip().lower()
         if action == "inspect":
-            self._include_ocr = True if include_ocr is None else bool(include_ocr)
+            self._include_ocr = (self.ocr_only if include_ocr is None else bool(include_ocr))
+            self._include_visual_grounding = (
+                self._include_ocr if include_visual_grounding is None else bool(include_visual_grounding)
+            )
         elif include_ocr is not None:
             self._include_ocr = bool(include_ocr)
-        if screenshot_delay_seconds is None:
-            delay = screenshot_delay_for_focused_window(
-                self.screenshot_delay_seconds,
-                self.browser_screenshot_delay_seconds,
+            self._include_visual_grounding = (
+                self._include_ocr if include_visual_grounding is None else bool(include_visual_grounding)
             )
-        else:
-            try:
-                delay = float(screenshot_delay_seconds)
-            except (TypeError, ValueError):
+        with timed_stage("controller.screenshot_delay_selection"):
+            if screenshot_delay_seconds is None:
                 delay = screenshot_delay_for_focused_window(
                     self.screenshot_delay_seconds,
                     self.browser_screenshot_delay_seconds,
                 )
-            if not math.isfinite(delay):
-                delay = self.screenshot_delay_seconds
-            delay = min(max(delay, 0.0), 10.0)
+            else:
+                try:
+                    delay = float(screenshot_delay_seconds)
+                except (TypeError, ValueError):
+                    delay = screenshot_delay_for_focused_window(
+                        self.screenshot_delay_seconds,
+                        self.browser_screenshot_delay_seconds,
+                    )
+                if not math.isfinite(delay):
+                    delay = self.screenshot_delay_seconds
+                delay = min(max(delay, 0.0), 10.0)
         if action == "inspect":
             try:
                 requested_scope = (scope or "monitor").strip().lower()
@@ -914,10 +1005,16 @@ class ComputerController:
                 self._scope = requested_scope
                 label = "focused application" if self._scope == "window" else "active monitor"
                 if delay:
-                    time.sleep(delay)
+                    with timed_stage("controller.screenshot_settle", configured_delay_ms=round(delay * 1000)):
+                        time.sleep(delay)
                 return self._capture(
                     f"Inspected the {label} after waiting {delay:g}s.",
                     expected_application=expected_application,
+                    readiness_timeout_seconds=readiness_timeout_seconds,
+                    # An explicit current-screen read has no app transition to
+                    # wait for. Launch/focus follow-ups pass an expected app;
+                    # post-action captures still use the normal readiness poll.
+                    wait_until_ready=bool(expected_application),
                 )
             except Exception as exc:
                 self._snapshot_id = ""
@@ -1018,6 +1115,9 @@ class ComputerController:
                 message = f"Pressed {key}."
             elif action == "scroll":
                 action_attempted = True
+                if x is not None and y is not None:
+                    pixel_x, pixel_y = self._click_coordinates_to_pixels(int(x), int(y))
+                    self._position_cursor(pixel_x, pixel_y)
                 self._scroll(direction.lower(), amount)
                 message = f"Scrolled {direction} by {min(max(int(amount), 1), 8)} steps."
             else:
@@ -1036,6 +1136,7 @@ class ComputerController:
                 f"{message or 'Action dispatched.'} Fresh screenshot captured after {delay:g}s.",
                 issue_action_token=action_succeeded,
                 expected_application=expected_application,
+                readiness_timeout_seconds=readiness_timeout_seconds,
             )
             captured.status = (
                 "ok" if action_succeeded and captured.snapshot_id

@@ -9,11 +9,15 @@ import signal
 import asyncio
 import threading
 import wave
+import math
+import uuid
 from datetime import datetime
 import numpy as np
 from pathlib import Path
 
 from src.config import load_config
+from src.telemetry.events import configure_telemetry, emit_event, reset_trace_id, set_trace_id
+from src.tools.desktop_timing import timed_stage
 from src.audio.earcon import RobustEarconEngine
 from src.audio.stream import AudioStreamManager
 from src.audio.meeting import MeetingSession
@@ -31,6 +35,7 @@ from src.execution.supervisor import HardenedJobSupervisor
 from src.llm.brain import AdamBrain
 from src.audio.endpoint import SemanticEndpointer
 from src.llm.speculative import SpeculativeRouter
+from src.memory.manager import MemoryManager, extract_memory_command
 from src.tools.weather import get_weather_report
 from src.tools.web import web_search
 from src.tools.system_telemetry import get_system_status
@@ -105,6 +110,7 @@ class AdamDaemon:
     """Master orchestrator for the Adam Voice Terminal Agent."""
     def __init__(self, config_path="config.yaml"):
         self.config = load_config(config_path)
+        configure_telemetry(self.config.telemetry)
         if hasattr(self.config, "desktop"):
             configure_desktop_aliases(
                 self.config.desktop.application_aliases,
@@ -270,7 +276,9 @@ class AdamDaemon:
             "battery_status": get_system_status,
         })
 
-        # 5. Agent Brain
+        # 5. Dynamic Memory & Agent Brain
+        self.memory_manager = MemoryManager()
+
         print("[Init] Initializing AdamBrain ReAct Agent...")
         self.brain = AdamBrain(
             self.config,
@@ -279,7 +287,10 @@ class AdamDaemon:
             self.confirmation,
             self.tts,
             arbiter=self.arbiter,
-            speculative_router=self.speculative_router
+            speculative_router=self.speculative_router,
+            preload_ocr=True,
+            preload_vision=True,
+            memory_mgr=self.memory_manager,
         )
         self.idea_router = None
         idea_cfg = getattr(self.config, "idea_routing", None)
@@ -301,6 +312,9 @@ class AdamDaemon:
                     )
                     candidate_router.prepare()
                     self.idea_router = candidate_router
+                    # Share the already loaded ONNX encoder with MemoryManager
+                    self.memory_manager.embedder._encoder_fn = candidate_router.encode
+                    self.memory_manager._rebuild_indexes()
                     print(
                         f"[IdeaRouter] Enabled with {idea_cfg.model}; idle speech is transcribed locally. "
                         "Commands and background calendar candidates use separate confidence thresholds.",
@@ -322,7 +336,24 @@ class AdamDaemon:
 
     async def _record_utterance(self, **kwargs) -> np.ndarray:
         """Record and archive each finalized mic utterance, including rejected speech."""
-        audio_data = await asyncio.to_thread(self.stream.record_utterance, **kwargs)
+        trace_id = str(uuid.uuid4())
+        self._active_capture_trace_id = trace_id
+        trace_token = set_trace_id(trace_id)
+        emit_event("audio.capture_started", trace_id=trace_id, component="audio")
+        try:
+            audio_data = await asyncio.to_thread(self.stream.record_utterance, **kwargs)
+        except Exception as exc:
+            emit_event(
+                "audio.capture_completed", trace_id=trace_id, component="audio", status="error",
+                attributes={"error_type": type(exc).__name__},
+            )
+            raise
+        finally:
+            reset_trace_id(trace_token)
+        emit_event(
+            "audio.capture_completed", trace_id=trace_id, component="audio", status="ok",
+            attributes={"sample_count": int(len(audio_data)), "sample_rate_hz": int(self.stream.sample_rate)},
+        )
         self._active_heard_capture_id = self._save_heard_capture(audio_data)
         return audio_data
 
@@ -428,7 +459,7 @@ class AdamDaemon:
         """Use local ASR for custom wake spotting; reserve cloud ASR for wake candidates."""
         provider = str(getattr(self.config.stt, "provider", "local")).lower()
         if provider not in ("openai", "openrouter", "custom"):
-            return self._transcribe_stt(audio_data)
+            return self._transcribe_stt(audio_data, kind="wake")
 
         if self.wake_spotter is None:
             cfg = self.config.stt
@@ -444,10 +475,42 @@ class AdamDaemon:
             )
         return self.wake_spotter.transcribe(audio_data)
 
-    def _transcribe_stt(self, audio_data: np.ndarray) -> str:
+    def _transcribe_stt(self, audio_data: np.ndarray, *, kind: str = "final") -> str:
         """Serialize local/cloud STT calls shared by commands and meeting worker."""
-        with self._stt_lock:
-            return self.stt.transcribe(audio_data)
+        trace_token = None
+        if kind in {"final", "partial", "wake"} and getattr(self, "_active_capture_trace_id", None):
+            trace_token = set_trace_id(self._active_capture_trace_id)
+        stt_provider = str(getattr(self.config.stt, "provider", "local"))
+        stt_model = (
+            getattr(self.config.stt, "cloud_model", "")
+            if stt_provider.lower() in {"openai", "openrouter", "custom"}
+            else getattr(self.config.stt, "model_size", "")
+        )
+        span_id = str(uuid.uuid4())
+        emit_event(
+            "stt.started", span_id=span_id, component="stt", provider=stt_provider,
+            model=stt_model, status="started", attributes={"kind": kind},
+        )
+        try:
+            with self._stt_lock:
+                with timed_stage("stt.transcribe", kind=kind, provider=stt_provider):
+                    text = self.stt.transcribe(audio_data)
+        except Exception as exc:
+            emit_event(
+                "stt.completed", span_id=span_id, component="stt", status="error",
+                provider=stt_provider, model=stt_model,
+                attributes={"kind": kind, "error_type": type(exc).__name__},
+            )
+            if trace_token is not None:
+                reset_trace_id(trace_token)
+            raise
+        emit_event(
+            "stt.completed", span_id=span_id, component="stt", status="ok",
+            provider=stt_provider, model=stt_model, attributes={"kind": kind},
+        )
+        if trace_token is not None:
+            reset_trace_id(trace_token)
+        return text
 
     def _separate_enrolled_speaker(self, audio_data: np.ndarray) -> np.ndarray | None:
         if self.speaker_verifier is None or not self.speaker_verifier.enrolled:
@@ -533,7 +596,7 @@ class AdamDaemon:
                 else:
                     label, score = "Unknown", None
 
-                text = self._transcribe_stt(turn.audio).strip()
+                text = self._transcribe_stt(turn.audio, kind="meeting").strip()
                 if text:
                     turn_start = start_seconds + turn.start
                     turn_end = min(end_seconds, start_seconds + turn.end)
@@ -544,7 +607,7 @@ class AdamDaemon:
 
         # When diarization is unavailable, retain the entire mixed segment and
         # mark it with the best voice-profile/cluster match we can make.
-        text = self._transcribe_stt(audio).strip()
+        text = self._transcribe_stt(audio, kind="meeting").strip()
         if text:
             label, score = registry.label(audio) if registry else ("Unknown", None)
             session.append_turn(label, text, start_seconds, end_seconds)
@@ -692,12 +755,21 @@ class AdamDaemon:
                     pass
 
             try:
-                partial_text = self._transcribe_stt(audio_chunk)
+                partial_text = self._transcribe_stt(audio_chunk, kind="partial")
                 if not partial_text:
                     return None
 
                 # 1. Semantic linguistic endpoint analysis
-                analysis = self.endpointer.analyze(partial_text, wake_word=wake_word)
+                endpoint_state, target_silence_s = self.endpointer.analyze(partial_text, wake_word=wake_word)
+                if not isinstance(target_silence_s, (int, float)) or isinstance(target_silence_s, bool):
+                    raise TypeError("SemanticEndpointer.analyze returned a non-numeric silence duration")
+                target_silence_s = float(target_silence_s)
+                if not math.isfinite(target_silence_s) or target_silence_s <= 0:
+                    raise ValueError("SemanticEndpointer.analyze returned a non-finite or non-positive silence duration")
+                emit_event(
+                    "audio.endpoint_candidate", component="endpoint", status="ok",
+                    attributes={"state": endpoint_state.value, "target_silence_s": target_silence_s},
+                )
 
                 # 2. Speculative preflight dispatch (non-blocking threadsafe call on asyncio loop)
                 loop.call_soon_threadsafe(
@@ -706,8 +778,13 @@ class AdamDaemon:
                     )
                 )
 
-                return analysis.recommended_silence_s
-            except Exception:
+                return target_silence_s
+            except Exception as exc:
+                emit_event(
+                    "audio.endpoint_callback_error", component="endpoint", status="error",
+                    attributes={"error_type": type(exc).__name__},
+                )
+                print(f"[Endpoint] Partial endpoint analysis failed ({type(exc).__name__}); keeping current silence timeout.", flush=True)
                 return None
 
         return on_partial
@@ -763,6 +840,188 @@ class AdamDaemon:
         if not is_shutdown_reboot:
             action_summary = summary or "Action"
             await self.tts.speak_async(f"{action_summary} completed.")
+
+    async def _monitor_execution_interrupt(
+        self,
+        react_task: asyncio.Task,
+    ) -> tuple[bool, str | None]:
+        """Monitors microphone while react_task runs.
+        Returns (True, interrupt_text) if user interrupted, or (False, None) if completed normally.
+        """
+        speech_buffer = []
+        speech_samples = 0
+        silence_samples = 0
+        min_speech_samples = int(self.stream.sample_rate * 0.35)
+        pause_seconds = max(0.6, float(self.config.audio.vad_silence_duration))
+        pause_samples_needed = int(self.stream.sample_rate * pause_seconds)
+        max_continuous_speech = int(
+            self.stream.sample_rate * self.config.audio.max_utterance_seconds
+        )
+
+        while not react_task.done():
+            # 1. Check if TTS caught barge-in during speech
+            if getattr(self.tts, "pending_barge_in_text", None):
+                barge_text = self.tts.pending_barge_in_text
+                self.tts.pending_barge_in_text = None
+                self.tts.pending_barge_in_audio = None
+                self.brain.cancel_active_execution()
+                react_task.cancel()
+                try:
+                    await react_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                return True, barge_text
+
+            # 2. If TTS is actively speaking, its own monitor handles mic stream
+            if getattr(self.stream, "is_assistant_speaking", False):
+                await asyncio.sleep(0.03)
+                continue
+
+            # 3. Read chunk from microphone
+            chunk = await asyncio.to_thread(self.stream.get_chunk, timeout=0.04)
+            if chunk is None or react_task.done():
+                if react_task.done():
+                    break
+                await asyncio.sleep(0.01)
+                continue
+
+            # 4. Check for speech via VAD
+            is_speech, prob = self.stream.vad.is_speech(
+                chunk,
+                threshold=self.config.audio.vad_threshold_speaking,
+            )
+            if is_speech:
+                speech_buffer.append(chunk)
+                speech_samples += len(chunk)
+                silence_samples = 0
+            else:
+                if speech_samples > 0:
+                    silence_samples += len(chunk)
+                    speech_buffer.append(chunk)
+
+            # 5. Evaluate speech when user pauses or reaches max speech length
+            has_paused = (silence_samples >= pause_samples_needed)
+            reached_cap = (speech_samples >= max_continuous_speech)
+
+            if speech_samples >= min_speech_samples and (has_paused or reached_cap):
+                audio_snippet = np.concatenate(speech_buffer)
+                speech_buffer = []
+                speech_samples = 0
+                silence_samples = 0
+
+                try:
+                    text = await asyncio.to_thread(self._transcribe_wake_candidate, audio_snippet)
+                except Exception:
+                    text = ""
+
+                text_clean = text.strip() if text else ""
+                if text_clean:
+                    matched_wake, rem_cmd = self.wake.match_explicit_wake_word(text_clean)
+
+                    # Tool execution is interrupted only by the configured
+                    # wake phrase. Standalone words such as "stop" or "wait"
+                    # are ordinary speech while Adam is working.
+                    if matched_wake:
+                        # Verify speaker if configured
+                        if self.speaker_verifier is not None and self.speaker_verifier.enrolled:
+                            authorized = False
+                            try:
+                                authorized, _ = await asyncio.to_thread(
+                                    self.speaker_verifier.verify, audio_snippet
+                                )
+                            except Exception:
+                                authorized = False
+                            if not authorized:
+                                print(f"[Interruption] Ignored unverified speaker: '{text_clean}'", flush=True)
+                                continue
+
+                        print(f"\n[Interruption] >>> Interruption detected during tool execution ({text_clean})! Halting task <<<", flush=True)
+                        self.earcon.play("interrupt")
+                        self.tts.advance_epoch()
+                        self.brain.cancel_active_execution()
+                        react_task.cancel()
+                        try:
+                            await react_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                        return True, rem_cmd if rem_cmd else text_clean
+
+        try:
+            await react_task
+        except (asyncio.CancelledError, Exception):
+            pass
+        return False, None
+
+    async def _execute_turn(
+        self,
+        command_text: str,
+        memory_context: str | None = None,
+    ) -> None:
+        """Executes user commands through the ReAct agent with active real-time interruption monitoring."""
+        current_cmd: str | None = command_text
+        current_mem = memory_context
+
+        await self.arbiter.set_state("PROCESSING_REACT")
+        try:
+            while current_cmd and self.running:
+                cmd_to_run = current_cmd
+                current_cmd = None
+                trace_id = getattr(self, "_active_capture_trace_id", None)
+                trace_token = set_trace_id(trace_id) if trace_id else None
+                try:
+                    react_task = asyncio.create_task(
+                        self.brain.process_user_utterance(cmd_to_run, memory_context=current_mem)
+                    )
+                finally:
+                    if trace_token is not None:
+                        reset_trace_id(trace_token)
+                current_mem = None
+
+                interrupted, interrupt_cmd = await self._monitor_execution_interrupt(react_task)
+                if not react_task.done():
+                    try:
+                        await react_task
+                    except (asyncio.CancelledError, Exception):
+                        pass
+                if not interrupted:
+                    break
+
+                print(f"[Interruption] Execution halted mid-task by user: '{interrupt_cmd}'", flush=True)
+                if interrupt_cmd:
+                    stripped_cmd = re.sub(
+                        r"^\s*(?:(?:hey\s+)?adam\s*[,;:]?\s*)?"
+                        r"(?:stop|wait|hold on|cancel|nevermind|never mind|abort|pause|quiet|shut up)\b"
+                        r"(?:\s*(?:and|then|please|,|;|\.|\bthat\b|\bit\b)\s*)*",
+                        "",
+                        interrupt_cmd,
+                        flags=re.IGNORECASE,
+                    ).strip()
+
+                    matched_new, rem_new = self.wake.match_custom_wake_word(stripped_cmd)
+                    if matched_new and rem_new:
+                        stripped_cmd = rem_new.strip()
+
+                    if stripped_cmd:
+                        print(f"[Interruption] >>> Executing new command: \"{stripped_cmd}\" <<<", flush=True)
+                        self.earcon.play("captured")
+                        current_cmd = stripped_cmd
+                    else:
+                        print("[Interruption] Task aborted by user request.", flush=True)
+                        break
+                else:
+                    break
+        finally:
+            self.speculative_router.cancel_active()
+            if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
+                await self.arbiter.set_state("IDLE_LISTENING")
+                self.stream.flush()
+                self.stream.quench(duration=0.4)
+                if getattr(getattr(self, "meeting_session", None), "active", False):
+                    self.conversation_deadline = 0.0
+                    print("[Meeting] Returning to continuous meeting capture.", flush=True)
+                else:
+                    self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
+                    print(f"[Follow-up] Window open for {self.config.wake.followup_window_seconds:.1f}s (no wake word needed)...", flush=True)
 
     async def run(self):
         """Main non-blocking asynchronous event loop."""
@@ -820,7 +1079,7 @@ class AdamDaemon:
                     # If user is still speaking, capture remainder of speech until natural pause
                     trailing_audio = await self._record_utterance(
                         silence_duration=self.config.audio.vad_silence_duration,
-                        max_duration=45.0,
+                        max_duration=self.config.audio.max_utterance_seconds,
                         idle_threshold=self.config.audio.vad_threshold_idle,
                         speaking_threshold=self.config.audio.vad_threshold_speaking,
                         on_partial_audio=self._create_partial_callback(loop, wake_word="")
@@ -866,7 +1125,7 @@ class AdamDaemon:
                             print("[Mic] Listening for command...", flush=True)
                             prompt_audio = await self._record_utterance(
                                 silence_duration=self.config.audio.vad_silence_duration,
-                                max_duration=45.0,
+                                max_duration=self.config.audio.max_utterance_seconds,
                                 idle_threshold=self.config.audio.vad_threshold_idle,
                                 speaking_threshold=self.config.audio.vad_threshold_speaking,
                                 on_partial_audio=self._create_partial_callback(loop, wake_word="")
@@ -904,14 +1163,7 @@ class AdamDaemon:
                     # Execute the barged-in command directly
                     print(f"[Barge-In] >>> Executing barged-in command: \"{barge_cmd}\" <<<", flush=True)
                     self.earcon.play("captured")
-                    await self.arbiter.set_state("PROCESSING_REACT")
-                    try:
-                        await self.brain.process_user_utterance(barge_cmd)
-                    finally:
-                        if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
-                            await self.arbiter.set_state("IDLE_LISTENING")
-                            self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
-                            print(f"[Follow-up] Window open for {self.config.wake.followup_window_seconds:.1f}s (no wake word needed)...", flush=True)
+                    await self._execute_turn(barge_cmd)
                     continue
 
                 chunk = self.stream.get_chunk(timeout=0.08)
@@ -946,7 +1198,7 @@ class AdamDaemon:
                             # open indefinitely and postpone wake-word checks.
                             # Commands are short; cap each candidate while the
                             # follow-up path still accepts longer requests.
-                            max_duration=45.0 if is_in_followup else 10.0,
+                            max_duration=self.config.audio.max_utterance_seconds,
                             idle_threshold=self.config.audio.vad_threshold_idle,
                             speaking_threshold=self.config.audio.vad_threshold_speaking,
                             initial_chunk=chunk,
@@ -1267,7 +1519,7 @@ class AdamDaemon:
                                     prompt_cb = self._create_partial_callback(loop, wake_word="")
                                     prompt_audio = await self._record_utterance(
                                         silence_duration=self.config.audio.vad_silence_duration,
-                                        max_duration=45.0,
+                                        max_duration=self.config.audio.max_utterance_seconds,
                                         idle_threshold=self.config.audio.vad_threshold_idle,
                                         speaking_threshold=self.config.audio.vad_threshold_speaking,
                                         on_partial_audio=prompt_cb
@@ -1304,26 +1556,19 @@ class AdamDaemon:
                                 if self.speaker_verifier is None or not await self._speaker_allowed(audio_data):
                                     self.speculative_router.cancel_active()
                                     continue
-                                from src.intent.idea_router import extract_memory_text
-
-                                memory_text = extract_memory_text(text)
+                                memory_text = extract_memory_command(text)
                                 if memory_text is not None:
-                                    memory_id = self.idea_router.add_memory(memory_text)
-                                    print(f"[Memory] Saved user memory {memory_id} verbatim from the transcript.", flush=True)
+                                    rec = self.memory_manager.save(memory_text)
+                                    print(f"[Memory] Saved user memory {rec.id}: \"{rec.text}\"", flush=True)
                                     await self.tts.speak_async("Memory saved.")
                                     self.stream.flush()
                                     self.stream.quench(duration=0.4)
                                     continue
 
-                                memory_match = self.idea_router.match_memory(text)
-                                if memory_match is not None and memory_match.accepted:
-                                    matched_memory_context = memory_match.text
+                                matched_memory_context = self.memory_manager.retrieve_context(text)
+                                if matched_memory_context is not None:
                                     target_cmd = text
-                                    print(
-                                        f"[Memory] Matched saved memory {memory_match.memory_id} "
-                                        f"(score={memory_match.score:.3f}, margin={memory_match.margin:.3f}).",
-                                        flush=True,
-                                    )
+                                    print(f"[Memory] Matched saved memory context for utterance.", flush=True)
 
                                 if target_cmd is not None:
                                     idea_match = None
@@ -1360,28 +1605,20 @@ class AdamDaemon:
                                     )
 
                             if target_cmd:
-                                if self.idea_router is not None:
-                                    from src.intent.idea_router import extract_memory_text
+                                memory_text = extract_memory_command(target_cmd)
+                                if memory_text is not None:
+                                    rec = self.memory_manager.save(memory_text)
+                                    print(f"[Memory] Saved user memory {rec.id}: \"{rec.text}\"", flush=True)
+                                    await self.tts.speak_async("Memory saved.")
+                                    if self.meeting_session.active:
+                                        self.stream.flush()
+                                        self.stream.quench(duration=0.4)
+                                    continue
 
-                                    memory_text = extract_memory_text(target_cmd)
-                                    if memory_text is not None:
-                                        memory_id = self.idea_router.add_memory(memory_text)
-                                        print(f"[Memory] Saved user memory {memory_id} verbatim from the transcript.", flush=True)
-                                        await self.tts.speak_async("Memory saved.")
-                                        if self.meeting_session.active:
-                                            self.stream.flush()
-                                            self.stream.quench(duration=0.4)
-                                        continue
-
-                                    if matched_memory_context is None:
-                                        memory_match = self.idea_router.match_memory(target_cmd)
-                                        if memory_match is not None and memory_match.accepted:
-                                            matched_memory_context = memory_match.text
-                                            print(
-                                                f"[Memory] Matched saved memory {memory_match.memory_id} "
-                                                f"(score={memory_match.score:.3f}, margin={memory_match.margin:.3f}).",
-                                                flush=True,
-                                            )
+                                if matched_memory_context is None:
+                                    matched_memory_context = self.memory_manager.retrieve_context(target_cmd)
+                                    if matched_memory_context is not None:
+                                        print(f"[Memory] Matched saved memory context for command.", flush=True)
 
                                 meeting_action = meeting_command_kind(target_cmd)
                                 if meeting_action == "start":
@@ -1392,24 +1629,10 @@ class AdamDaemon:
                                     continue
                                 ensure_gui_environment()
                                 self.earcon.play("captured")
-                                await self.arbiter.set_state("PROCESSING_REACT")
-                                try:
-                                    await self.brain.process_user_utterance(
-                                        target_cmd,
-                                        memory_context=matched_memory_context,
-                                    )
-                                finally:
-                                    self.speculative_router.cancel_active()
-                                    if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
-                                        await self.arbiter.set_state("IDLE_LISTENING")
-                                        self.stream.flush()
-                                        self.stream.quench(duration=0.4)
-                                        if self.meeting_session.active:
-                                            self.conversation_deadline = 0.0
-                                            print("[Meeting] Returning to continuous meeting capture.", flush=True)
-                                        else:
-                                            self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
-                                            print(f"[Follow-up] Window open for {self.config.wake.followup_window_seconds:.1f}s (no wake word needed)...", flush=True)
+                                await self._execute_turn(
+                                    target_cmd,
+                                    memory_context=matched_memory_context,
+                                )
                             else:
                                 self.speculative_router.cancel_active()
                                 if text and idea_listening and not is_in_followup:
@@ -1432,7 +1655,7 @@ class AdamDaemon:
                         prompt_cb = self._create_partial_callback(loop, wake_word="")
                         audio_data = await self._record_utterance(
                             silence_duration=self.config.audio.vad_silence_duration,
-                            max_duration=45.0,
+                            max_duration=self.config.audio.max_utterance_seconds,
                             idle_threshold=self.config.audio.vad_threshold_idle,
                             speaking_threshold=self.config.audio.vad_threshold_speaking,
                             on_partial_audio=prompt_cb
@@ -1454,15 +1677,18 @@ class AdamDaemon:
                                 self._active_heard_capture_id, text, "pretrained-wake-command"
                             )
                             if text:
-                                await self.arbiter.set_state("PROCESSING_REACT")
-                                try:
-                                    await self.brain.process_user_utterance(text)
-                                finally:
+                                memory_text = extract_memory_command(text)
+                                if memory_text is not None:
+                                    rec = self.memory_manager.save(memory_text)
+                                    print(f"[Memory] Saved user memory {rec.id}: \"{rec.text}\"", flush=True)
+                                    await self.tts.speak_async("Memory saved.")
                                     self.speculative_router.cancel_active()
-                                    if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
-                                        await self.arbiter.set_state("IDLE_LISTENING")
-                                        self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
-                                        print(f"[Follow-up] Window open for {self.config.wake.followup_window_seconds:.1f}s...", flush=True)
+                                    self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
+                                    self.wake.reset()
+                                    continue
+
+                                mem_ctx = self.memory_manager.retrieve_context(text)
+                                await self._execute_turn(text, memory_context=mem_ctx)
                             else:
                                 self.speculative_router.cancel_active()
                         else:
@@ -1483,7 +1709,7 @@ class AdamDaemon:
                     # 2. Otherwise record verbal response from user
                     audio_data = await self._record_utterance(
                         silence_duration=self.config.audio.vad_silence_duration,
-                        max_duration=30.0,
+                        max_duration=self.config.audio.max_utterance_seconds,
                         idle_threshold=self.config.audio.vad_threshold_idle,
                         speaking_threshold=self.config.audio.vad_threshold_speaking,
                         on_partial_audio=self._create_partial_callback(loop, wake_word="")
@@ -1556,9 +1782,9 @@ class AdamDaemon:
                             else:
                                 summary = action.get("summary", "the requested action")
                                 print(f"[Confirmation] Resuming brain with user affirmation: {summary}")
-                                await self.brain.process_user_utterance(f"User confirmed: proceed with {summary}")
+                                await self._execute_turn(f"User confirmed: proceed with {summary}")
 
-                        if self.arbiter.state != SystemState.AWAITING_CONFIRMATION:
+                        if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
                             await self.arbiter.set_state("IDLE_LISTENING")
                             self.stream.flush()
                             self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
@@ -1567,20 +1793,12 @@ class AdamDaemon:
                         self.stream.flush()
                         if subsequent_cmd:
                             print(f"[Confirmation] Executing subsequent command: '{subsequent_cmd}'", flush=True)
-                            await self.arbiter.set_state("PROCESSING_REACT")
-                            await self.brain.process_user_utterance(subsequent_cmd)
-                            await self.arbiter.set_state("IDLE_LISTENING")
-                            self.stream.flush()
-                            self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
+                            await self._execute_turn(subsequent_cmd)
                         else:
                             self.conversation_deadline = 0.0
                     elif result == "NEW_COMMAND" and subsequent_cmd:
                         print(f"[Confirmation] Switching to new command: '{subsequent_cmd}'", flush=True)
-                        await self.arbiter.set_state("PROCESSING_REACT")
-                        await self.brain.process_user_utterance(subsequent_cmd)
-                        await self.arbiter.set_state("IDLE_LISTENING")
-                        self.stream.flush()
-                        self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
+                        await self._execute_turn(subsequent_cmd)
 
                 await asyncio.sleep(0.1)
 

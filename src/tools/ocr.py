@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import io
 import ctypes
+import threading
+import time
 from dataclasses import dataclass
+
+from src.tools.desktop_timing import log_duration, log_elapsed
 
 
 @dataclass(frozen=True)
@@ -36,14 +40,22 @@ class ScreenOCR:
     def __init__(
         self,
         max_regions: int = 100,
+        max_candidates: int | None = None,
         min_confidence: float = 0.2,
         engine=None,
         device: str = "cpu",
         gpu_uuid: str = "",
+        preload: bool = False,
     ):
         self.max_regions = max(1, min(int(max_regions), 255))
+        self.max_candidates = max(
+            self.max_regions,
+            int(max_candidates if max_candidates is not None else self.max_regions * 8),
+        )
         self.min_confidence = min(max(float(min_confidence), 0.0), 1.0)
         self._engine = engine
+        self._engine_instrumented = False
+        self._read_metrics = threading.local()
         self.device = device.casefold()
         self.gpu_uuid = gpu_uuid.strip()
         self._device_id: int | None = None
@@ -53,6 +65,12 @@ class ScreenOCR:
             if not self.gpu_uuid:
                 raise RuntimeError("GPU OCR needs computer_vision.gpu_uuid to select the allowed GPU.")
             self._device_id = self._resolve_gpu_index(self.gpu_uuid)
+        if preload:
+            self.load()
+
+    def load(self):
+        """Preload the OCR engine and model weights into memory/device."""
+        return self._get_engine()
 
     @staticmethod
     def _resolve_gpu_index(gpu_uuid: str) -> int:
@@ -106,6 +124,17 @@ class ScreenOCR:
             # which makes ORT emit a spurious plugin-device warning on recent builds.
             if use_cuda and self._device_id != 0:
                 params["EngineConfig.onnxruntime.cuda_ep_cfg.device_id"] = self._device_id
+            if use_cuda:
+                # RapidOCR defaults to cuDNN's exhaustive convolution search
+                # and a power-of-two CUDA arena. Both can request large,
+                # transient workspaces and strand excess GPU memory. Keep GPU
+                # allocation proportional to the real OCR workload so screen
+                # reads remain reusable alongside the assistant and desktop.
+                params["EngineConfig.onnxruntime.cuda_ep_cfg.arena_extend_strategy"] = "kSameAsRequested"
+                params["EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_algo_search"] = "HEURISTIC"
+                # ORT defaults this to a cuDNN-sized workspace, which can
+                # exceed 500 MiB per inference for convolution-heavy kernels.
+                params["EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_use_max_workspace"] = False
             self._engine = RapidOCR(params=params)
             if use_cuda:
                 components = (self._engine.text_det, self._engine.text_cls, self._engine.text_rec)
@@ -119,14 +148,101 @@ class ScreenOCR:
                 )
             else:
                 print("[OCR] PP-OCRv6 medium using CPU (inference threads capped at 2).", flush=True)
+        self._instrument_engine(self._engine)
         return self._engine
+
+    def _instrument_engine(self, engine) -> None:
+        """Record OCR candidate counts and bound pathological recognizer workloads."""
+        if self._engine_instrumented or not all(
+            hasattr(engine, name) for name in ("detect_and_crop", "recognize_txt")
+        ):
+            return
+
+        original_detect = engine.detect_and_crop
+
+        def detect_and_crop(image, op_record):
+            crops, result = original_detect(image, op_record)
+            metrics = getattr(self._read_metrics, "current", None)
+            if metrics is not None:
+                detected = len(crops)
+                metrics["detected_candidates"] = detected
+                if detected > self.max_candidates and result.scores is not None:
+                    import numpy as np
+
+                    scores = np.asarray(result.scores, dtype=float)
+                    selected = np.argsort(-scores, kind="stable")[: self.max_candidates]
+                    selected.sort()  # Keep RapidOCR's detected ordering for matching crops and boxes.
+                    crops = [crops[int(index)] for index in selected]
+                    result.boxes = result.boxes[selected]
+                    result.scores = [result.scores[int(index)] for index in selected]
+                    metrics["candidate_limit_hit"] = True
+                else:
+                    metrics["candidate_limit_hit"] = False
+                metrics["recognized_candidates"] = len(crops)
+            return crops, result
+
+        original_recognize = engine.recognize_txt
+
+        def recognize_txt(crops):
+            metrics = getattr(self._read_metrics, "current", None)
+            if metrics is not None:
+                metrics["recognizer_input_count"] = len(crops)
+                metrics["recognizer_batch_size"] = getattr(engine.text_rec, "rec_batch_num", 0)
+                metrics["recognizer_crop_pixels"] = sum(
+                    int(crop.shape[0]) * int(crop.shape[1]) for crop in crops
+                )
+            started = time.perf_counter()
+            result = original_recognize(crops)
+            if metrics is not None:
+                metrics["recognizer_wall_ms"] = (time.perf_counter() - started) * 1000
+            return result
+
+        engine.detect_and_crop = detect_and_crop
+        engine.recognize_txt = recognize_txt
+        self._engine_instrumented = True
+
+    @property
+    def last_read_diagnostics(self) -> dict[str, int | bool]:
+        """Return privacy-safe metrics for the current worker thread's last OCR call."""
+        return dict(getattr(self._read_metrics, "last", {}))
 
     def read(self, image_bytes: bytes) -> list[OCRRegion]:
         from PIL import Image
         import numpy as np
 
+        preprocess_started = time.perf_counter()
         image = np.asarray(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
-        result = self._get_engine()(image)
+        log_duration("ocr.decode_preprocess", preprocess_started,
+                     width=int(image.shape[1]), height=int(image.shape[0]), image_bytes=len(image_bytes))
+        inference_started = time.perf_counter()
+        engine = self._get_engine()
+        metrics: dict[str, int | bool] = {}
+        self._read_metrics.current = metrics
+        try:
+            result = engine(image)
+        finally:
+            self._read_metrics.last = dict(metrics)
+            del self._read_metrics.current
+        log_duration("ocr.pipeline", inference_started)
+        from src.tools.desktop_timing import log_elapsed
+
+        log_elapsed(
+            "ocr.candidates", 0.0,
+            detected_candidates=int(metrics.get("detected_candidates", 0)),
+            recognized_candidates=int(metrics.get("recognized_candidates", 0)),
+            recognizer_input_count=int(metrics.get("recognizer_input_count", 0)),
+            recognizer_batch_size=int(metrics.get("recognizer_batch_size", 0)),
+            candidate_limit=self.max_candidates,
+            candidate_limit_hit=bool(metrics.get("candidate_limit_hit", False)),
+            recognizer_crop_pixels=int(metrics.get("recognizer_crop_pixels", 0)),
+            recognizer_wall_ms=round(float(metrics.get("recognizer_wall_ms", 0)), 1),
+        )
+        elapse_list = getattr(result, "elapse_list", None)
+        if isinstance(elapse_list, (list, tuple)):
+            for name, elapsed in zip(("detector", "classifier", "recognizer"), elapse_list):
+                if isinstance(elapsed, (int, float)):
+                    log_elapsed(f"ocr.{name}", float(elapsed) * 1000)
+        postprocess_started = time.perf_counter()
         if all(hasattr(result, attr) for attr in ("boxes", "txts", "scores")):
             boxes, texts, scores = result.boxes, result.txts, result.scores
             # RapidOCR returns None for all three fields when the screen has no
@@ -157,10 +273,12 @@ class ScreenOCR:
                 continue
         regions.sort(key=lambda region: (-region.confidence, region.top, region.left))
         regions = regions[: self.max_regions]
-        return [
+        parsed = [
             OCRRegion(f"O{index}", item.text, item.confidence, item.left, item.top, item.right, item.bottom)
             for index, item in enumerate(regions, 1)
         ]
+        log_duration("ocr.result_postprocess", postprocess_started, region_count=len(parsed))
+        return parsed
 
     def read_zoomed_band(
         self,

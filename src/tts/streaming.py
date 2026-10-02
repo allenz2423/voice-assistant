@@ -6,6 +6,7 @@ import difflib
 import threading
 from collections import deque
 from src.audio.earcon import resolve_pulse_device_index, setup_audio_routing
+from src.telemetry.events import emit_event, new_span_id
 
 MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
@@ -278,7 +279,14 @@ class StreamingVoiceSynthesizer:
 
     async def _play_interruptibly(self, playback_fn, *args, epoch: int):
         """Run blocking audio playback without pinning speech completion after barge-in."""
-        playback_task = asyncio.create_task(asyncio.to_thread(playback_fn, *args))
+        playback_span = new_span_id()
+        emit_event("playback.started", span_id=playback_span, component="playback", status="started")
+        playback_state = {"submitted": False, "error": False}
+        playback_task = asyncio.create_task(
+            asyncio.to_thread(
+                playback_fn, *args, playback_span_id=playback_span, playback_state=playback_state
+            )
+        )
         while not playback_task.done():
             if epoch != self.current_epoch:
                 # The worker owns its stream and will observe the epoch change
@@ -286,9 +294,21 @@ class StreamingVoiceSynthesizer:
                 playback_task.add_done_callback(
                     lambda task: task.exception() if not task.cancelled() else None
                 )
+                emit_event(
+                    "playback.completed", span_id=playback_span, component="playback", status="cancelled"
+                )
                 return
             await asyncio.wait({playback_task}, timeout=0.05)
-        await playback_task
+        try:
+            await playback_task
+        except Exception as exc:
+            emit_event(
+                "playback.completed", span_id=playback_span, component="playback", status="error",
+                attributes={"error_type": type(exc).__name__},
+            )
+            raise
+        playback_status = "error" if playback_state["error"] else ("ok" if playback_state["submitted"] else "skipped")
+        emit_event("playback.completed", span_id=playback_span, component="playback", status=playback_status)
 
     def speak_now(self, text: str):
         """Non-blocking fire-and-forget speech."""
@@ -463,21 +483,10 @@ class StreamingVoiceSynthesizer:
         wake_word_detected = False
         # 350ms minimum speech at mic sample rate
         min_speech_samples = int(0.35 * self.mic_stream.sample_rate)
-        # Cap on sustained continuous speech before evaluating STT check (~600ms)
-        max_continuous_speech_samples = int(0.60 * self.mic_stream.sample_rate)
-        # Silence pause required to finalize short utterance (150ms)
-        pause_samples_needed = int(0.15 * self.mic_stream.sample_rate)
-
-        INTERRUPT_KEYWORDS = {
-            "stop", "wait", "hold on", "quiet", "shut up", "cancel", "nevermind",
-            "silence", "shh", "pause", "enough"
-        }
-        if self.wake_detector:
-            raw_w = getattr(self.wake_detector, "raw_wake_word", "").lower().strip()
-            if raw_w:
-                INTERRUPT_KEYWORDS.add(raw_w)
-                if raw_w.startswith("hey "):
-                    INTERRUPT_KEYWORDS.add(raw_w[4:].strip())
+        # Give the complete wake phrase time to reach ASR before considering a barge-in.
+        max_continuous_speech_samples = int(1.20 * self.mic_stream.sample_rate)
+        # Ignore tiny pauses so a short hesitation does not split the wake phrase.
+        pause_samples_needed = int(0.60 * self.mic_stream.sample_rate)
 
         while not stop_event.is_set():
             chunk = await asyncio.to_thread(self.mic_stream.get_chunk, timeout=0.03)
@@ -530,19 +539,15 @@ class StreamingVoiceSynthesizer:
                         else:
                             matched_wake = False
                             if self.wake_detector:
-                                matched, _ = self.wake_detector.match_custom_wake_word(text_clean)
+                                matched, _ = self.wake_detector.match_explicit_wake_word(text_clean)
                                 if matched:
                                     matched_wake = True
                             matched_wake = matched_wake or wake_word_detected
 
-                            contains_interrupt = any(kw in text_clean.lower() for kw in INTERRUPT_KEYWORDS)
-
-                            # Genuine barge-in requires:
-                            # 1. Configured wake word, OR
-                            # 2. Explicit interrupt command ("stop", "wait", etc.)
-                            # Note: Like Amazon Alexa and Google Assistant, arbitrary speech without wake word
-                            # or interrupt keyword is suppressed during playback to prevent acoustic bleed self-interruption.
-                            if matched_wake or contains_interrupt:
+                            # Only the configured wake phrase can interrupt
+                            # speech or an active tool turn; standalone command
+                            # words must not cancel execution.
+                            if matched_wake:
                                 speaker_verified = False
                                 if self.speaker_verifier is not None:
                                     try:
@@ -577,7 +582,7 @@ class StreamingVoiceSynthesizer:
                                     self.earcon.play("interrupt")
                                 break
                             else:
-                                # Utterance without wake word or interrupt keyword is ignored during playback
+                                # Utterances without the wake phrase are ignored during playback.
                                 speech_buffer = []
                                 speech_samples = 0
                                 silence_samples = 0
@@ -704,18 +709,27 @@ class StreamingVoiceSynthesizer:
     async def _synthesize_and_play_clause(self, clause: str, epoch: int):
         if epoch != self.current_epoch:
             return
+        clause_span = new_span_id()
+        emit_event("tts.clause_started", span_id=clause_span, component="tts", status="started")
 
         if self.engine == "openai":
             pcm = await self._synthesize_openai(clause)
             if pcm and epoch == self.current_epoch:
+                emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="ok")
                 await self._play_interruptibly(self._play_raw_pcm, pcm, epoch, epoch=epoch)
+            elif pcm:
+                emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="cancelled")
+            elif not pcm:
+                emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="error")
             return
 
         if self.engine == "cosyvoice":
             samples, sr = await self._synthesize_cosyvoice(clause)
             if samples is not None and len(samples) > 0:
                 if epoch != self.current_epoch:
+                    emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="cancelled")
                     return
+                emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="ok")
                 await self._play_interruptibly(self._play_float32_audio, samples, sr, epoch, epoch=epoch)
                 return
 
@@ -733,11 +747,20 @@ class StreamingVoiceSynthesizer:
                 )
             except Exception as e:
                 print(f"[TTS] Kokoro synthesis error: {e}")
+                emit_event(
+                    "tts.clause_synthesized", span_id=clause_span, component="tts", status="error",
+                    attributes={"error_type": type(e).__name__},
+                )
                 return
 
-            if epoch != self.current_epoch or len(samples) == 0:
+            if epoch != self.current_epoch:
+                emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="cancelled")
+                return
+            if len(samples) == 0:
+                emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="error")
                 return
 
+            emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="ok")
             await self._play_interruptibly(self._play_float32_audio, samples, sr, epoch, epoch=epoch)
             return
 
@@ -761,6 +784,10 @@ class StreamingVoiceSynthesizer:
             )
         except Exception as e:
             print(f"[TTS] Could not start Piper ({self.piper_bin}): {e}", flush=True)
+            emit_event(
+                "tts.clause_synthesized", span_id=clause_span, component="tts", status="error",
+                attributes={"error_type": type(e).__name__},
+            )
             return
         self.active_piper_proc = proc
 
@@ -769,21 +796,34 @@ class StreamingVoiceSynthesizer:
             stdout_data, stderr_data = await proc.communicate(input=f"{clause}\n".encode("utf-8"))
         except Exception as e:
             print(f"[TTS] Piper synthesis failed: {e}", flush=True)
+            emit_event(
+                "tts.clause_synthesized", span_id=clause_span, component="tts", status="error",
+                attributes={"error_type": type(e).__name__},
+            )
             return
 
         if proc.returncode != 0:
             detail = stderr_data.decode("utf-8", errors="replace").strip()
             print(f"[TTS] Piper exited with status {proc.returncode}: {detail or 'no error details'}", flush=True)
+            emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="error")
             return
         if epoch != self.current_epoch or not stdout_data:
+            emit_event(
+                "tts.clause_synthesized", span_id=clause_span, component="tts",
+                status="cancelled" if epoch != self.current_epoch else "error",
+            )
             if not stdout_data and epoch == self.current_epoch:
                 print("[TTS] Piper produced no audio. Check that tts.model_path is a valid Piper voice model (.onnx).", flush=True)
             return
 
         # Play audio buffer through sounddevice
+        emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="ok")
         await self._play_interruptibly(self._play_raw_pcm, stdout_data, epoch, epoch=epoch)
 
-    def _play_float32_audio(self, audio_data, sample_rate: int, epoch: int):
+    def _play_float32_audio(
+        self, audio_data, sample_rate: int, epoch: int, *, playback_span_id: str | None = None,
+        playback_state: dict | None = None,
+    ):
         if epoch != self.current_epoch:
             return
 
@@ -805,17 +845,33 @@ class StreamingVoiceSynthesizer:
             ) as stream:
                 self.stream = stream
                 chunk_size = 2048
+                first_buffer = True
                 for i in range(0, len(audio_data), chunk_size):
                     if epoch != self.current_epoch:
                         stream.abort()
                         return
-                    stream.write(audio_data[i:i + chunk_size])
+                    if first_buffer:
+                        first_buffer = False
+                        stream.write(audio_data[i:i + chunk_size])
+                        if playback_state is not None:
+                            playback_state["submitted"] = True
+                        emit_event(
+                            "playback.buffer_submitted", span_id=playback_span_id,
+                            component="playback", status="ok",
+                        )
+                    else:
+                        stream.write(audio_data[i:i + chunk_size])
         except Exception as e:
+            if playback_state is not None:
+                playback_state["error"] = True
             if epoch == self.current_epoch:
                 print(f"[TTS] Playback error: {e}")
 
 
-    def _play_raw_pcm(self, pcm_bytes: bytes, epoch: int):
+    def _play_raw_pcm(
+        self, pcm_bytes: bytes, epoch: int, *, playback_span_id: str | None = None,
+        playback_state: dict | None = None,
+    ):
         if epoch != self.current_epoch:
             return
 
@@ -838,12 +894,25 @@ class StreamingVoiceSynthesizer:
             ) as stream:
                 self.stream = stream
                 chunk_size = 2048
+                first_buffer = True
                 for i in range(0, len(audio_data), chunk_size):
                     if epoch != self.current_epoch:
                         stream.abort()
                         return
-                    stream.write(audio_data[i:i + chunk_size])
+                    if first_buffer:
+                        first_buffer = False
+                        stream.write(audio_data[i:i + chunk_size])
+                        if playback_state is not None:
+                            playback_state["submitted"] = True
+                        emit_event(
+                            "playback.buffer_submitted", span_id=playback_span_id,
+                            component="playback", status="ok",
+                        )
+                    else:
+                        stream.write(audio_data[i:i + chunk_size])
         except Exception as e:
+            if playback_state is not None:
+                playback_state["error"] = True
             if epoch == self.current_epoch:
                 print(f"[TTS] Playback error: {e}")
 

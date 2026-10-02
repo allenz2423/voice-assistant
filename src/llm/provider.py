@@ -1,11 +1,137 @@
 import os
+import io
 import json
 import re
 import html
 import asyncio
 import base64
+import math
+import time
+import uuid
+from urllib.parse import urlparse
 import ollama
 from src.llm.tools import ADAM_TOOLS, CanonicalTool
+
+
+def _telemetry_safe_text(value, max_length: int = 160) -> str | None:
+    """Return a bounded provider identifier suitable for metadata telemetry."""
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value or len(value) > max_length or any(ord(char) < 32 for char in value):
+        return None
+    return value
+
+
+def _nonnegative_int(value) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int) and value >= 0:
+        return value
+    if isinstance(value, float) and math.isfinite(value) and value >= 0 and value.is_integer():
+        return int(value)
+    return None
+
+
+def _nonnegative_number(value) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _openrouter_usage_fields(data: dict) -> tuple[dict, str]:
+    """Normalize only documented, numeric OpenRouter accounting fields."""
+    raw_usage = data.get("usage")
+    if not isinstance(raw_usage, dict):
+        return {}, "missing"
+
+    usage: dict[str, int | float] = {}
+    for source, target in (
+        ("prompt_tokens", "input_tokens"),
+        ("completion_tokens", "output_tokens"),
+        ("total_tokens", "total_tokens"),
+    ):
+        value = _nonnegative_int(raw_usage.get(source))
+        if value is not None:
+            usage[target] = value
+
+    prompt_details = raw_usage.get("prompt_tokens_details")
+    if isinstance(prompt_details, dict):
+        for source, target in (
+            ("cached_tokens", "cached_input_tokens"),
+            ("cache_write_tokens", "cache_write_tokens"),
+        ):
+            value = _nonnegative_int(prompt_details.get(source))
+            if value is not None:
+                usage[target] = value
+
+    completion_details = raw_usage.get("completion_tokens_details")
+    if isinstance(completion_details, dict):
+        reasoning_tokens = _nonnegative_int(completion_details.get("reasoning_tokens"))
+        if reasoning_tokens is not None:
+            usage["reasoning_tokens"] = reasoning_tokens
+
+    cost = _nonnegative_number(raw_usage.get("cost"))
+    if cost is not None:
+        usage["provider_reported_cost"] = cost
+        usage["currency"] = "credits"
+
+    status = "available" if usage else "missing"
+    return usage, status
+
+
+def _emit_llm_event(event: str, *, status: str, provider: str, model: str | None,
+                    trace_id: str,
+                    span_id: str | None = None,
+                    attributes: dict) -> None:
+    """Emit metadata-only telemetry; instrumentation must never break a request."""
+    try:
+        from src.telemetry.events import emit_event
+
+        emit_event(
+            event,
+            trace_id=trace_id,
+            status=status,
+            provider=provider,
+            model=model,
+            component="llm",
+            span_id=span_id,
+            attributes=attributes,
+        )
+    except Exception:
+        # A missing/failed telemetry sink must not change user-visible behavior.
+        return
+
+
+def _optimize_image_for_llm(image_bytes: bytes, max_dim: int = 1600, quality: int = 85) -> tuple[bytes, str]:
+    """Compress and downscale oversized screenshot images for fast and reliable LLM transmission."""
+    from PIL import Image
+    try:
+        with Image.open(io.BytesIO(image_bytes)) as img:
+            needs_downscale = max(img.size) > max_dim
+            needs_compress = len(image_bytes) > 500 * 1024 or img.format != "JPEG"
+            if not needs_downscale and not needs_compress:
+                mime_type = "image/jpeg" if img.format == "JPEG" else ("image/png" if img.format == "PNG" else "image/webp")
+                return image_bytes, mime_type
+
+            if needs_downscale:
+                scale = max_dim / max(img.size)
+                new_size = (max(1, int(img.width * scale)), max(1, int(img.height * scale)))
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+
+            rgb_img = img.convert("RGB")
+            buf = io.BytesIO()
+            rgb_img.save(buf, format="JPEG", quality=quality, optimize=True)
+            return buf.getvalue(), "image/jpeg"
+    except Exception:
+        mime_type = "image/png"
+        if image_bytes.startswith(b"\xff\xd8\xff"):
+            mime_type = "image/jpeg"
+        elif image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+            mime_type = "image/webp"
+        return image_bytes, mime_type
+
 
 class UniversalLLMClient:
     """Unified LLM client supporting local Ollama models and cloud providers with a single switch."""
@@ -43,20 +169,32 @@ class UniversalLLMClient:
         else:
             print(f"[LLM] Provider '{self.provider}' configured (no local GPU warmup required).", flush=True)
 
-    async def chat(self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS) -> dict:
+    async def chat(
+        self,
+        messages: list[dict],
+        tools: list[CanonicalTool] = ADAM_TOOLS,
+        max_tokens: int | None = None,
+        think: bool | None = None,
+    ) -> dict:
         """Dispatches chat completion to the configured provider (local vs cloud)."""
+        if max_tokens is not None:
+            max_tokens = max(1, int(max_tokens))
         if self.provider == "local":
-            return await self._chat_ollama(messages, tools)
+            return await self._chat_ollama(messages, tools, max_tokens, think)
         elif self.provider in ["groq", "cloud", "openai", "custom", "openai_compatible", "vllm", "llama_cpp"]:
-            return await self._chat_openai_compatible(messages, tools)
+            return await self._chat_openai_compatible(messages, tools, max_tokens, think)
         elif self.provider == "anthropic":
-            return await self._chat_anthropic(messages, tools)
+            return await self._chat_anthropic(messages, tools, max_tokens, think)
         elif self.provider == "gemini":
-            return await self._chat_gemini(messages, tools)
+            return await self._chat_gemini(messages, tools, max_tokens, think)
         else:
-            return await self._chat_ollama(messages, tools)
+            return await self._chat_ollama(messages, tools, max_tokens, think)
 
-    async def _chat_ollama(self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS) -> dict:
+    async def _chat_ollama(
+        self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS,
+        max_tokens: int | None = None,
+        think: bool | None = None,
+    ) -> dict:
         """Executes tool calling via local Ollama daemon."""
         openai_tools = [t.to_openai() for t in tools] if tools else None
         try:
@@ -65,8 +203,10 @@ class UniversalLLMClient:
                 "model": self.local_model,
                 "messages": messages,
                 "options": {"temperature": self.temperature, "num_ctx": self.num_ctx},
-                "think": self.think
+                "think": self.think if think is None else think
             }
+            if max_tokens is not None:
+                chat_kwargs["options"]["num_predict"] = max_tokens
             if openai_tools:
                 chat_kwargs["tools"] = openai_tools
 
@@ -93,7 +233,11 @@ class UniversalLLMClient:
             # Emergency offline rule-based fallback if Ollama is not running
             return self._emergency_rule_fallback(messages[-1].get("content", ""))
 
-    async def _chat_openai_compatible(self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS) -> dict:
+    async def _chat_openai_compatible(
+        self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS,
+        max_tokens: int | None = None,
+        think: bool | None = None,
+    ) -> dict:
         """Calls any OpenAI-compatible endpoint (Groq, OpenAI, vLLM, llama.cpp, LocalAI, LM Studio)."""
         import aiohttp
 
@@ -139,15 +283,20 @@ class UniversalLLMClient:
                         image_url = image
                     else:
                         image_bytes = bytes(image)
-                        if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
-                            mime_type = "image/png"
-                        elif image_bytes.startswith(b"\xff\xd8\xff"):
-                            mime_type = "image/jpeg"
-                        elif image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
-                            mime_type = "image/webp"
-                        else:
-                            mime_type = "image/png"
-                        encoded = base64.b64encode(image_bytes).decode("ascii")
+                        image_started = time.perf_counter()
+                        opt_bytes, mime_type = _optimize_image_for_llm(image_bytes)
+                        encoded = base64.b64encode(opt_bytes).decode("ascii")
+                        try:
+                            from src.telemetry.events import get_trace_id
+                            image_trace = get_trace_id() or "untraced"
+                        except Exception:
+                            image_trace = "untraced"
+                        print(
+                            f"[LLMTiming] trace={image_trace[:12]} stage=image_prepare "
+                            f"duration_ms={(time.perf_counter() - image_started) * 1000:.1f} "
+                            f"input_bytes={len(image_bytes)} output_bytes={len(opt_bytes)}",
+                            flush=True,
+                        )
                         image_url = f"data:{mime_type};base64,{encoded}"
                     parts.append({"type": "image_url", "image_url": {"url": image_url, "detail": "auto"}})
                 msg["content"] = parts
@@ -158,6 +307,8 @@ class UniversalLLMClient:
             "messages": formatted,
             "temperature": self.temperature,
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         if openai_tools:
             payload["tools"] = openai_tools
 
@@ -170,7 +321,8 @@ class UniversalLLMClient:
                     "only": self.provider_only,
                     "allow_fallbacks": self.allow_provider_fallbacks,
                 }
-            if self.think:
+            effective_think = self.think if think is None else think
+            if effective_think:
                 payload["reasoning"] = {"enabled": True}
 
         try:
@@ -179,15 +331,154 @@ class UniversalLLMClient:
             # enough time to reason over the full image and structured UI hints.
             has_image = any(bool(message.get("images")) for message in messages)
             timeout_seconds = 90 if has_image else 45
+            request_span_id = uuid.uuid4().hex
+            started_at = asyncio.get_running_loop().time()
+            configured_provider = _telemetry_safe_text(self.provider, 64) or "unknown"
+            configured_model = _telemetry_safe_text(model)
+            endpoint_host = (urlparse(url).hostname or "").lower()
+            is_openrouter_endpoint = (
+                endpoint_host == "openrouter.ai" or endpoint_host.endswith(".openrouter.ai")
+            )
+            try:
+                from src.telemetry.events import get_trace_id
+                request_trace_id = get_trace_id() or uuid.uuid4().hex
+            except Exception:
+                request_trace_id = uuid.uuid4().hex
+            route_attributes = {}
+            if is_openrouter_endpoint:
+                configured_routes = self.provider_only if isinstance(self.provider_only, (list, tuple)) else []
+                safe_routes = [
+                    safe for value in configured_routes
+                    if (safe := _telemetry_safe_text(value, 80)) is not None
+                ][:16]
+                if safe_routes:
+                    route_attributes["provider_only"] = ",".join(safe_routes)
+                route_attributes["allow_fallbacks"] = bool(self.allow_provider_fallbacks)
+            common_attributes = {
+                "configured_provider": configured_provider,
+                "configured_model": configured_model,
+                "timeout_ms": timeout_seconds * 1000,
+            }
+            common_attributes.update(route_attributes)
+            _emit_llm_event(
+                "llm.request_started",
+                status="started",
+                provider=configured_provider,
+                model=configured_model,
+                trace_id=request_trace_id,
+                span_id=request_span_id,
+                attributes=common_attributes,
+            )
+
+            request_started_at = None
+            response_headers_at = None
+            response_body_done_at = None
+
+            def complete_event(accounting_status: str, *, event_status: str = "error",
+                               response: dict | None = None,
+                               usage: dict | None = None, response_status: int | None = None):
+                finished_at = asyncio.get_running_loop().time()
+                usage = usage or {}
+                attributes = {
+                    **common_attributes,
+                    "accounting_status": accounting_status,
+                    "duration_ms": max(0, round((finished_at - started_at) * 1000)),
+                }
+                network_ms = None
+                headers_ms = None
+                body_ms = None
+                if request_started_at is not None:
+                    network_ms = max(0, round((finished_at - request_started_at) * 1000))
+                    attributes["network_ms"] = network_ms
+                if request_started_at is not None and response_headers_at is not None:
+                    headers_ms = max(0, round((response_headers_at - request_started_at) * 1000))
+                    attributes["response_headers_ms"] = headers_ms
+                if response_headers_at is not None and response_body_done_at is not None:
+                    body_ms = max(0, round((response_body_done_at - response_headers_at) * 1000))
+                    attributes["response_body_ms"] = body_ms
+                if response_status is not None:
+                    attributes["http_status"] = response_status
+                if isinstance(response, dict):
+                    returned_model = _telemetry_safe_text(response.get("model"))
+                    request_id = _telemetry_safe_text(response.get("id"))
+                    if returned_model:
+                        attributes["returned_model"] = returned_model
+                    if request_id:
+                        attributes["provider_request_id"] = request_id
+                    # OpenRouter returns the selected model in `model`. The response
+                    # schema does not guarantee a separately named provider route.
+                if usage:
+                    attributes["usage"] = usage
+                choice_data = None
+                if isinstance(response, dict):
+                    choices = response.get("choices")
+                    if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+                        choice_data = choices[0]
+                finish_reason = (
+                    _telemetry_safe_text(choice_data.get("finish_reason"), 48)
+                    if isinstance(choice_data, dict) else None
+                )
+                _emit_llm_event(
+                    "llm.completed",
+                    status=event_status,
+                    provider=configured_provider,
+                    model=(
+                        _telemetry_safe_text(response.get("model"))
+                        if isinstance(response, dict) else configured_model
+                    ),
+                    trace_id=request_trace_id,
+                    span_id=request_span_id,
+                    attributes=attributes,
+                )
+                print(
+                    f"[LLMTiming] trace={request_trace_id[:12]} stage=openai_compatible_request provider={configured_provider} "
+                    f"model={configured_model or 'unknown'} status={event_status} "
+                    f"http_status={response_status if response_status is not None else 'unknown'} "
+                    f"total_ms={attributes['duration_ms']} network_ms={network_ms if network_ms is not None else 'unknown'} "
+                    f"headers_ms={headers_ms if headers_ms is not None else 'unknown'} "
+                    f"body_ms={body_ms if body_ms is not None else 'unknown'} "
+                    f"input_tokens={usage.get('input_tokens', 'unknown')} "
+                    f"output_tokens={usage.get('output_tokens', 'unknown')} "
+                    f"reasoning_tokens={usage.get('reasoning_tokens', 'unknown')} "
+                    f"finish_reason={finish_reason or 'unknown'}",
+                    flush=True,
+                )
+
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_seconds)) as session:
+                request_started_at = asyncio.get_running_loop().time()
                 async with session.post(url, headers=headers, json=payload) as resp:
+                    response_headers_at = asyncio.get_running_loop().time()
                     if resp.status != 200:
-                        error_body = (await resp.text())[:500]
-                        print(f"[LLM] OpenAI-compatible call failed ({resp.status}): {error_body}")
+                        # Do not log provider response bodies: gateways can echo request data.
+                        complete_event("http_error", response_status=resp.status)
+                        print(f"[LLM] OpenAI-compatible call failed (HTTP {resp.status}).")
                         return self._emergency_rule_fallback(messages[-1].get("content", ""))
-                    data = await resp.json()
-                    first_choice = data.get("choices", [{}])[0]
+                    try:
+                        data = await resp.json()
+                        response_body_done_at = asyncio.get_running_loop().time()
+                    except Exception:
+                        complete_event("invalid_response", response_status=resp.status)
+                        print("[LLM] OpenAI-compatible call returned invalid JSON.", flush=True)
+                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                    if not isinstance(data, dict):
+                        complete_event("invalid_response", response_status=resp.status)
+                        print("[LLM] OpenAI-compatible call returned an invalid response shape.", flush=True)
+                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                    if "error" in data:
+                        complete_event("provider_error", response=data, response_status=resp.status)
+                        print("[LLM] OpenAI-compatible call returned a provider error.", flush=True)
+                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                    choices = data.get("choices")
+                    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+                        complete_event("invalid_response", response=data, response_status=resp.status)
+                        print("[LLM] OpenAI-compatible call returned no valid choice.", flush=True)
+                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                    first_choice = choices[0]
                     choice = first_choice.get("message", {})
+                    if not isinstance(choice, dict):
+                        complete_event("invalid_response", response=data, response_status=resp.status)
+                        print("[LLM] OpenAI-compatible call returned an invalid message shape.", flush=True)
+                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
                     content = choice.get("content") or ""
                     tool_calls = choice.get("tool_calls") or []
                     reasoning_details = choice.get("reasoning_details")
@@ -217,12 +508,30 @@ class UniversalLLMClient:
                         # OpenRouter asks clients to return these opaque blocks
                         # unchanged on the next turn for supported reasoning models.
                         result["reasoning_details"] = reasoning_details
+                    if is_openrouter_endpoint:
+                        usage, accounting_status = _openrouter_usage_fields(data)
+                    else:
+                        usage, accounting_status = {}, "unsupported"
+                    complete_event(
+                        accounting_status,
+                        event_status="ok",
+                        response=data,
+                        usage=usage,
+                        response_status=resp.status,
+                    )
                     return result
         except Exception as e:
-            print(f"[LLM] OpenAI-compatible request failed ({type(e).__name__}: {e}).")
+            # Exclude exception text; client errors can contain URLs, headers, or payload data.
+            if "started_at" in locals():
+                complete_event("transport_error")
+            print(f"[LLM] OpenAI-compatible request failed ({type(e).__name__}).")
             return self._emergency_rule_fallback(messages[-1].get("content", ""))
 
-    async def _chat_anthropic(self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS) -> dict:
+    async def _chat_anthropic(
+        self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS,
+        max_tokens: int | None = None,
+        think: bool | None = None,
+    ) -> dict:
         import aiohttp
         key = self.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         if not key:
@@ -247,7 +556,7 @@ class UniversalLLMClient:
             "model": self.cloud_model or "claude-3-5-sonnet-20241022",
             "system": system_prompt,
             "messages": ant_messages,
-            "max_tokens": 1024,
+            "max_tokens": max_tokens or 1024,
             "temperature": self.temperature
         }
         try:
@@ -269,7 +578,11 @@ class UniversalLLMClient:
             print(f"[LLM] Anthropic request failed: {e}")
             return self._emergency_rule_fallback(messages[-1].get("content", ""))
 
-    async def _chat_gemini(self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS) -> dict:
+    async def _chat_gemini(
+        self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS,
+        max_tokens: int | None = None,
+        think: bool | None = None,
+    ) -> dict:
         import aiohttp
         key = self.api_key or os.environ.get("GEMINI_API_KEY", "")
         if not key:
@@ -287,6 +600,8 @@ class UniversalLLMClient:
             "contents": contents,
             "generationConfig": {"temperature": self.temperature}
         }
+        if max_tokens is not None:
+            payload["generationConfig"]["maxOutputTokens"] = max_tokens
         try:
             async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45)) as session:
                 async with session.post(url, json=payload) as resp:

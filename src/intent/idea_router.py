@@ -30,14 +30,11 @@ MEMORY_MATCH_THRESHOLD = 0.72
 MEMORY_MATCH_MARGIN = 0.08
 
 
+from src.memory.manager import extract_memory_command
+
 def extract_memory_text(utterance: str) -> str | None:
     """Return the verbatim transcript after the explicit memory command."""
-    match = re.match(
-        r"^\s*make a memory(?:\s*[,;:]\s*|\s+(?:that|to)\s+)(.+?)\s*$",
-        str(utterance or ""),
-        re.IGNORECASE | re.DOTALL,
-    )
-    return match.group(1) if match and match.group(1).strip() else None
+    return extract_memory_command(utterance)
 
 
 @dataclass(frozen=True)
@@ -142,59 +139,38 @@ class IdeaRouter:
             ]
         return self._memories
 
+    def _get_memory_manager(self):
+        if getattr(self, "_memory_manager", None) is None:
+            from src.memory.manager import MemoryManager
+            self._memory_manager = MemoryManager(
+                storage_path=self.memories_path,
+                encoder_fn=self.encode,
+            )
+        return self._memory_manager
+
     def add_memory(self, text: str) -> str:
-        """Persist the transcript text exactly as supplied; return its stable ID."""
-        exact_text = str(text)
-        if not exact_text.strip():
-            raise ValueError("Memory text cannot be empty.")
-        memories = self._load_memories()
-        memory = {
-            "id": uuid.uuid4().hex,
-            "text": exact_text,
-            "created_at": datetime.now().astimezone().isoformat(),
-        }
-        updated = [*memories, memory]
-        self.memories_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(self.memories_path.parent, 0o700)
-        payload = json.dumps({"version": 1, "memories": updated}, ensure_ascii=False, indent=2) + "\n"
-        fd, temp_name = tempfile.mkstemp(prefix=".embedding-memories-", dir=self.memories_path.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(payload)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.chmod(temp_name, 0o600)
-            os.replace(temp_name, self.memories_path)
-        finally:
-            if os.path.exists(temp_name):
-                os.unlink(temp_name)
-        self._memories = updated
+        """Persist the transcript text; return its stable ID."""
+        record = self._get_memory_manager().save(text)
+        self._memories = None
         self._memory_vectors = None
-        return str(memory["id"])
+        return record.id
 
     def match_memory(self, utterance: str) -> MemoryMatch | None:
         """Retrieve a high-confidence saved memory for the current utterance."""
-        text = " ".join(str(utterance or "").split())
-        memories = self._load_memories()
-        if not text or not memories:
+        mgr = self._get_memory_manager()
+        results = mgr.search(utterance, limit=2)
+        if not results:
             return None
-        if self._memory_vectors is None:
-            self._memory_vectors = self.encode([str(item["text"]) for item in memories])
-        query = self.encode([text])[0]
-        scores = self._memory_vectors @ query
-        ranked = np.argsort(scores)[::-1]
-        best_idx = int(ranked[0])
-        score = float(scores[best_idx])
-        runner_up = float(scores[int(ranked[1])]) if len(ranked) > 1 else -1.0
-        margin = score - runner_up
-        best = memories[best_idx]
+        best = results[0]
+        runner_up = results[1].score if len(results) > 1 else -1.0
+        margin = best.score - runner_up
         return MemoryMatch(
-            memory_id=str(best["id"]),
-            text=str(best["text"]),
-            score=score,
+            memory_id=best.id,
+            text=best.text,
+            score=best.score,
             runner_up_score=runner_up,
             margin=margin,
-            accepted=score >= MEMORY_MATCH_THRESHOLD and margin >= MEMORY_MATCH_MARGIN,
+            accepted=True,
         )
 
     @staticmethod
