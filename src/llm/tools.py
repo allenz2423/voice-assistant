@@ -88,12 +88,15 @@ def validate_tool_arguments(tool: "CanonicalTool", arguments: Any) -> str | None
         return None
 
     if tool.name == "computer_control":
-        if arguments.get("action") == "sequence":
+        action = arguments.get("action")
+        if action != "inspect" and not str(arguments.get("snapshot_id", "")).strip():
+            return "Missing required argument: computer_control.snapshot_id. Inspect first, then copy its Snapshot ID."
+        if action == "sequence":
             for index, action in enumerate(arguments.get("actions", [])):
                 error = validate_action(action, f"{tool.name}.actions[{index}]")
                 if error:
                     return error
-        elif arguments.get("action") != "inspect":
+        elif action != "inspect":
             return validate_action(arguments, tool.name)
     return None
 
@@ -201,6 +204,51 @@ ADAM_TOOLS: list[CanonicalTool] = [
         }}
     ),
     CanonicalTool(
+        name="drag",
+        description=(
+            "Begin a mouse drag, press and hold the selected button, then trace the item through every supplied waypoint. "
+            "This tool intentionally leaves the button held; always call drop immediately after reaching the destination. "
+            "Inspect first and use its exact Snapshot ID and coordinate units. For maze-like paths, include enough ordered "
+            "waypoints to follow the open route without crossing walls. Use a monitor screenshot for cross-window paths."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "snapshot_id": {"type": "string", "description": "Exact Snapshot ID from the latest screenshot."},
+                "source_x": {"type": "integer", "description": "Horizontal coordinate where the drag begins."},
+                "source_y": {"type": "integer", "description": "Vertical coordinate where the drag begins."},
+                "waypoints": {
+                    "type": "array", "minItems": 1, "maxItems": 32,
+                    "description": "Ordered points to trace while holding the mouse button, including maze turns and the final point before release.",
+                    "items": {"type": "object", "properties": {
+                        "x": {"type": "integer"}, "y": {"type": "integer"},
+                    }, "required": ["x", "y"], "additionalProperties": False},
+                },
+                "button": {"type": "string", "enum": ["left", "right", "middle"]},
+            },
+            "required": ["snapshot_id", "source_x", "source_y", "waypoints"],
+            "additionalProperties": False,
+        },
+    ),
+    CanonicalTool(
+        name="drop",
+        description=(
+            "Release the mouse button held by drag. Use the latest Snapshot ID returned by drag. "
+            "Optionally provide a final destination x/y to move to while still holding, then release. "
+            "If a drag is active, call this even when the path fails so the mouse is not left held."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "snapshot_id": {"type": "string", "description": "Exact current Snapshot ID returned by the latest drag action."},
+                "destination_x": {"type": "integer", "description": "Optional final horizontal release coordinate."},
+                "destination_y": {"type": "integer", "description": "Optional final vertical release coordinate."},
+            },
+            "required": ["snapshot_id"],
+            "additionalProperties": False,
+        },
+    ),
+    CanonicalTool(
         name="computer_control",
         description=(
             "Control the active desktop from the latest observation. In OCR-only mode, inspect returns recognized text "
@@ -225,7 +273,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
             "properties": {
                 "action": {"type": "string", "enum": ["inspect", "click", "drag", "type", "press", "scroll", "sequence"]},
                 "scope": {"type": "string", "enum": ["monitor", "window"], "description": "For inspect, use the focused monitor (default) or limit the capture/OCR to the focused application window. The chosen scope persists for follow-up actions."},
-                "snapshot_id": {"type": "string", "description": "Copy the exact ID returned with the latest screenshot. Required for all actions; use an empty string for the first inspect."},
+                "snapshot_id": {"type": "string", "description": "Copy the exact ID returned with the latest screenshot for input actions. Inspect does not need a snapshot ID."},
                 "x": {"type": "integer", "description": "Horizontal click coordinate, using the units stated in the latest screenshot response."},
                 "y": {"type": "integer", "description": "Vertical click coordinate, using the units stated in the latest screenshot response."},
                 "end_x": {"type": "integer", "description": "Horizontal destination coordinate for drag, using the same units as x."},
@@ -272,7 +320,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
                     },
                 },
             },
-            "required": ["action", "snapshot_id"],
+            "required": ["action"],
         },
     ),
     CanonicalTool(

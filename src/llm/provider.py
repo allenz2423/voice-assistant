@@ -182,13 +182,43 @@ class UniversalLLMClient:
         if self.provider == "local":
             return await self._chat_ollama(messages, tools, max_tokens, think)
         elif self.provider in ["groq", "cloud", "openai", "custom", "openai_compatible", "vllm", "llama_cpp"]:
-            return await self._chat_openai_compatible(messages, tools, max_tokens, think)
+            return await self._chat_with_retries(
+                self._chat_openai_compatible, messages, tools, max_tokens, think
+            )
         elif self.provider == "anthropic":
-            return await self._chat_anthropic(messages, tools, max_tokens, think)
+            return await self._chat_with_retries(
+                self._chat_anthropic, messages, tools, max_tokens, think
+            )
         elif self.provider == "gemini":
-            return await self._chat_gemini(messages, tools, max_tokens, think)
+            return await self._chat_with_retries(
+                self._chat_gemini, messages, tools, max_tokens, think
+            )
         else:
             return await self._chat_ollama(messages, tools, max_tokens, think)
+
+    async def _chat_with_retries(self, request, *args) -> dict:
+        """Retry transient cloud throttling and transport failures, at most twice."""
+        response = {}
+        for attempt in range(3):
+            response = await request(*args)
+            retry_status = response.pop("_retry_status", None)
+            retry_after = response.pop("_retry_after", None)
+            if retry_status is None or attempt == 2:
+                return response
+            try:
+                delay = float(retry_after)
+                if not math.isfinite(delay) or delay < 0:
+                    raise ValueError
+            except (TypeError, ValueError):
+                delay = 0.5 * (2 ** attempt)
+            delay = min(delay, 8.0)
+            print(
+                f"[LLM] Provider request failed transiently ({retry_status}); "
+                f"retrying in {delay:.1f}s (attempt {attempt + 2}/3).",
+                flush=True,
+            )
+            await asyncio.sleep(delay)
+        return response
 
     async def _chat_ollama(
         self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS,
@@ -330,7 +360,7 @@ class UniversalLLMClient:
             # Keep ordinary voice responses snappy while giving computer-use turns
             # enough time to reason over the full image and structured UI hints.
             has_image = any(bool(message.get("images")) for message in messages)
-            timeout_seconds = 90 if has_image else 45
+            timeout_seconds = 600
             request_span_id = uuid.uuid4().hex
             started_at = asyncio.get_running_loop().time()
             configured_provider = _telemetry_safe_text(self.provider, 64) or "unknown"
@@ -452,7 +482,11 @@ class UniversalLLMClient:
                         # Do not log provider response bodies: gateways can echo request data.
                         complete_event("http_error", response_status=resp.status)
                         print(f"[LLM] OpenAI-compatible call failed (HTTP {resp.status}).")
-                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        if resp.status == 429 or 500 <= resp.status <= 599:
+                            fallback["_retry_status"] = resp.status
+                            fallback["_retry_after"] = getattr(resp, "headers", {}).get("Retry-After")
+                        return fallback
                     try:
                         data = await resp.json()
                         response_body_done_at = asyncio.get_running_loop().time()
@@ -525,7 +559,15 @@ class UniversalLLMClient:
             if "started_at" in locals():
                 complete_event("transport_error")
             print(f"[LLM] OpenAI-compatible request failed ({type(e).__name__}).")
-            return self._emergency_rule_fallback(messages[-1].get("content", ""))
+            fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+            try:
+                import aiohttp
+                retryable_transport = isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError, OSError))
+            except Exception:
+                retryable_transport = isinstance(e, (asyncio.TimeoutError, OSError))
+            if retryable_transport:
+                fallback["_retry_status"] = "transport error"
+            return fallback
 
     async def _chat_anthropic(
         self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS,
@@ -565,7 +607,11 @@ class UniversalLLMClient:
                     if resp.status != 200:
                         err = await resp.text()
                         print(f"[LLM] Anthropic API error ({resp.status}): {err}")
-                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        if resp.status == 429 or 500 <= resp.status <= 599:
+                            fallback["_retry_status"] = resp.status
+                            fallback["_retry_after"] = getattr(resp, "headers", {}).get("Retry-After")
+                        return fallback
                     data = await resp.json()
                     content = "".join([b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"])
                     cleaned_content, extracted = self._extract_embedded_tool_calls(content, tools)
@@ -576,7 +622,10 @@ class UniversalLLMClient:
                     }
         except Exception as e:
             print(f"[LLM] Anthropic request failed: {e}")
-            return self._emergency_rule_fallback(messages[-1].get("content", ""))
+            fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+            if isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError, OSError)):
+                fallback["_retry_status"] = "transport error"
+            return fallback
 
     async def _chat_gemini(
         self, messages: list[dict], tools: list[CanonicalTool] = ADAM_TOOLS,
@@ -608,7 +657,11 @@ class UniversalLLMClient:
                     if resp.status != 200:
                         err = await resp.text()
                         print(f"[LLM] Gemini API error ({resp.status}): {err}")
-                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        if resp.status == 429 or 500 <= resp.status <= 599:
+                            fallback["_retry_status"] = resp.status
+                            fallback["_retry_after"] = getattr(resp, "headers", {}).get("Retry-After")
+                        return fallback
                     data = await resp.json()
                     parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])
                     content = "".join([p.get("text", "") for p in parts if "text" in p])
@@ -620,7 +673,10 @@ class UniversalLLMClient:
                     }
         except Exception as e:
             print(f"[LLM] Gemini request failed: {e}")
-            return self._emergency_rule_fallback(messages[-1].get("content", ""))
+            fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+            if isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError, OSError)):
+                fallback["_retry_status"] = "transport error"
+            return fallback
 
     def _extract_embedded_tool_calls(
         self, text: str, available_tools: list[CanonicalTool] | None = None

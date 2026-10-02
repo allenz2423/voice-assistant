@@ -14,6 +14,7 @@ Use this workflow for desktop applications, windows, and browsers. Adam operates
 ## Input & Control Mechanics
 
 - Use `observe_desktop` for window metadata or browser DOM. Use `computer_control` for visual interaction.
+- Dragging items: inspect first, then use `drag` with the source and ordered path waypoints. It holds the mouse button; always follow it with `drop` using the latest Snapshot ID, optionally giving a final release coordinate. For maze-like paths, provide a waypoint for each turn and use a monitor screenshot when the route crosses windows. Use `computer_control` with `modifier=window` only to move a window itself.
 - Always use the current `Snapshot ID`. Do not reuse stale coordinates or targets across turn boundaries.
 - Keep clicks within the target application window.
 - Window repositioning: Use `drag` with `modifier=window` (uses compositor move modifier). Use `scope=monitor` if destination is outside window bounds.

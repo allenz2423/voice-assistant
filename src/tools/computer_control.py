@@ -152,6 +152,7 @@ class ComputerController:
         self._active_bounds: tuple[int, int, int, int] | None = None
         self._active_identity: str | None = None
         self._snapshot_identity: str | None = None
+        self._held_drag_button: str | None = None
         self._action_lock = threading.RLock()
 
     def _wayland_window_adapter(self) -> str:
@@ -394,9 +395,9 @@ class ComputerController:
             else "In OCR-only mode, use OCR text as target_text. Coordinates are unavailable."
             if self.ocr_only
             else (
-                "Click x/y use normalized coordinates from 0 to 1000 across the screenshot width/height."
+                "Click, drag waypoint, and drop coordinates use normalized values from 0 to 1000 across the screenshot width/height."
                 if self.coordinate_mode == "normalized_1000"
-                else "Click x/y use screenshot pixels from the top-left."
+                else "Click, drag waypoint, and drop coordinates use screenshot pixels from the top-left."
             )
         )
         token_text = (
@@ -511,16 +512,8 @@ class ComputerController:
             if not self._ensure_ydotoold():
                 raise RuntimeError("Wayland mouse control needs ydotoold and access to /dev/uinput.")
             if shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
-                from src.tools.desktop import _hyprland_dispatch
-
                 global_x, global_y = x + self._origin_x, y + self._origin_y
-                result = _hyprland_dispatch(
-                    "movecursor",
-                    f"{global_x} {global_y}",
-                    lua_expression=f"hl.dsp.cursor.move({{ x = {global_x}, y = {global_y} }})",
-                )
-                if result.returncode != 0 or "ok" not in result.stdout.lower():
-                    raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Hyprland rejected cursor positioning.")
+                self._move_wayland_cursor_to(global_x, global_y)
             else:
                 self._call([
                     "ydotool", "mousemove", "--absolute",
@@ -529,13 +522,176 @@ class ComputerController:
             return
         raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
 
-    def _drag(self, x: int, y: int, end_x: int, end_y: int, button: str = "left") -> None:
+    def _move_wayland_cursor_to(self, end_x: int, end_y: int) -> None:
+        """Move through uinput and verify the compositor cursor reaches the target.
+
+        A compositor-native warp followed by a uinput click can leave the
+        virtual input device at its previous location. Relative uinput motion
+        keeps the pointer used for the click in sync with the visible cursor.
+        """
+        if not self._ensure_ydotoold():
+            raise RuntimeError("Wayland mouse control needs ydotoold and access to /dev/uinput.")
+
+        def cursor() -> tuple[int, int]:
+            data = json.loads(self._call(["hyprctl", "cursorpos", "-j"], timeout=2).stdout)
+            return int(data["x"]), int(data["y"])
+
+        start_x, start_y = cursor()
+        delta_x, delta_y = end_x - start_x, end_y - start_y
+        if not delta_x and not delta_y:
+            return
+
+        # Cursor positioning should be quick; feedback corrections below
+        # compensate for the desktop's pointer acceleration.
+        steps = 1
+        moved_x = moved_y = 0
+        for step in range(1, steps + 1):
+            next_x = round(delta_x * step / steps)
+            next_y = round(delta_y * step / steps)
+            self._call([
+                "ydotool", "mousemove", "--",
+                str(next_x - moved_x), str(next_y - moved_y),
+            ])
+            moved_x, moved_y = next_x, next_y
+            time.sleep(0.025)
+
+        current = cursor()
+        actual_x, actual_y = current[0] - start_x, current[1] - start_y
+        ratio_x = actual_x / delta_x if delta_x and actual_x else 1.0
+        ratio_y = actual_y / delta_y if delta_y and actual_y else 1.0
+        for _ in range(3):
+            error_x, error_y = end_x - current[0], end_y - current[1]
+            if max(abs(error_x), abs(error_y)) <= 3:
+                break
+            correction_x = round(error_x / ratio_x) if abs(ratio_x) > 0.1 else error_x
+            correction_y = round(error_y / ratio_y) if abs(ratio_y) > 0.1 else error_y
+            if correction_x == 0 and error_x:
+                correction_x = 1 if error_x > 0 else -1
+            if correction_y == 0 and error_y:
+                correction_y = 1 if error_y > 0 else -1
+            self._call(["ydotool", "mousemove", "--", str(correction_x), str(correction_y)])
+            time.sleep(0.06)
+            current = cursor()
+        if max(abs(end_x - current[0]), abs(end_y - current[1])) > 8:
+            raise RuntimeError(
+                f"Pointer reached ({current[0]}, {current[1]}), not requested position ({end_x}, {end_y})."
+            )
+
+    @property
+    def drag_active(self) -> bool:
+        return self._held_drag_button is not None
+
+    def _begin_drag(self, x: int, y: int, button: str) -> None:
+        if self._held_drag_button is not None:
+            raise ValueError("A drag is already active; use drop before starting another drag.")
+        if not (0 <= x < self._width and 0 <= y < self._height):
+            raise ValueError("Drag source must be inside the latest screenshot.")
+        buttons = {"left": (1, "0x40"), "right": (3, "0x41"), "middle": (2, "0x42")}
+        if button not in buttons:
+            raise ValueError("Mouse button must be left, right, or middle.")
+        self._position_cursor(x + self._origin_x, y + self._origin_y)
+        if self.backend == "x11":
+            self._call(["xdotool", "mousedown", str(buttons[button][0])])
+        elif self.backend == "wayland":
+            if not self._ensure_ydotoold():
+                raise RuntimeError("Wayland dragging needs ydotoold and access to /dev/uinput.")
+            self._call(["ydotool", "click", "--next-delay", "60", buttons[button][1]])
+        else:
+            raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
+        self._held_drag_button = button
+
+    def _move_held_drag(self, x: int, y: int) -> None:
+        if self._held_drag_button is None:
+            raise ValueError("No drag is active; call drag first.")
+        if not (0 <= x < self._width and 0 <= y < self._height):
+            raise ValueError("Drag waypoint must be inside the latest screenshot.")
+        end_x, end_y = x + self._origin_x, y + self._origin_y
+        if self.backend == "x11":
+            self._call([
+                "xdotool", "mousemove", "--sync", "--duration", "0.18",
+                str(end_x), str(end_y),
+            ])
+            return
+        if self.backend != "wayland":
+            raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
+        if not self._ensure_ydotoold():
+            raise RuntimeError("Wayland dragging needs ydotoold and access to /dev/uinput.")
+        env = os.environ if self._env is None else self._env
+        if not (shutil.which("hyprctl") and env.get("HYPRLAND_INSTANCE_SIGNATURE")):
+            self._call(["ydotool", "mousemove", "--absolute", str(end_x), str(end_y)])
+            time.sleep(0.12)
+            return
+
+        def cursor() -> tuple[int, int]:
+            data = json.loads(self._call(["hyprctl", "cursorpos", "-j"], timeout=2).stdout)
+            return int(data["x"]), int(data["y"])
+
+        start_x, start_y = cursor()
+        delta_x, delta_y = end_x - start_x, end_y - start_y
+        steps = max(1, min(16, max(abs(delta_x), abs(delta_y)) // 24))
+        moved_x = moved_y = 0
+        for step in range(1, steps + 1):
+            next_x = round(delta_x * step / steps)
+            next_y = round(delta_y * step / steps)
+            self._call([
+                "ydotool", "mousemove", "--",
+                str(next_x - moved_x), str(next_y - moved_y),
+            ])
+            moved_x, moved_y = next_x, next_y
+            time.sleep(0.025)
+        current = cursor()
+        actual_x, actual_y = current[0] - start_x, current[1] - start_y
+        ratio_x = actual_x / delta_x if delta_x and actual_x else 1.0
+        ratio_y = actual_y / delta_y if delta_y and actual_y else 1.0
+        for _ in range(3):
+            error_x, error_y = end_x - current[0], end_y - current[1]
+            if max(abs(error_x), abs(error_y)) <= 3:
+                break
+            correction_x = round(error_x / ratio_x) if abs(ratio_x) > 0.1 else error_x
+            correction_y = round(error_y / ratio_y) if abs(ratio_y) > 0.1 else error_y
+            if correction_x == 0 and error_x:
+                correction_x = 1 if error_x > 0 else -1
+            if correction_y == 0 and error_y:
+                correction_y = 1 if error_y > 0 else -1
+            self._call(["ydotool", "mousemove", "--", str(correction_x), str(correction_y)])
+            time.sleep(0.06)
+            current = cursor()
+        if max(abs(end_x - current[0]), abs(end_y - current[1])) > 8:
+            raise RuntimeError(
+                f"Drag reached ({current[0]}, {current[1]}), not requested waypoint ({end_x}, {end_y})."
+            )
+
+    def _release_drag(self) -> None:
+        button = self._held_drag_button
+        if button is None:
+            raise ValueError("No drag is active; nothing to drop.")
+        buttons = {"left": (1, "0x80"), "right": (3, "0x81"), "middle": (2, "0x82")}
+        try:
+            if self.backend == "x11":
+                self._call(["xdotool", "mouseup", str(buttons[button][0])])
+            elif self.backend == "wayland":
+                self._call(["ydotool", "click", "--next-delay", "60", buttons[button][1]])
+            else:
+                raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
+        finally:
+            self._held_drag_button = None
+
+    def release_held_drag(self) -> None:
+        """Release any mouse button left down by a multi-step drag."""
+        with self._action_lock:
+            if self._held_drag_button is not None:
+                self._release_drag()
+
+    def _drag(
+        self, x: int, y: int, end_x: int, end_y: int, button: str = "left", *,
+        restrict_to_active_window: bool = False,
+    ) -> None:
         """Drag from one screenshot point to another; useful for window placement on any WM."""
         points = ((x, y, "start"), (end_x, end_y, "end"))
         for px, py, label in points:
             if not (0 <= px < self._width and 0 <= py < self._height):
                 raise ValueError(f"Drag {label} must be inside the screenshot (0–{self._width - 1}, 0–{self._height - 1}).")
-        if self._active_bounds:
+        if restrict_to_active_window and self._active_bounds:
             left, top, right, bottom = self._active_bounds
             if not (left <= x < right and top <= y < bottom):
                 raise ValueError("Drag must begin inside the active window. Inspect it and start on the control or title bar to move.")
@@ -575,10 +731,7 @@ class ComputerController:
                     data = json.loads(self._call(["hyprctl", "cursorpos", "-j"], timeout=2).stdout)
                     return int(data["x"]), int(data["y"])
 
-                try:
-                    drag_origin = hyprland_cursor()
-                except Exception:
-                    drag_origin = (sx, sy)
+                drag_origin = hyprland_cursor()
                 self._call(["ydotool", "click", "--next-delay", "60", buttons[button][1]])
                 try:
                     delta_x, delta_y = ex - sx, ey - sy
@@ -597,31 +750,31 @@ class ComputerController:
                     # pointer acceleration. Measure the actual cursor travel and
                     # correct it while the button is still held, keeping the
                     # requested drag endpoint in screenshot pixels.
-                    try:
+                    current = hyprland_cursor()
+                    actual_x, actual_y = current[0] - drag_origin[0], current[1] - drag_origin[1]
+                    ratio_x = actual_x / delta_x if delta_x and actual_x else 1.0
+                    ratio_y = actual_y / delta_y if delta_y and actual_y else 1.0
+                    for _ in range(3):
+                        error_x, error_y = ex - current[0], ey - current[1]
+                        if max(abs(error_x), abs(error_y)) <= 3:
+                            break
+                        correction_x = round(error_x / ratio_x) if abs(ratio_x) > 0.1 else error_x
+                        correction_y = round(error_y / ratio_y) if abs(ratio_y) > 0.1 else error_y
+                        if correction_x == 0 and error_x:
+                            correction_x = 1 if error_x > 0 else -1
+                        if correction_y == 0 and error_y:
+                            correction_y = 1 if error_y > 0 else -1
+                        self._call([
+                            "ydotool", "mousemove", "--",
+                            str(correction_x), str(correction_y),
+                        ])
+                        time.sleep(0.06)
                         current = hyprland_cursor()
-                        actual_x, actual_y = current[0] - drag_origin[0], current[1] - drag_origin[1]
-                        ratio_x = actual_x / delta_x if delta_x and actual_x else 1.0
-                        ratio_y = actual_y / delta_y if delta_y and actual_y else 1.0
-                        for _ in range(3):
-                            error_x, error_y = ex - current[0], ey - current[1]
-                            if max(abs(error_x), abs(error_y)) <= 3:
-                                break
-                            correction_x = round(error_x / ratio_x) if abs(ratio_x) > 0.1 else error_x
-                            correction_y = round(error_y / ratio_y) if abs(ratio_y) > 0.1 else error_y
-                            if correction_x == 0 and error_x:
-                                correction_x = 1 if error_x > 0 else -1
-                            if correction_y == 0 and error_y:
-                                correction_y = 1 if error_y > 0 else -1
-                            self._call([
-                                "ydotool", "mousemove", "--",
-                                str(correction_x), str(correction_y),
-                            ])
-                            time.sleep(0.06)
-                            current = hyprland_cursor()
-                    except Exception:
-                        # Input has already begun; always release the button even
-                        # if the compositor cannot report cursor coordinates.
-                        pass
+                    if max(abs(ex - current[0]), abs(ey - current[1])) > 8:
+                        raise RuntimeError(
+                            f"Hyprland drag ended at ({current[0]}, {current[1]}), "
+                            f"short of requested release point ({ex}, {ey})."
+                        )
                 finally:
                     self._call(["ydotool", "click", "--next-delay", "60", buttons[button][2]])
                 return
@@ -949,6 +1102,7 @@ class ComputerController:
         y: int | None = None,
         end_x: int | None = None,
         end_y: int | None = None,
+        waypoints: list[dict[str, int]] | None = None,
         button: str = "left",
         modifier: str = "none",
         text: str = "",
@@ -1075,6 +1229,54 @@ class ComputerController:
                     message = f"{selection_message} Clicked the selected OCR region."
                 elif self.ocr_only and ocr_region_ref.strip():
                     message = f"{selection_message}"
+            elif action == "drag_path":
+                if x is None or y is None or not waypoints:
+                    raise ValueError("Drag requires a source x/y and at least one waypoint.")
+                source_x, source_y = self._click_coordinates_to_pixels(int(x), int(y))
+                pixel_waypoints = []
+                for index, point in enumerate(waypoints):
+                    if not isinstance(point, dict) or point.get("x") is None or point.get("y") is None:
+                        raise ValueError(f"Drag waypoint {index + 1} requires x and y coordinates.")
+                    pixel_waypoints.append(
+                        self._click_coordinates_to_pixels(int(point["x"]), int(point["y"]))
+                    )
+                action_attempted = True
+                self._begin_drag(source_x, source_y, button.lower())
+                try:
+                    for waypoint_x, waypoint_y in pixel_waypoints:
+                        self._move_held_drag(waypoint_x, waypoint_y)
+                except Exception:
+                    try:
+                        self._release_drag()
+                    except Exception:
+                        pass
+                    raise
+                action_succeeded = True
+                final_x, final_y = pixel_waypoints[-1]
+                message = (
+                    f"Drag is active with {button} held. Followed {len(pixel_waypoints)} waypoint(s); "
+                    f"cursor is at ({final_x}, {final_y}). Call drop to release it."
+                )
+            elif action == "drop":
+                if self._held_drag_button is None:
+                    raise ValueError("No drag is active; call drag first.")
+                action_attempted = True
+                try:
+                    if (x is None) != (y is None):
+                        raise ValueError("Drop destination requires both x and y, or neither.")
+                    if x is not None and y is not None:
+                        drop_x, drop_y = self._click_coordinates_to_pixels(int(x), int(y))
+                        self._move_held_drag(drop_x, drop_y)
+                    self._release_drag()
+                except Exception:
+                    if self._held_drag_button is not None:
+                        try:
+                            self._release_drag()
+                        except Exception:
+                            pass
+                    raise
+                action_succeeded = True
+                message = "Released the held mouse button at the requested drop point."
             elif action == "drag":
                 if x is None or y is None or end_x is None or end_y is None:
                     raise ValueError("Drag requires x/y and end_x/end_y coordinates from the current screenshot.")
@@ -1093,7 +1295,10 @@ class ComputerController:
                     if self.backend == "x11":
                         self._call(["xdotool", "keydown", key_name])
                         try:
-                            self._drag(start_x, start_y, finish_x, finish_y, button.lower())
+                            self._drag(
+                                start_x, start_y, finish_x, finish_y, button.lower(),
+                                restrict_to_active_window=True,
+                            )
                         finally:
                             self._call(["xdotool", "keyup", key_name])
                     elif self.backend == "wayland":
@@ -1101,7 +1306,10 @@ class ComputerController:
                             raise RuntimeError("Wayland window dragging needs ydotoold and access to /dev/uinput.")
                         self._call(["ydotool", "key", f"{_MODIFIER_CODES[drag_modifier]}:1"])
                         try:
-                            self._drag(start_x, start_y, finish_x, finish_y, button.lower())
+                            self._drag(
+                                start_x, start_y, finish_x, finish_y, button.lower(),
+                                restrict_to_active_window=True,
+                            )
                         finally:
                             self._call(["ydotool", "key", f"{_MODIFIER_CODES[drag_modifier]}:0"])
                 message = f"Dragged {button} from ({start_x}, {start_y}) to ({finish_x}, {finish_y}) with {drag_modifier} modifier."

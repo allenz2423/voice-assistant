@@ -79,7 +79,7 @@ TEXT_FALLBACK_READ_ONLY_TOOLS = {
 }
 
 DESKTOP_MUTATION_TOOLS = {
-    "computer_control", "browser_navigation", "desktop_task", "focus_window",
+    "computer_control", "drag", "drop", "browser_navigation", "desktop_task", "focus_window",
     "launch_application", "close_application", "close_browser_tab", "open_in_browser",
     "workspace_control", "swap_windows", "control_media_app", "desktop_macro",
     "manage_clipboard", "run_bash_command", "start_background_job", "create_file", "write_file",
@@ -218,7 +218,7 @@ Tool Routing:
 - Dedicated tools first: Use built-in tools for time, weather, reminders, timers, calendar (Noctalia / Remind), notes, files, math, and system status.
 - Web: Always use `open_in_browser` for URLs and web searches; never manually type URLs into browser address bars via GUI. Use `fetch_webpage` to read specific page content.
 - Shell: Use for CLI tasks, system inspection, or direct script/app APIs. Never run shell `sleep` during GUI tasks (use `capture_screenshot` with delay instead).
-- Desktop GUI: Use `computer_control` only when no direct tool or CLI exists.
+- Desktop GUI: Use a direct tool or CLI when available. Use `drag` with ordered waypoints and then `drop` for an item drag, especially when tracing a maze or other multi-turn path. Always release with `drop`. Use `computer_control` with `modifier='window'` to move a window itself.
 
 Window & Workspace Policy:
 - Freely move windows between any workspaces and resize, tile, maximize, or fullscreen them as needed to complete the task. These reversible layout changes do not require asking the user.
@@ -398,7 +398,7 @@ class AdamBrain:
             if is_tool_enabled(tool.name)
             and tool.name != "browser_navigation"
             and (
-                tool.name != "computer_control"
+                tool.name not in {"computer_control", "drag", "drop"}
                 or self.computer_controller.available
                 and not (self.ocr_only and self.desktop_computer_agent is not None)
             )
@@ -476,6 +476,10 @@ class AdamBrain:
                 "scroll": "I’ve moved through the current view and am checking the result.",
             }
             return messages.get(action, "I’ve completed another computer step and am continuing.")
+        if name == "drag":
+            return "I’ve traced the drag path and am releasing the item."
+        if name == "drop":
+            return "I’ve released the dragged item and am checking the result."
         if name == "browser_navigation":
             action = args.get("action", "check")
             return f"I’ve used the browser to {action}; I’m continuing toward the result."
@@ -622,6 +626,13 @@ class AdamBrain:
             turn_status = "error"
             raise
         finally:
+            computer_controller = getattr(self, "computer_controller", None)
+            if getattr(computer_controller, "drag_active", False):
+                try:
+                    await asyncio.to_thread(computer_controller.release_held_drag)
+                    print("[ComputerControl] Released unfinished drag at turn end.", flush=True)
+                except Exception as exc:
+                    print(f"[ComputerControl] Could not release unfinished drag ({type(exc).__name__}).", flush=True)
             if self._is_interrupted or getattr(self.tts, "pending_barge_in_text", None):
                 turn_status = "cancelled"
             emit_event(
@@ -985,7 +996,7 @@ class AdamBrain:
                             tool_status = raw_output.status
                             dispatched = raw_output.dispatched
                             if (
-                                name == "computer_control"
+                                name in {"computer_control", "drag", "drop"}
                                 and tool_status == "ok"
                                 and dispatched is True
                             ):
@@ -1403,32 +1414,52 @@ class AdamBrain:
                         include_visual_grounding=False,
                         screenshot_delay_seconds=delay,
                     )
-                    screenshot, message = inspected.screenshot, inspected.message
+                    screenshot, capture_message = inspected.screenshot, inspected.message
                 else:
                     screenshot = await asyncio.to_thread(capture_screenshot, args.get("scope", "monitor"))
-                    message = f"Captured the focused {args.get('scope', 'monitor')} screenshot."
+                    capture_message = f"Captured the focused {args.get('scope', 'monitor')} screenshot."
             except Exception as e:
                 return f"Could not capture a screenshot: {e}"
-            for message in self.messages:
-                message.pop("images", None)
+            for history_message in self.messages:
+                history_message.pop("images", None)
             suffix = " Screenshot pixels withheld from the model." if self.ocr_only else ""
             include_ocr = args.get("include_ocr", self.ocr_only)
             self._pending_screenshot = None if self.ocr_only else screenshot
             if self.ocr_only and screenshot and include_ocr:
                 ocr_message = await asyncio.to_thread(self._describe_screenshot_with_ocr, screenshot)
-                message += f"\n{ocr_message}"
+                capture_message += f"\n{ocr_message}"
             elif self.ocr_only and screenshot and not include_ocr:
-                message += " OCR and visual parsing were skipped by request; screenshot pixels are withheld by OCR-only mode."
-            return f"{message}{suffix}"
+                capture_message += " OCR and visual parsing were skipped by request; screenshot pixels are withheld by OCR-only mode."
+            return f"{capture_message}{suffix}"
 
-        elif name == "computer_control":
+        elif name in {"computer_control", "drag", "drop"}:
             if not self.computer_controller.available:
                 return ComputerControlResult(
                     "Computer control is unavailable for this desktop session or disabled in config.yaml.",
                     status="unavailable",
                     dispatched=False,
                 )
-            if args.get("action") == "sequence":
+            if name == "drag":
+                result = await asyncio.to_thread(
+                    self.computer_controller.run,
+                    action="drag_path",
+                    snapshot_id=args.get("snapshot_id", ""),
+                    x=args.get("source_x"),
+                    y=args.get("source_y"),
+                    waypoints=args.get("waypoints", []),
+                    button=args.get("button", "left"),
+                    goal=getattr(self, "_recent_computer_goal", "") or "",
+                )
+            elif name == "drop":
+                result = await asyncio.to_thread(
+                    self.computer_controller.run,
+                    action="drop",
+                    snapshot_id=args.get("snapshot_id", ""),
+                    x=args.get("destination_x"),
+                    y=args.get("destination_y"),
+                    goal=getattr(self, "_recent_computer_goal", "") or "",
+                )
+            elif args.get("action") == "sequence":
                 cancel_event = threading.Event()
                 worker = asyncio.create_task(asyncio.to_thread(
                     self.computer_controller.run_sequence,
