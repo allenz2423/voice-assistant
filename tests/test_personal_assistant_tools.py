@@ -32,6 +32,56 @@ def test_get_system_status():
     assert "cpu" in status.lower()
     assert "memory" in status.lower() or "gigabytes" in status.lower()
 
+def test_get_system_status_includes_nvidia_gpu_utilization(monkeypatch):
+    import subprocess
+    from src.tools import system_telemetry
+
+    monkeypatch.setattr(
+        system_telemetry.shutil,
+        "which",
+        lambda name: "/usr/bin/nvidia-smi" if name == "nvidia-smi" else None,
+    )
+    monkeypatch.setattr(
+        system_telemetry.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, stdout="0, NVIDIA RTX, 42, 7, 1024, 8192\n", stderr=""
+        ),
+    )
+
+    status = system_telemetry.get_system_status()
+
+    assert "utilization is 7 percent" in status
+    assert "temperature is 42 degrees Celsius" in status
+
+def test_get_system_status_does_not_report_rocm_gpu_on_driver_error(monkeypatch):
+    import subprocess
+    from src.tools import system_telemetry
+
+    monkeypatch.setattr(
+        system_telemetry.shutil,
+        "which",
+        lambda name: "/usr/bin/rocm-smi" if name == "rocm-smi" else None,
+    )
+    monkeypatch.setattr(
+        system_telemetry.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0], 0, stdout="", stderr="ERROR: Driver not initialized"
+        ),
+    )
+
+    status = system_telemetry.get_system_status()
+
+    assert "AMD GPU active" not in status
+    assert "GPU telemetry is unavailable" in status
+
+def test_cpu_utilization_uses_idle_and_total_counter_deltas():
+    from src.tools.system_telemetry import _cpu_utilization_percent
+
+    assert _cpu_utilization_percent((1000, 600), (1100, 640)) == 60.0
+    assert _cpu_utilization_percent((1000, 600), (1000, 600)) is None
+
 def test_list_processes():
     procs = list_processes("cpu", limit=3)
     assert isinstance(procs, str)
@@ -149,4 +199,3 @@ def test_close_application_active_pronoun():
         res = close_application("it")
         assert isinstance(res, str)
         assert len(res) > 0
-

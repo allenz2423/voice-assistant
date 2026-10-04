@@ -104,7 +104,7 @@ def _read_browser_dom(active: dict) -> tuple[str | None, str]:
         return None, f"CDP unavailable: {str(exc)[:180]}"
 
 
-def _screenshot(scope: str = "monitor") -> tuple[bytes | None, str]:
+def _screenshot(scope: str = "window") -> tuple[bytes | None, str]:
     """Bound capture time so a stuck compositor tool cannot block the observer."""
     code = (
         "from src.tools.desktop import capture_screenshot; import sys; "
@@ -119,11 +119,11 @@ def _screenshot(scope: str = "monitor") -> tuple[bytes | None, str]:
         return None, str(exc)[:180]
 
 
-def _observe_desktop_impl(scope: str = "monitor", include_screenshot: bool = True) -> DesktopObservation:
+def _observe_desktop_impl(scope: str = "window", include_screenshot: bool = True) -> DesktopObservation:
     """Read desktop state; window scope limits structured reads and capture to the focused window."""
-    scope = (scope or "monitor").strip().lower()
-    if scope not in {"monitor", "window"}:
-        return DesktopObservation("Screenshot scope must be 'monitor' or 'window'.", None)
+    scope = (scope or "window").strip().lower()
+    if scope not in {"monitor", "window", "desktop"}:
+        return DesktopObservation("Screenshot scope must be 'window', 'monitor', or 'desktop'.", None)
     with timed_stage("observer.window_enumeration"):
         windows, wm = _windows()
     if not windows:
@@ -163,7 +163,7 @@ def _observe_desktop_impl(scope: str = "monitor", include_screenshot: bool = Tru
     return DesktopObservation("\n".join(sections), screenshot)
 
 
-def observe_desktop(scope: str = "monitor", include_screenshot: bool = True) -> DesktopObservation:
+def observe_desktop(scope: str = "window", include_screenshot: bool = True) -> DesktopObservation:
     """Read desktop state while emitting stage timings without screen contents."""
     with timing_operation("observer.operation"):
         return _observe_desktop_impl(scope, include_screenshot)

@@ -8,21 +8,26 @@ import wave
 import threading
 import numpy as np
 
-# Auto-preload NVIDIA CUDA 12 libraries from venv if present
-try:
-    for lib_pattern in [
-        ".venv/lib/python*/site-packages/nvidia/cublas/lib/libcublas.so.12",
-        ".venv/lib/python*/site-packages/nvidia/cudnn/lib/libcudnn*.so.9"
-    ]:
-        for lib_path in glob.glob(lib_pattern):
-            try:
-                ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
-            except Exception:
-                pass
-except Exception:
-    pass
+def _load_whisper_model_class(device: str = "cuda"):
+    """Load CTranslate2 and optional CUDA libraries only when local ASR is used."""
+    if str(device).lower() != "cpu":
+        try:
+            for lib_pattern in (
+                ".venv/lib/python*/site-packages/nvidia/cublas/lib/libcublas.so.12",
+                ".venv/lib/python*/site-packages/nvidia/cudnn/lib/libcudnn*.so.9",
+            ):
+                for lib_path in glob.glob(lib_pattern):
+                    try:
+                        ctypes.CDLL(lib_path, mode=ctypes.RTLD_GLOBAL)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+    from faster_whisper import WhisperModel
+    return WhisperModel
 
-from faster_whisper import WhisperModel
+
+CLOUD_STT_PROVIDERS = frozenset({"cloud", "openai", "openrouter", "custom"})
 
 class WhisperTranscriber:
     """Hardware-accelerated Speech-to-Text engine using faster-whisper on CUDA or CPU."""
@@ -31,26 +36,34 @@ class WhisperTranscriber:
         self.device = device
         self.device_index = device_index
         self.compute_type = compute_type
+        try:
+            self.cpu_threads = max(1, min(256, int(os.environ.get("ADAM_CPU_THREADS", "4"))))
+        except (TypeError, ValueError):
+            self.cpu_threads = 4
         self.model = None
         self._load_model()
 
     def _load_model(self):
+        WhisperModel = _load_whisper_model_class(self.device)
         try:
             device_label = f"{self.device}:{self.device_index}" if self.device != "cpu" else "cpu"
             print(f"[STT] Loading faster-whisper '{self.model_size}' on {device_label} ({self.compute_type})...")
-            self.model = WhisperModel(
-                self.model_size,
+            model_options = dict(
                 device=self.device,
                 device_index=self.device_index,
                 compute_type=self.compute_type
             )
+            if self.device == "cpu":
+                model_options["cpu_threads"] = self.cpu_threads
+            self.model = WhisperModel(self.model_size, **model_options)
             print(f"[STT] faster-whisper loaded successfully on {self.device}.")
         except Exception as e:
             print(f"[STT] Could not load faster-whisper on {self.device} ({e}); falling back to CPU int8...")
             self.model = WhisperModel(
                 self.model_size,
                 device="cpu",
-                compute_type="int8"
+                compute_type="int8",
+                cpu_threads=self.cpu_threads,
             )
             self.device = "cpu"
             print("[STT] faster-whisper loaded successfully on CPU (int8).")
@@ -150,6 +163,22 @@ class OpenAITranscriber:
         self.fallback_device_index = fallback_device_index
         self._fallback = None
         self._fallback_lock = threading.Lock()
+        self.last_usage: dict[str, int | float | str] = {}
+
+    def attach_local_fallback(self, transcriber: WhisperTranscriber) -> bool:
+        """Reuse an already-loaded local model when its fallback settings match."""
+        if (
+            getattr(transcriber, "model_size", None) != self.fallback_model
+            or getattr(transcriber, "device", None) != self.fallback_device
+            or getattr(transcriber, "device_index", None) != self.fallback_device_index
+            or getattr(transcriber, "compute_type", None) != self.fallback_compute_type
+        ):
+            return False
+        with self._fallback_lock:
+            if self._fallback is not None and self._fallback is not transcriber:
+                return False
+            self._fallback = transcriber
+        return True
 
     def _transcribe_fallback(self, audio_data: np.ndarray, reason: str) -> str:
         try:
@@ -170,6 +199,7 @@ class OpenAITranscriber:
     def transcribe(self, audio_data: np.ndarray) -> str:
         if audio_data is None or len(audio_data) < 1600:
             return ""
+        self.last_usage = {}
         if not self.api_key:
             return self._transcribe_fallback(audio_data, "no API key configured")
 
@@ -197,10 +227,19 @@ class OpenAITranscriber:
                     payload = await response.json(content_type=None)
                     if response.status != 200:
                         raise RuntimeError(f"OpenAI transcription failed ({response.status}): {payload}")
-                    return str(payload.get("text", "")).strip()
+                    return payload
 
         try:
-            transcript = asyncio.run(_request())
+            payload = asyncio.run(_request())
+            transcript = str(payload.get("text", "")).strip()
+            usage = payload.get("usage")
+            if isinstance(usage, dict):
+                cost = usage.get("cost")
+                if isinstance(cost, (int, float)) and not isinstance(cost, bool):
+                    self.last_usage = {
+                        "provider_reported_cost": float(cost),
+                        "currency": "USD",
+                    }
             if transcript:
                 return transcript
             return self._transcribe_fallback(audio_data, "cloud response contained no transcript")
@@ -210,7 +249,7 @@ class OpenAITranscriber:
 def create_transcriber(config, shared_api_key=""):
     """Factory creating either Qwen3Transcriber or WhisperTranscriber based on config."""
     provider = getattr(config, "provider", "local").lower()
-    if provider in ("openai", "openrouter", "custom"):
+    if provider in CLOUD_STT_PROVIDERS:
         if provider == "openai":
             env_key = os.environ.get("OPENAI_API_KEY", "")
         elif provider == "openrouter":
@@ -225,7 +264,7 @@ def create_transcriber(config, shared_api_key=""):
             fallback_device=getattr(config, "fallback_device", "cpu"),
             fallback_compute_type=getattr(config, "fallback_compute_type", "int8"),
             fallback_device_index=getattr(config, "device_index", 0),
-            shared_api_key=shared_api_key if provider in ("openrouter", "custom") else "",
+            shared_api_key=shared_api_key if provider in ("cloud", "openrouter", "custom") else "",
         )
     model_name = getattr(config, "model_size", "distil-large-v3").lower()
     if "qwen" in model_name:

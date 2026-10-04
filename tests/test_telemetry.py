@@ -6,6 +6,17 @@ from src.telemetry.events import EventWriter
 from src.llm.provider import _openrouter_usage_fields
 
 
+def test_llm_config_rejects_conflicting_tool_free_reasoning_options():
+    import pytest
+    from src.config import LLMConfig
+
+    with pytest.raises(ValueError, match="cannot both be configured"):
+        LLMConfig(
+            disable_reasoning_for_tool_free=True,
+            tool_free_reasoning_effort="low",
+        )
+
+
 def test_event_writer_is_disabled_until_configured(tmp_path):
     path = tmp_path / "events.jsonl"
     writer = EventWriter(path=str(path))
@@ -148,19 +159,21 @@ def test_openrouter_request_emits_correlated_content_free_events(tmp_path, monke
         config = SimpleNamespace(llm=SimpleNamespace(
             provider="custom", local_model="local", cloud_model="requested/model",
             ollama_host="http://localhost:11434", api_base="https://openrouter.ai/api/v1",
-            api_key="fake-key", temperature=0.0, num_ctx=4096, think=False,
+            api_key="fake-key", temperature=0.0, num_ctx=4096, think=True,
+            disable_reasoning_for_tool_free=True,
             provider_only=["route"], allow_provider_fallbacks=False,
         ))
         result = asyncio.run(provider_module.UniversalLLMClient(config).chat(
             [{"role": "user", "content": "sentinel-private-prompt"}], tools=[],
-            max_tokens=384, think=False,
+            max_tokens=384,
         ))
     finally:
         telemetry.reset_trace_id(token)
 
     assert result["content"] == "Hello."
     assert sessions[0].payload["max_tokens"] == 384
-    assert "reasoning" not in sessions[0].payload
+    assert sessions[0].payload["reasoning"] == {"enabled": False}
+    assert sessions[0].payload["provider"]["require_parameters"] is True
     rows = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [row["event"] for row in rows] == ["llm.request_started", "llm.completed"]
     assert {row["trace_id"] for row in rows} == {"trace-provider"}
@@ -170,6 +183,110 @@ def test_openrouter_request_emits_correlated_content_free_events(tmp_path, monke
     assert rows[1]["attributes"]["provider_request_id"] == "request-123"
     assert "sentinel-private-prompt" not in (tmp_path / "events.jsonl").read_text()
     assert "fake-key" not in (tmp_path / "events.jsonl").read_text()
+
+
+def test_openrouter_keeps_reasoning_available_when_tools_are_present(monkeypatch):
+    import aiohttp
+    import asyncio
+    import src.llm.provider as provider_module
+
+    class FakeResponse:
+        status = 200
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def json(self):
+            return {"choices": [{"message": {"content": "Done."}}]}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            self.payload = kwargs.get("json")
+            payloads.append(self.payload)
+            return FakeResponse()
+
+    payloads = []
+    monkeypatch.setattr(aiohttp, "ClientSession", FakeSession)
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="local", cloud_model="requested/model",
+        ollama_host="http://localhost:11434", api_base="https://openrouter.ai/api/v1",
+        api_key="fake-key", temperature=0.0, num_ctx=4096, think=True,
+        disable_reasoning_for_tool_free=True,
+        provider_only=[], allow_provider_fallbacks=False,
+    ))
+    tool = SimpleNamespace(to_openai=lambda: {"type": "function", "function": {"name": "test"}})
+
+    asyncio.run(provider_module.UniversalLLMClient(config).chat(
+        [{"role": "user", "content": "Do the task"}], tools=[tool]
+    ))
+
+    assert "reasoning_effort" not in payloads[0]
+    assert payloads[0]["reasoning"] == {"enabled": True}
+    assert "provider" not in payloads[0]
+
+
+def test_openrouter_uses_configured_effort_only_for_tool_free_calls(monkeypatch):
+    import aiohttp
+    import asyncio
+    import src.llm.provider as provider_module
+
+    class FakeResponse:
+        status = 200
+        headers = {}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def json(self):
+            return {"choices": [{"message": {"content": "Entropy measures disorder."}}]}
+
+    payloads = []
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def post(self, *args, **kwargs):
+            payloads.append(kwargs.get("json"))
+            return FakeResponse()
+
+    monkeypatch.setattr(aiohttp, "ClientSession", FakeSession)
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="local", cloud_model="requested/model",
+        ollama_host="http://localhost:11434", api_base="https://openrouter.ai/api/v1",
+        api_key="fake-key", temperature=0.0, num_ctx=4096, think=True,
+        disable_reasoning_for_tool_free=False,
+        tool_free_reasoning_effort="low",
+        provider_only=[], allow_provider_fallbacks=False,
+    ))
+
+    asyncio.run(provider_module.UniversalLLMClient(config).chat(
+        [{"role": "user", "content": "Explain entropy."}], tools=[]
+    ))
+    assert payloads[0]["reasoning"] == {"effort": "low"}
+    assert payloads[0]["provider"]["require_parameters"] is True
 
 
 def test_openrouter_timeout_with_missing_usage_returns_fallback_without_logging_crash(monkeypatch):

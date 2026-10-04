@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Tuple
@@ -94,21 +95,6 @@ class SkillManager:
             return "gnome"
         if "cosmic" in desktop_session:
             return "cosmic"
-
-        # 4. Fallback: Binary presence check when display server is active
-        if os.environ.get("WAYLAND_DISPLAY"):
-            if shutil.which("hyprctl"):
-                return "hyprland"
-            if shutil.which("swaymsg"):
-                return "sway"
-            if shutil.which("niri") and os.environ.get("NIRI_SOCKET"):
-                return "niri"
-            if shutil.which("cosmic-comp"):
-                return "cosmic"
-
-        if os.environ.get("DISPLAY"):
-            if shutil.which("i3-msg"):
-                return "i3"
 
         return "generic_desktop"
 
@@ -270,6 +256,10 @@ class SkillManager:
 
         doc_ids = []
         texts = []
+        try:
+            from src.memory.bm25 import tokenize
+        except Exception:
+            tokenize = lambda text: [word.lower() for word in re.findall(r"[a-zA-Z0-9]+", text)]
         for s in all_skills:
             s_id = s["id"]
             # Exclude skills already loaded by default at startup
@@ -283,12 +273,23 @@ class SkillManager:
             header = lines[0] if lines else ""
             desc = lines[1] if len(lines) > 1 else ""
 
-            # Index ID with extra weight, header, description, and body excerpt
-            index_text = f"{s_id} {s_id.replace('_', ' ')} {header} {desc} {content[:4000]}"
+            trigger_match = re.search(
+                r"(?ims)^#{1,3}\s*when\s+to\s+use\s*$\n(.*?)(?=^#{1,3}\s|\Z)",
+                content,
+            )
+            trigger_text = trigger_match.group(1)[:1200] if trigger_match else ""
+
+            # Match using skill identity and its declared triggers, not procedure
+            # text. Indexing full bodies made unrelated chat match incidental words
+            # from long examples and caused thousands of irrelevant prompt tokens.
+            index_text = (
+                f"{s_id} {s_id.replace('_', ' ')} {header} {desc} {trigger_text}"
+            )
             self._indexed_skills[s_id] = {
                 "id": s_id,
                 "header": header,
                 "desc": desc,
+                "match_tokens": set(tokenize(index_text)),
                 "content": content,
                 "path": s.get("path", ""),
             }
@@ -308,7 +309,7 @@ class SkillManager:
         self,
         query: str,
         limit: int = 1,
-        min_score: float = 0.5,
+        min_score: float = 4.0,
     ) -> List[Tuple[str, str]]:
         """Finds matching specialized skills for a user query.
 
@@ -351,7 +352,14 @@ class SkillManager:
             if s_id in clean_query or s_id.replace("_", " ") in clean_query:
                 score += 3.0
 
-            if score >= min_score:
+            shared_query_tokens = query_tokens.intersection(meta.get("match_tokens", ()))
+            # Skill IDs and descriptions often share broad words such as "work",
+            # "email", or "desktop". A high BM25 score from one such word is not
+            # enough to inject a multi-step procedure into an unrelated request.
+            # Require two distinct terms for multiword requests, while keeping
+            # short one-token prompts eligible for exact skill discovery.
+            sufficiently_grounded = len(query_tokens) <= 1 or len(shared_query_tokens) >= 2
+            if score >= min_score and sufficiently_grounded:
                 scored_candidates.append((score, s_id, meta["content"]))
 
         scored_candidates.sort(key=lambda x: x[0], reverse=True)

@@ -1,6 +1,45 @@
 from pydantic import BaseModel, Field
 from typing import Any
 import math
+import re
+
+
+def normalize_tool_arguments(tool: "CanonicalTool", arguments: Any) -> Any:
+    """Coerce exact numeric strings where the advertised schema requires a number.
+
+    Some tool-call providers serialize integer coordinates as strings. Convert
+    only unambiguous base-10 numeric strings at explicitly numeric schema
+    positions; leave all other values unchanged for normal validation.
+    """
+    def normalize(value: Any, schema: dict) -> Any:
+        expected = schema.get("type")
+        if expected == "integer" and isinstance(value, str):
+            candidate = value.strip()
+            if re.fullmatch(r"[+-]?[0-9]+", candidate):
+                try:
+                    return int(candidate)
+                except ValueError:
+                    return value
+        elif expected == "number" and isinstance(value, str):
+            candidate = value.strip()
+            if re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", candidate):
+                try:
+                    number = float(candidate)
+                    if math.isfinite(number):
+                        return number
+                except ValueError:
+                    pass
+        if expected == "object" and isinstance(value, dict):
+            properties = schema.get("properties", {})
+            return {
+                key: normalize(item, properties[key]) if key in properties else item
+                for key, item in value.items()
+            }
+        if expected == "array" and isinstance(value, list) and isinstance(schema.get("items"), dict):
+            return [normalize(item, schema["items"]) for item in value]
+        return value
+
+    return normalize(arguments, tool.parameters)
 
 
 def validate_tool_arguments(tool: "CanonicalTool", arguments: Any) -> str | None:
@@ -89,7 +128,7 @@ def validate_tool_arguments(tool: "CanonicalTool", arguments: Any) -> str | None
 
     if tool.name == "computer_control":
         action = arguments.get("action")
-        if action != "inspect" and not str(arguments.get("snapshot_id", "")).strip():
+        if action not in {"inspect", "wait"} and not str(arguments.get("snapshot_id", "")).strip():
             return "Missing required argument: computer_control.snapshot_id. Inspect first, then copy its Snapshot ID."
         if action == "sequence":
             for index, action in enumerate(arguments.get("actions", [])):
@@ -189,17 +228,17 @@ ADAM_TOOLS: list[CanonicalTool] = [
             "structured AT-SPI and browser DOM data remain available. Set include_ocr=true when text extraction is needed."
         ),
         parameters={"type": "object", "properties": {
-            "scope": {"type": "string", "enum": ["monitor", "window"], "description": "monitor (default) reads desktop window metadata/AT-SPI and captures the focused monitor; window limits window metadata, AT-SPI, browser DOM, and capture to the focused application window."},
-            "screenshot_delay_seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "Optional 0–10 second override for the controller's automatic delay based on the focused app."},
+            "scope": {"type": "string", "enum": ["window", "monitor", "desktop"], "description": "window (default) reads the focused application; monitor requests one verified monitor and fails closed when the backend cannot prove the scope; desktop explicitly requests the full desktop and reads desktop-wide window metadata."},
+            "screenshot_delay_seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "Optional shorter wait before capture. The configured app-aware delay is the maximum; change configuration for longer waits."},
             "include_ocr": {"type": "boolean", "description": "Set false for visual/layout checks and navigation; set true when the task requires reading, finding, or extracting text on screen. Defaults to false."}
         }},
     ),
     CanonicalTool(
         name="capture_screenshot",
-        description="Captures the focused monitor or app window. Set include_ocr=false for a visual-only check; set true when screen text needs to be read or extracted. With OCR-only computer use enabled, screenshot pixels stay internal.",
+        description="Captures the focused app window by default. Set scope=monitor to request one verified monitor (unsupported backends fail closed), or scope=desktop to explicitly request the full desktop. Set include_ocr=false for a visual-only check; set true when screen text needs to be read or extracted. With OCR-only computer use enabled, screenshot pixels stay internal.",
         parameters={"type": "object", "properties": {
-            "scope": {"type": "string", "enum": ["monitor", "window"], "description": "Capture the focused monitor (default) or only the focused application window."},
-            "screenshot_delay_seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "Optional 0–10 second override for the controller's automatic delay based on the focused app."},
+            "scope": {"type": "string", "enum": ["window", "monitor", "desktop"], "description": "Capture the focused application window (default), a single verified monitor, or the full desktop only when explicitly requested."},
+            "screenshot_delay_seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "Optional shorter wait before capture. The configured app-aware delay is the maximum; change configuration for longer waits."},
             "include_ocr": {"type": "boolean", "description": "False returns the screenshot without OCR text; set true when the task requires reading, finding, or extracting text on screen. Defaults to false."}
         }}
     ),
@@ -254,16 +293,20 @@ ADAM_TOOLS: list[CanonicalTool] = [
             "Control the active desktop from the latest observation. In OCR-only mode, inspect returns recognized text "
             "with numbered text-region boxes, and screenshot pixels are withheld from the model; there, provide target_text "
             "for a visible OCR label and let the configured selector choose the region. In screenshot/visual mode, "
-            "target_text is not supported: click using x/y pixel coordinates from the latest screenshot. First inspect, then use "
+            "when OCR is enabled, prefer target_text for a clearly labeled text control instead of estimating its coordinates; "
+            "the controller clicks only an unambiguous match from the latest screenshot. Use x/y for icons and unlabeled controls. First inspect, then use "
             "the returned snapshot_id for one action, or action='sequence' with a short actions list for related inputs. "
-            "The controller carries a fresh snapshot between steps and pauses before a later spatial action that needs a new target choice. "
+                        "The controller carries a fresh snapshot between steps and pauses before a later spatial action that needs a new target choice. "
+                        "When OCR is enabled, explicit target_text clicks are re-resolved from each fresh OCR result. A short sequence may click a labeled text field, type the exact user-requested text, then click another already-visible OCR label; each target is re-matched after the preceding step. "
+            "A standalone action='wait' is accepted as a delayed inspection; use seconds for that delay. Within actions, wait is a sequence step. "
             "Coordinate-free follow-up inputs such as clicking a visibly editable text field then typing can be sequenced; press may follow typing only as the final step. For window movement use drag with "
             "modifier='window'; the controller reads the desktop's configured move modifier. Drag starts inside the active window. "
             "A sequence is rejected before execution if its total typed text exceeds computer_control.max_sequence_text_length "
             "(default 20000 characters). The sequence time budget is checked between steps; an active backend action is allowed to finish under its own timeout. "
-            "For inspect, set include_ocr=false when the screenshot alone can answer the question (such as checking whether a window appeared); set true when text or extracted regions affect the decision. Screenshot-only mode skips OCR and OmniParser. Every action returns fresh state "
-            "after an automatic app-aware wait (3 seconds for browsers, 0.25 otherwise by default). An optional "
-            "screenshot_delay_seconds argument can override it from 0 to 10 seconds; inspect the fresh state before another action. "
+            "For inspect, set include_ocr=false when the screenshot alone can answer the question (such as checking whether a window appeared); set true when text or extracted regions affect the decision. OCR runs locally. OmniParser is separate: leave include_visual_grounding false unless OCR and the screenshot still do not locate a difficult control. Every action returns fresh state "
+            "after an app-aware wait for inspections (3 seconds for browsers, 0.25 otherwise by default). Direct input uses the shorter "
+            "general settle delay by default; use action='wait' or set screenshot_delay_seconds when a transition needs longer. "
+            "Inspect the fresh state before another action. "
             "Clicks are limited to the active window; use focus_window to choose another app, then inspect. If the target is hard to see, inspect the monitor and use the window/workspace tools or visible app controls to clear or enlarge the view, then inspect again. "
             "Type only content the user asked to enter. Never send, post, upload, or share intimate/private content; "
             "ask for explicit confirmation before purchases, deletion, or external submission."
@@ -271,14 +314,14 @@ ADAM_TOOLS: list[CanonicalTool] = [
         parameters={
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["inspect", "click", "drag", "type", "press", "scroll", "sequence"]},
-                "scope": {"type": "string", "enum": ["monitor", "window"], "description": "For inspect, use the focused monitor (default) or limit the capture/OCR to the focused application window. The chosen scope persists for follow-up actions."},
+                "action": {"type": "string", "enum": ["inspect", "click", "drag", "type", "press", "scroll", "sequence", "wait"], "description": "Wait is accepted as a standalone alias for inspect with a delay, or as a sequence action."},
+            "scope": {"type": "string", "enum": ["window", "monitor", "desktop"], "description": "For inspect, use the focused application window (default), a single verified monitor, or the full desktop only when explicitly requested. Unsupported monitor scopes fail closed. The chosen scope persists for follow-up actions."},
                 "snapshot_id": {"type": "string", "description": "Copy the exact ID returned with the latest screenshot for input actions. Inspect does not need a snapshot ID."},
                 "x": {"type": "integer", "description": "Horizontal click coordinate, using the units stated in the latest screenshot response."},
                 "y": {"type": "integer", "description": "Vertical click coordinate, using the units stated in the latest screenshot response."},
                 "end_x": {"type": "integer", "description": "Horizontal destination coordinate for drag, using the same units as x."},
                 "end_y": {"type": "integer", "description": "Vertical destination coordinate for drag, using the same units as y."},
-                "target_text": {"type": "string", "description": "In OCR-only mode, the visible text label or short description of the OCR region to click. Jev picks the matching region; do not provide coordinates."},
+                "target_text": {"type": "string", "description": "Name a visible OCR text label to click from the latest screenshot. In OCR-only mode the configured selector chooses its region; in visual mode an exact or unique substring match is clicked. Set include_ocr=true on this click or on the latest inspect. Use x/y for icons, unlabeled controls, or ambiguous labels."},
                 "button": {"type": "string", "enum": ["left", "right", "middle"]},
                 "modifier": {"type": "string", "enum": ["none", "alt", "super", "window"], "description": "For drag, hold no modifier or hold the compositor's window-move modifier (window detects it from the current desktop config)."},
                 "text": {"type": "string", "description": "Text explicitly requested by the user. Do not include private data from the screen."},
@@ -287,9 +330,11 @@ ADAM_TOOLS: list[CanonicalTool] = [
                 "amount": {"type": "integer", "description": "Scroll steps from 1 to 8."},
                 "screenshot_delay_seconds": {
                     "type": "number", "minimum": 0, "maximum": 10,
-                    "description": "Optional override for the controller's app-aware automatic wait before the fresh screenshot, from 0 to 10 seconds.",
+                    "description": "Optional wait before the fresh screenshot (0–10 seconds, capped by the configured app-aware delay).",
                 },
+                "seconds": {"type": "number", "minimum": 0, "maximum": 10, "description": "For a standalone action='wait', delay before returning a fresh inspection. The configured app-aware delay remains the maximum."},
                 "include_ocr": {"type": "boolean", "description": "For inspect and post-action screenshots: false (default) skips OCR for normal navigation and clicking; set true when the task requires reading, finding, or extracting on-screen text (e.g. finding emails, reading message content, verifying numbers or values)."},
+                "include_visual_grounding": {"type": "boolean", "description": "Run the local OmniParser control-region detector on this screenshot. This adds local inference and image processing; default false, use only when the screenshot plus OCR do not make the target control clear."},
                 "actions": {
                     "type": "array",
                     "minItems": 1,
@@ -297,9 +342,12 @@ ADAM_TOOLS: list[CanonicalTool] = [
                     "description": (
                         "Optional model-selected micro-sequence for related inputs. Each step uses the same "
                         "arguments as a single action, except snapshot_id is carried forward by the controller. "
+                        "A wait action here delays before the next fresh observation. "
                         "The controller refreshes state after each step. It can continue with coordinate-free "
-                        "inputs against the selected control, but pauses before later clicks/drags/scrolls that "
-                        "need a new target decision from Adam."
+                        "inputs against the selected control, and may click another explicit target_text label "
+                        "after typing when include_ocr=true; the label is matched against fresh OCR so no old "
+                        "coordinates are reused. It pauses before later coordinate-based clicks/drags/scrolls "
+                        "that need a new target decision from Adam."
                     ),
                     "items": {
                         "type": "object",
@@ -501,7 +549,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="list_applications",
-        description="Lists installed desktop applications, software, and games across the system, optionally filtered by keyword.",
+        description="Lists installed desktop applications and games across the system, including discoverable Steam library titles, optionally filtered by keyword.",
         parameters={
             "type": "object",
             "properties": {
@@ -514,7 +562,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="launch_application",
-        description="Launches any installed application, desktop tool, or game by name. Always set screenshot=true if you need to inspect or interact with the opened app next; set screenshot=false if launching is the whole task. When true, waits until the app window is ready, then applies an automatic app-aware delay before attaching a screenshot. Set include_ocr=false if only checking that the app appeared; set true when reading screen text or locating a text-labeled control. An optional screenshot_delay_seconds can override that wait (0–10 seconds).",
+        description="Launches any installed application or desktop tool by name, including discoverable Steam library titles. Always set screenshot=true if you need to inspect or interact with the opened app next; set screenshot=false if launching is the whole task. When true, waits until the app window is ready, then applies an automatic app-aware delay before attaching a screenshot. Set include_ocr=false if only checking that the app appeared; set true when reading screen text or locating a text-labeled control. screenshot_delay_seconds can shorten the configured wait but cannot exceed it.",
         parameters={
             "type": "object",
             "properties": {
@@ -532,7 +580,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
                 },
                 "screenshot_delay_seconds": {
                     "type": "number", "minimum": 0, "maximum": 10,
-                    "description": "Optional override for the automatic delay before the screenshot, from 0 to 10 seconds."
+                    "description": "Optional shorter wait before capture. The configured app-aware delay is the maximum; change configuration for longer waits."
                 },
                 "include_ocr": {
                     "type": "boolean",
@@ -566,7 +614,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="focus_window",
-        description="Brings an open window to the front by matching its title or application name. Always set screenshot=true if you need to inspect or interact with it next; set screenshot=false if focusing is the whole task. When true, waits until the window is ready, then applies an automatic app-aware delay before attaching a screenshot. Set include_ocr=false for a visual-only check; set true when screen text or text-labeled controls matter. An optional screenshot_delay_seconds can override that wait (0–10 seconds).",
+        description="Brings an open window to the front by matching its title or application name. Always set screenshot=true if you need to inspect or interact with it next; set screenshot=false if focusing is the whole task. When true, waits until the window is ready, then applies an automatic app-aware delay before attaching a screenshot. Set include_ocr=false for a visual-only check; set true when screen text or text-labeled controls matter. screenshot_delay_seconds can shorten the configured wait but cannot exceed it.",
         parameters={
             "type": "object",
             "properties": {
@@ -580,7 +628,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
                 },
                 "screenshot_delay_seconds": {
                     "type": "number", "minimum": 0, "maximum": 10,
-                    "description": "Optional override for the automatic delay before the screenshot, from 0 to 10 seconds."
+                    "description": "Optional shorter wait before capture. The configured app-aware delay is the maximum; change configuration for longer waits."
                 },
                 "include_ocr": {
                     "type": "boolean",
@@ -641,7 +689,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="get_system_status",
-        description="Queries real-time hardware health: CPU load, RAM usage, root disk space, and all detected GPU temperatures and VRAM usage.",
+        description="Queries CPU load, RAM, root disk, and available GPU utilization, temperature, and VRAM telemetry.",
         parameters={
             "type": "object",
             "properties": {}

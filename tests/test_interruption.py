@@ -79,7 +79,7 @@ async def test_brain_interrupted_flag_halts_react_loop(dummy_brain):
 
 
 @pytest.mark.asyncio
-async def test_monitor_execution_interrupt_stops_on_keyword():
+async def test_monitor_execution_interrupt_stops_on_explicit_wake_phrase():
     app = MagicMock(spec=AdamDaemon)
     app.running = True
     app.stream = MagicMock()
@@ -96,8 +96,13 @@ async def test_monitor_execution_interrupt_stops_on_keyword():
     app.wake.raw_wake_word = "hey adam"
     app.wake.is_custom_mode = True
     app.wake.match_custom_wake_word.return_value = (False, "")
-    app._transcribe_wake_candidate = MagicMock(return_value="stop that right now")
-    app.config = SimpleNamespace(audio=SimpleNamespace(vad_threshold_speaking=0.8))
+    app.wake.match_explicit_wake_word.return_value = (True, "stop that right now")
+    app._transcribe_wake_candidate = MagicMock(return_value="hey adam stop that right now")
+    app.config = SimpleNamespace(audio=SimpleNamespace(
+        vad_threshold_speaking=0.8,
+        vad_silence_duration=0.6,
+        max_utterance_seconds=60.0,
+    ))
 
     import numpy as np
     chunk = np.zeros(512, dtype=np.float32)

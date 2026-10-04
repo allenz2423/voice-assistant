@@ -4,11 +4,32 @@ from __future__ import annotations
 
 import io
 import ctypes
+import gc
 import threading
 import time
 from dataclasses import dataclass
 
 from src.tools.desktop_timing import log_duration, log_elapsed
+
+
+try:
+    _MALLOC_TRIM = ctypes.CDLL(None).malloc_trim
+    _MALLOC_TRIM.argtypes = [ctypes.c_size_t]
+    _MALLOC_TRIM.restype = ctypes.c_int
+except (AttributeError, OSError):
+    # malloc_trim is a glibc extension. Keep OCR portable where it is absent.
+    _MALLOC_TRIM = None
+
+
+def _reclaim_ocr_heap_pages() -> None:
+    """Collect OCR result cycles and return free glibc heap pages to the OS."""
+    if _MALLOC_TRIM is None:
+        return
+    gc.collect()
+    try:
+        _MALLOC_TRIM(0)
+    except (OSError, TypeError, ValueError):
+        pass
 
 
 @dataclass(frozen=True)
@@ -35,15 +56,17 @@ class OCRRegion:
 
 
 class ScreenOCR:
-    """Extract text and clickable text-region boxes with PP-OCRv6 medium."""
+    """Extract text and clickable text-region boxes with a bounded PP-OCRv6 model."""
 
     def __init__(
         self,
         max_regions: int = 100,
         max_candidates: int | None = None,
+        max_image_dimension: int = 1280,
         min_confidence: float = 0.2,
         engine=None,
         device: str = "cpu",
+        model_size: str = "small",
         gpu_uuid: str = "",
         preload: bool = False,
     ):
@@ -52,15 +75,19 @@ class ScreenOCR:
             self.max_regions,
             int(max_candidates if max_candidates is not None else self.max_regions * 8),
         )
+        self.max_image_dimension = max(320, min(int(max_image_dimension), 4096))
         self.min_confidence = min(max(float(min_confidence), 0.0), 1.0)
         self._engine = engine
         self._engine_instrumented = False
         self._read_metrics = threading.local()
         self.device = device.casefold()
+        self.model_size = model_size.casefold()
         self.gpu_uuid = gpu_uuid.strip()
         self._device_id: int | None = None
         if self.device not in {"cpu", "cuda"}:
             raise ValueError(f"Unsupported OCR device {device!r}; choose cpu or cuda.")
+        if self.model_size not in {"small", "medium"}:
+            raise ValueError(f"Unsupported OCR model size {model_size!r}; choose small or medium.")
         if self.device == "cuda":
             if not self.gpu_uuid:
                 raise RuntimeError("GPU OCR needs computer_vision.gpu_uuid to select the allowed GPU.")
@@ -109,10 +136,11 @@ class ScreenOCR:
                     "OCR-only computer use needs the optional 'computer-ocr' dependencies."
                 ) from exc
             use_cuda = self.device == "cuda"
+            model_type = ModelType.SMALL if self.model_size == "small" else ModelType.MEDIUM
             params = {
-                "Det.model_type": ModelType.MEDIUM,
+                "Det.model_type": model_type,
                 "Det.ocr_version": OCRVersion.PPOCRV6,
-                "Rec.model_type": ModelType.MEDIUM,
+                "Rec.model_type": model_type,
                 "Rec.ocr_version": OCRVersion.PPOCRV6,
                 "Cls.model_type": ModelType.MOBILE,
                 "Cls.ocr_version": OCRVersion.PPOCRV4,
@@ -142,12 +170,15 @@ class ScreenOCR:
                        for component in components):
                     raise RuntimeError("PP-OCR failed to initialize all models with CUDAExecutionProvider.")
                 print(
-                    f"[OCR] PP-OCRv6 medium using CUDA GPU {self._device_id} ({self.gpu_uuid}); "
+                    f"[OCR] PP-OCRv6 {self.model_size} using CUDA GPU {self._device_id} ({self.gpu_uuid}); "
                     "CPU inference threads capped at 2.",
                     flush=True,
                 )
             else:
-                print("[OCR] PP-OCRv6 medium using CPU (inference threads capped at 2).", flush=True)
+                print(
+                    f"[OCR] PP-OCRv6 {self.model_size} using CPU (inference threads capped at 2).",
+                    flush=True,
+                )
         self._instrument_engine(self._engine)
         return self._engine
 
@@ -211,9 +242,22 @@ class ScreenOCR:
         import numpy as np
 
         preprocess_started = time.perf_counter()
-        image = np.asarray(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
-        log_duration("ocr.decode_preprocess", preprocess_started,
-                     width=int(image.shape[1]), height=int(image.shape[0]), image_bytes=len(image_bytes))
+        source = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        source_width, source_height = source.size
+        scale = min(1.0, self.max_image_dimension / max(source.size))
+        if scale < 1.0:
+            inference_size = (
+                max(1, round(source_width * scale)),
+                max(1, round(source_height * scale)),
+            )
+            source = source.resize(inference_size, Image.Resampling.LANCZOS)
+        image = np.asarray(source)
+        log_duration(
+            "ocr.decode_preprocess", preprocess_started,
+            width=source_width, height=source_height,
+            inference_width=int(image.shape[1]), inference_height=int(image.shape[0]),
+            scale=round(scale, 4), image_bytes=len(image_bytes),
+        )
         inference_started = time.perf_counter()
         engine = self._get_engine()
         metrics: dict[str, int | bool] = {}
@@ -243,6 +287,17 @@ class ScreenOCR:
                 if isinstance(elapsed, (int, float)):
                     log_elapsed(f"ocr.{name}", float(elapsed) * 1000)
         postprocess_started = time.perf_counter()
+        parsed = self._parse_result(result, source_width, source_height, scale)
+        log_duration("ocr.result_postprocess", postprocess_started, region_count=len(parsed))
+        # RapidOCR's result can keep image arrays and cyclic visualization
+        # objects alive. Drop it before trimming so only the compact text and
+        # coordinates remain resident between screen reads.
+        del result, image, source
+        _reclaim_ocr_heap_pages()
+        return parsed
+
+    def _parse_result(self, result, source_width: int, source_height: int, scale: float) -> list[OCRRegion]:
+        """Convert RapidOCR output into small immutable text/coordinate records."""
         if all(hasattr(result, attr) for attr in ("boxes", "txts", "scores")):
             boxes, texts, scores = result.boxes, result.txts, result.scores
             # RapidOCR returns None for all three fields when the screen has no
@@ -264,8 +319,10 @@ class ScreenOCR:
                     continue
                 xs = [float(point[0]) for point in points]
                 ys = [float(point[1]) for point in points]
-                left, top = max(0, int(min(xs))), max(0, int(min(ys)))
-                right, bottom = int(max(xs)), int(max(ys))
+                left = max(0, int(min(xs) / scale))
+                top = max(0, int(min(ys) / scale))
+                right = min(source_width, int(max(xs) / scale))
+                bottom = min(source_height, int(max(ys) / scale))
                 if right <= left or bottom <= top:
                     continue
                 regions.append(OCRRegion("", text[:240], confidence, left, top, right, bottom))
@@ -277,7 +334,6 @@ class ScreenOCR:
             OCRRegion(f"O{index}", item.text, item.confidence, item.left, item.top, item.right, item.bottom)
             for index, item in enumerate(regions, 1)
         ]
-        log_duration("ocr.result_postprocess", postprocess_started, region_count=len(parsed))
         return parsed
 
     def read_zoomed_band(

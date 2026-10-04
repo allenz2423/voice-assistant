@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PIL import Image
 
+from src.config import ComputerVisionConfig
 from src.tools.omniparser import OmniParserScreenshotGrounder
 
 
@@ -25,6 +26,12 @@ def test_omniparser_disabled_returns_empty():
     annotated, text = grounder.annotate(image)
     assert annotated == image
     assert text == ""
+    assert grounder._process is None
+
+
+def test_omniparser_is_lazy_by_default():
+    assert ComputerVisionConfig().preload_on_startup is False
+    grounder = OmniParserScreenshotGrounder(enabled=True)
     assert grounder._process is None
 
 
@@ -151,16 +158,31 @@ def test_omniparser_worker_handles_restart_on_failure():
 
 
 def test_omniparser_real_worker_if_installed():
+    import os
+
     python_path = Path("~/.local/share/adam/omniparser-runtime/bin/python").expanduser()
     model_path = Path("~/.local/share/adam/models/omniparser-yolov8n.pt").expanduser()
     if not python_path.is_file() or not model_path.is_file():
         pytest.skip("OmniParser runtime or model not installed.")
 
     # GTX 1080 Ti UUID
+    gpu_uuid = "GPU-1816d860-68b3-1b29-2ffd-c3d34d9e0673"
+    cuda_env = os.environ.copy()
+    cuda_env["CUDA_VISIBLE_DEVICES"] = gpu_uuid
+    cuda_probe = subprocess.run(
+        [str(python_path), "-c", "import torch; print(torch.cuda.is_available())"],
+        capture_output=True,
+        text=True,
+        env=cuda_env,
+        timeout=30,
+    )
+    if cuda_probe.returncode != 0 or cuda_probe.stdout.strip() != "True":
+        pytest.skip("OmniParser CUDA runtime is unavailable on this host.")
+
     grounder = OmniParserScreenshotGrounder(
         enabled=True,
         device="cuda",
-        gpu_uuid="GPU-1816d860-68b3-1b29-2ffd-c3d34d9e0673",
+        gpu_uuid=gpu_uuid,
         python_path=str(python_path),
         model_path=str(model_path),
         preload=True,

@@ -8,6 +8,7 @@ from PIL import Image
 from src.tools.computer_control import ComputerController
 from src.tools.kev_decision import KevActionDecision, KevDecisionClient
 from src.tools.kev_computer_agent import KevComputerAgent
+import src.tools.ocr as ocr_module
 from src.tools.ocr import OCRRegion, ScreenOCR
 
 
@@ -32,6 +33,38 @@ def test_screen_ocr_converts_results_to_bounded_regions():
     assert regions[0].text == "Start Recording"
     assert regions[0].center == (55, 35)
     assert "O1" in ScreenOCR.format(regions)
+
+
+def test_screen_ocr_reclaims_native_heap_after_slimming_results(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ocr_module.gc, "collect", lambda: calls.append("gc") or 0)
+    monkeypatch.setattr(ocr_module, "_MALLOC_TRIM", lambda padding: calls.append(("trim", padding)) or 1)
+
+    class Engine:
+        def __call__(self, image):
+            return ([([[10, 20], [100, 20], [100, 50], [10, 50]], "Save", 0.95)], 0.01)
+
+    regions = ScreenOCR(engine=Engine()).read(png_bytes())
+
+    assert [region.text for region in regions] == ["Save"]
+    assert calls == ["gc", ("trim", 0)]
+
+
+def test_screen_ocr_downscales_large_images_and_restores_source_coordinates():
+    seen = {}
+
+    class Engine:
+        def __call__(self, image):
+            seen["shape"] = image.shape
+            # These are inference-image coordinates at a 0.5 scale.
+            return ([([[10, 20], [100, 20], [100, 50], [10, 50]], "Save note", 0.98)], 0.01)
+
+    regions = ScreenOCR(engine=Engine(), max_image_dimension=1000).read(png_bytes(1600, 2000))
+
+    assert seen["shape"] == (1000, 800, 3)
+    assert len(regions) == 1
+    assert regions[0].center == (110, 70)
+    assert (regions[0].left, regions[0].top, regions[0].right, regions[0].bottom) == (20, 40, 200, 100)
 
 
 def test_screen_ocr_reads_modern_rapidocr_result():
@@ -326,8 +359,15 @@ def test_visual_inspection_can_skip_ocr_and_region_grounding():
     with_details = controller.run("inspect", include_ocr=True, screenshot_delay_seconds=0)
     assert with_details.screenshot is not None
     assert "Ready" in with_details.message
-    assert "Visual regions" in with_details.message
-    assert calls == {"ocr": 2, "grounder": 1}
+    assert "Visual regions" not in with_details.message
+    assert calls == {"ocr": 2, "grounder": 0}
+
+    with_grounding = controller.run(
+        "inspect", include_ocr=True, include_visual_grounding=True, screenshot_delay_seconds=0
+    )
+    assert "Ready" in with_grounding.message
+    assert "Visual regions" in with_grounding.message
+    assert calls == {"ocr": 4, "grounder": 1}
 
 
 def test_screen_ocr_load_preloads_engine():
@@ -374,7 +414,8 @@ def test_screen_ocr_preload_flag():
 
 
 def test_cuda_ocr_uses_bounded_arena_and_lightweight_cudnn_search(monkeypatch):
-    import rapidocr
+    import sys
+    import types
 
     captured = {}
 
@@ -389,7 +430,11 @@ def test_cuda_ocr_uses_bounded_arena_and_lightweight_cudnn_search(monkeypatch):
         captured.update(params)
         return engine
 
-    monkeypatch.setattr(rapidocr, "RapidOCR", build_engine)
+    rapidocr = types.ModuleType("rapidocr")
+    rapidocr.ModelType = SimpleNamespace(SMALL="small", MEDIUM="medium", MOBILE="mobile")
+    rapidocr.OCRVersion = SimpleNamespace(PPOCRV6="ppocrv6", PPOCRV4="ppocrv4")
+    rapidocr.RapidOCR = build_engine
+    monkeypatch.setitem(sys.modules, "rapidocr", rapidocr)
     monkeypatch.setattr(ScreenOCR, "_resolve_gpu_index", staticmethod(lambda _uuid: 0))
     ocr = ScreenOCR(device="cuda", gpu_uuid="GPU-test")
 
@@ -397,6 +442,14 @@ def test_cuda_ocr_uses_bounded_arena_and_lightweight_cudnn_search(monkeypatch):
     assert captured["EngineConfig.onnxruntime.cuda_ep_cfg.arena_extend_strategy"] == "kSameAsRequested"
     assert captured["EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_algo_search"] == "HEURISTIC"
     assert captured["EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_use_max_workspace"] is False
+    assert captured["Det.model_type"] == "small"
+    assert captured["Rec.model_type"] == "small"
+
+    captured.clear()
+    medium_ocr = ScreenOCR(device="cuda", gpu_uuid="GPU-test", model_size="medium")
+    assert medium_ocr.load() is engine
+    assert captured["Det.model_type"] == "medium"
+    assert captured["Rec.model_type"] == "medium"
 
 
 def test_brain_preloads_ocr_at_startup():
@@ -424,6 +477,35 @@ def test_brain_preloads_ocr_at_startup():
         brain = AdamBrain(cfg, None, None, None, None, preload_ocr=True)
         assert brain.screen_ocr is not None
         mock_load.assert_called_once()
+
+
+def test_brain_keeps_an_unloaded_cpu_ocr_reader_available_on_demand():
+    from types import SimpleNamespace
+    from src.llm.brain import AdamBrain
+
+    cfg = SimpleNamespace(
+        computer_control=SimpleNamespace(enabled=True, ocr_only=False, ocr_device=None),
+        computer_vision=None,
+        llm=SimpleNamespace(
+            provider="local", local_model="test", cloud_model="",
+            ollama_host="http://localhost:11434", temperature=0.3,
+            num_ctx=16384, think="low", api_key="",
+        ),
+        desktop=SimpleNamespace(default_browser=""),
+    )
+    brain = AdamBrain(cfg, None, None, None, None, preload_ocr=False)
+
+    assert isinstance(brain.screen_ocr, ScreenOCR)
+    assert brain.screen_ocr.device == "cpu"
+    assert brain.screen_ocr.model_size == "small"
+    assert brain.screen_ocr._engine is None
+    assert brain.computer_controller._ocr_reader is brain.screen_ocr
+
+
+def test_ocr_model_preload_is_opt_in_by_default():
+    from src.config import ComputerControlConfig
+
+    assert ComputerControlConfig().ocr_preload_on_startup is False
 
 
 def test_visual_inspection_uses_full_screen_ocr_reader_when_available():

@@ -20,13 +20,32 @@ from src.tools.desktop import (
     list_desktop_macros,
     configure_desktop_macros,
     configure_disabled_capabilities,
+    screenshot_delay_for_focused_window,
     KdePlasmaBackend,
     NiriBackend,
     GnomeBackend,
     CosmicBackend,
     HyprlandBackend,
-    SwayBackend
+    SwayBackend,
+    GenericDesktopBackend,
+    I3Backend,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_backend_tests_from_live_desktop(monkeypatch):
+    monkeypatch.setattr("src.tools.desktop.ensure_gui_environment", lambda: None)
+
+
+@pytest.mark.parametrize(("application", "expected"), [
+    ("Firefox", 3.0),
+    ("Zen Browser", 3.0),
+    ("SHENZHEN I/O", 0.25),
+    ("Zenith Image Editor", 0.25),
+    ("Edgecase Editor", 0.25),
+])
+def test_configured_screenshot_delay_can_use_expected_application(application, expected):
+    assert screenshot_delay_for_focused_window(0.25, 3.0, application) == expected
 
 
 def test_kde_plasma_capabilities_and_disabling(monkeypatch):
@@ -56,6 +75,62 @@ def test_kde_plasma_capabilities_and_disabling(monkeypatch):
     # Calling swap_windows on KDE returns disabled/unsupported message
     swap_res = swap_windows("Firefox", "Terminal")
     assert "not supported on kde_plasma" in swap_res.lower() or "not supported on kde" in swap_res.lower()
+
+
+def test_installed_i3_cli_does_not_override_another_x11_session(monkeypatch):
+    monkeypatch.delenv("I3SOCK", raising=False)
+    monkeypatch.delenv("SWAYSOCK", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE", raising=False)
+    monkeypatch.delenv("NIRI_SOCKET", raising=False)
+    monkeypatch.delenv("KDE_SESSION_VERSION", raising=False)
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setenv("XDG_SESSION_TYPE", "x11")
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "Openbox")
+    monkeypatch.setenv("DESKTOP_SESSION", "openbox")
+
+    with patch("src.tools.desktop.ensure_gui_environment"), patch(
+        "src.tools.desktop.shutil.which",
+        side_effect=lambda name: "/usr/bin/i3-msg" if name == "i3-msg" else None,
+    ):
+        backend = get_active_backend(refresh_env=False)
+
+    assert isinstance(backend, GenericDesktopBackend)
+
+
+def test_i3_session_still_selects_i3_backend(monkeypatch):
+    monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE", raising=False)
+    monkeypatch.delenv("SWAYSOCK", raising=False)
+    monkeypatch.delenv("NIRI_SOCKET", raising=False)
+    monkeypatch.delenv("KDE_SESSION_VERSION", raising=False)
+    monkeypatch.setenv("I3SOCK", "/run/user/1000/i3.sock")
+    monkeypatch.setenv("DISPLAY", ":0")
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "i3")
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+
+    with patch("src.tools.desktop.ensure_gui_environment"), patch(
+        "src.tools.desktop.shutil.which",
+        side_effect=lambda name: "/usr/bin/i3-msg" if name == "i3-msg" else None,
+    ):
+        backend = get_active_backend(refresh_env=False)
+
+    assert isinstance(backend, I3Backend)
+
+
+def test_installed_wayland_tools_do_not_override_unknown_session(monkeypatch):
+    for name in (
+        "HYPRLAND_INSTANCE_SIGNATURE", "SWAYSOCK", "I3SOCK", "NIRI_SOCKET",
+        "KDE_SESSION_VERSION", "KDE_FULL_SESSION", "DESKTOP_SESSION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-test")
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "Unknown")
+
+    installed_tools = {"hyprctl", "swaymsg", "kdotool", "cosmic-comp"}
+    with patch("src.tools.desktop.shutil.which", side_effect=lambda name: f"/usr/bin/{name}" if name in installed_tools else None):
+        backend = get_active_backend(refresh_env=False)
+
+    assert isinstance(backend, GenericDesktopBackend)
 
 
 def test_kde_plasma_focus_window(monkeypatch):
@@ -458,7 +533,7 @@ def test_hyprland_screenshot_uses_focused_output_name(monkeypatch):
             return SimpleNamespace(returncode=0, stdout='{"monitor":1}', stderr=b"")
         if command == ["hyprctl", "monitors", "-j"]:
             return SimpleNamespace(returncode=0, stdout='[{"id":1,"name":"DP-5","x":0,"y":0,"width":2560,"height":1440}]', stderr=b"")
-        if command == ["grim", "-l", "0", "-o", "DP-5", "-"]:
+        if command == ["grim", "-l", "1", "-o", "DP-5", "-"]:
             return SimpleNamespace(returncode=0, stdout=screenshot, stderr=b"")
         raise AssertionError(f"Unexpected screenshot command: {command}")
 
@@ -466,4 +541,51 @@ def test_hyprland_screenshot_uses_focused_output_name(monkeypatch):
     image = HyprlandBackend().capture_screenshot()
 
     assert image == screenshot
-    assert calls[-1] == ["grim", "-l", "0", "-o", "DP-5", "-"]
+    assert calls[-1] == ["grim", "-l", "1", "-o", "DP-5", "-"]
+
+
+def test_hyprland_screenshot_timeout_explains_permission_check(monkeypatch):
+    from types import SimpleNamespace
+    import subprocess
+
+    def run(command, **kwargs):
+        if command == ["hyprctl", "activewindow", "-j"]:
+            return SimpleNamespace(returncode=0, stdout='{"monitor":1}', stderr=b"")
+        if command == ["hyprctl", "monitors", "-j"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout='[{"id":1,"name":"DP-5","x":0,"y":0,"width":1920,"height":1080}]',
+                stderr=b"",
+            )
+        if command == ["grim", "-l", "1", "-o", "DP-5", "-"]:
+            raise subprocess.TimeoutExpired(command, timeout=3)
+        raise AssertionError(f"Unexpected screenshot command: {command}")
+
+    monkeypatch.setattr("src.tools.desktop.subprocess.run", run)
+
+    with pytest.raises(RuntimeError, match="Check that Hyprland allows grim screen capture"):
+        HyprlandBackend().capture_screenshot()
+
+
+def test_hyprland_screenshot_fails_fast_when_focused_monitor_is_off(monkeypatch):
+    from types import SimpleNamespace
+
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command == ["hyprctl", "activewindow", "-j"]:
+            return SimpleNamespace(returncode=0, stdout='{"monitor":1}', stderr=b"")
+        if command == ["hyprctl", "monitors", "-j"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout='[{"id":1,"name":"DP-5","x":0,"y":0,"width":1920,"height":1080,"dpmsStatus":false}]',
+                stderr=b"",
+            )
+        raise AssertionError(f"Capture must not run for a powered-off display: {command}")
+
+    monkeypatch.setattr("src.tools.desktop.subprocess.run", run)
+
+    with pytest.raises(RuntimeError, match=r"powered off \(DPMS\)"):
+        HyprlandBackend().capture_screenshot()
+    assert not any(command[0] == "grim" for command in calls)

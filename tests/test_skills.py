@@ -58,6 +58,28 @@ def test_detect_environment_i3(monkeypatch):
     sm = SkillManager()
     assert sm.detect_desktop_environment(refresh_env=False) == "i3"
 
+def test_detect_environment_does_not_infer_i3_from_installed_binary(monkeypatch):
+    monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE", raising=False)
+    monkeypatch.delenv("SWAYSOCK", raising=False)
+    monkeypatch.delenv("I3SOCK", raising=False)
+    monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+    monkeypatch.setenv("DISPLAY", ":99")
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "Openbox")
+    monkeypatch.setenv("DESKTOP_SESSION", "openbox")
+    with patch("src.skills.manager.shutil.which", side_effect=lambda name: "/usr/bin/i3-msg" if name == "i3-msg" else None):
+        assert SkillManager().detect_desktop_environment(refresh_env=False) == "generic_desktop"
+
+def test_detect_environment_does_not_infer_wayland_compositor_from_binary(monkeypatch):
+    for name in ("HYPRLAND_INSTANCE_SIGNATURE", "SWAYSOCK", "I3SOCK", "NIRI_SOCKET"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-test")
+    monkeypatch.setenv("XDG_CURRENT_DESKTOP", "Unknown")
+    monkeypatch.setenv("DESKTOP_SESSION", "unknown")
+    monkeypatch.setenv("GDMSESSION", "unknown")
+    monkeypatch.delenv("KDE_SESSION_VERSION", raising=False)
+    with patch("src.skills.manager.shutil.which", side_effect=lambda name: f"/usr/bin/{name}" if name in {"hyprctl", "swaymsg", "cosmic-comp"} else None):
+        assert SkillManager().detect_desktop_environment(refresh_env=False) == "generic_desktop"
+
 def test_detect_environment_kde(monkeypatch):
     monkeypatch.delenv("HYPRLAND_INSTANCE_SIGNATURE", raising=False)
     monkeypatch.delenv("SWAYSOCK", raising=False)
@@ -376,7 +398,10 @@ async def test_brain_leaves_workspace_completion_assessment_to_main_agent_turn()
     ):
         await brain.process_user_utterance("could you move Spotify to Workspace One?")
 
-    assert brain.tts.spoken == ["The workspace move is complete."]
+    assert brain.tts.spoken == [
+        "I’ve got the request. I’m checking the screen now.",
+        "The workspace move is complete.",
+    ]
     assert brain.llm_client.chat_calls == 2
     tool_result = next(message for message in brain.llm_client.last_messages if message.get("role") == "tool")
     payload = json.loads(tool_result["content"])

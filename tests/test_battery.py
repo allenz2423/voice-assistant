@@ -539,6 +539,95 @@ def test_vad_noise_gate_suppresses_low_ambient_energy():
     assert prob == 0.0
 
 
+def test_vad_energy_gate_skips_neural_inference_and_resets_state():
+    from collections import deque
+    import numpy as np
+    from src.audio.vad import SileroVAD
+
+    class CountingModel:
+        def __init__(self):
+            self.inference_calls = 0
+            self.reset_calls = 0
+
+        def __call__(self, _tensor, _sample_rate):
+            self.inference_calls += 1
+            return np.asarray([[0.9]], dtype=np.float32)
+
+        def reset_states(self):
+            self.reset_calls += 1
+
+    vad = SileroVAD.__new__(SileroVAD)
+    vad.sample_rate = 16000
+    vad.model = CountingModel()
+    vad._quiet_context = deque(maxlen=8)
+    vad._energy_gated_silence = False
+
+    low_energy = np.full(512, 0.001, dtype=np.float32)
+    for _ in range(3):
+        assert vad.is_speech(low_energy, use_energy_floor=True) == (False, 0.0)
+    assert vad.model.inference_calls == 0
+    assert vad.model.reset_calls == 1
+
+    # Onset replays the cached silence once, preserving Silero context.
+    voice_energy = np.full(512, 0.01, dtype=np.float32)
+    assert vad.is_speech(voice_energy, use_energy_floor=True) == (True, pytest.approx(0.9))
+    assert vad.model.inference_calls == 4
+
+    # Disabling the energy floor retains the direct neural path.
+    vad.reset()
+    assert vad.is_speech(low_energy, use_energy_floor=False) == (True, pytest.approx(0.9))
+    assert vad.model.inference_calls == 5
+
+
+def test_numpy_silero_wrapper_matches_official_onnx_output():
+    import numpy as np
+    import torch
+    from silero_vad import load_silero_vad
+    from src.audio.vad import SileroVAD
+
+    reference = load_silero_vad(onnx=True)
+    candidate = SileroVAD()
+    rng = np.random.default_rng(17)
+    frames = (
+        [np.zeros(512, dtype=np.float32) for _ in range(6)]
+        + [rng.normal(0.0, 0.02, 512).astype(np.float32) for _ in range(20)]
+        + [np.zeros(512, dtype=np.float32) for _ in range(10)]
+    )
+
+    reference.reset_states()
+    candidate.reset()
+    for frame in frames:
+        expected = float(reference(torch.from_numpy(frame), 16000).item())
+        actual = float(np.asarray(candidate.model(frame, 16000)).item())
+        assert actual == pytest.approx(expected, abs=1e-7)
+
+    for sample_rate, frame_size in ((8000, 256), (32000, 1024)):
+        reference.reset_states()
+        candidate.reset()
+        for _ in range(5):
+            frame = rng.normal(0.0, 0.02, frame_size).astype(np.float32)
+            expected = float(reference(torch.from_numpy(frame), sample_rate).item())
+            actual = float(np.asarray(candidate.model(frame, sample_rate)).item())
+            assert actual == pytest.approx(expected, abs=1e-7)
+
+
+def test_vad_runtime_can_load_without_importing_torch():
+    import subprocess
+    import sys
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from src.audio.vad import SileroVAD; SileroVAD(); "
+            "assert 'torch' not in sys.modules",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_reference_audio_monitor_correlation():
     from src.audio.stream import ReferenceAudioMonitor
     import numpy as np
@@ -654,4 +743,3 @@ def test_cosyvoice_config_and_fallback():
     )
     # Cosyvoice engine is exclusive — no Kokoro fallback initialized
     assert tts.kokoro is None
-

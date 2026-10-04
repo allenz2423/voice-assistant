@@ -1,5 +1,9 @@
 import os
 os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+from src.runtime import configure_native_threading
+
+_CPU_THREAD_LIMIT = configure_native_threading()
+
 import sys
 import time
 import re
@@ -23,7 +27,7 @@ from src.audio.stream import AudioStreamManager
 from src.audio.meeting import MeetingSession
 from src.tts.streaming import StreamingVoiceSynthesizer
 from src.wake.engine import WakeWordDetector
-from src.stt.transcriber import WhisperTranscriber, create_transcriber
+from src.stt.transcriber import CLOUD_STT_PROVIDERS, OpenAITranscriber, WhisperTranscriber, create_transcriber
 from src.stt.speaker import SpeakerVerifier, default_profile_path, default_user_profile_path
 from src.stt.diarizer import NemotronDiarizer, SpeakerSpan
 from src.stt.meeting_speakers import MeetingSpeakerRegistry
@@ -45,6 +49,9 @@ from src.tools.desktop import (
     configure_desktop_macros,
     configure_disabled_capabilities
 )
+
+# Apply the same cap to libraries loaded while importing the application.
+_CPU_THREAD_LIMIT = configure_native_threading()
 
 def merge_overlapping_transcripts(p: str, s: str) -> str:
     """Merges two overlapping transcription snippets without repeating words or phrases."""
@@ -223,10 +230,11 @@ class AdamDaemon:
         self.wake = WakeWordDetector(
             wake_word=self.config.wake.wake_word,
             threshold=self.config.wake.threshold,
-            aliases=getattr(self.config.wake, "aliases", [])
+            aliases=getattr(self.config.wake, "aliases", []),
+            energy_floor=getattr(self.config.audio, "wake_energy_floor", 0.0005),
         )
         stt_provider = str(getattr(self.config.stt, "provider", "local")).lower()
-        if self.wake.is_custom_mode and stt_provider in ("openai", "openrouter", "custom"):
+        if self.wake.is_custom_mode and stt_provider in CLOUD_STT_PROVIDERS:
             wake_cfg = self.config.stt
             print(
                 f"[Wake] Preloading local '{wake_cfg.fallback_model}' model for wake spotting.",
@@ -238,6 +246,8 @@ class AdamDaemon:
                 device_index=wake_cfg.device_index,
                 compute_type=wake_cfg.fallback_compute_type,
             )
+            if isinstance(self.stt, OpenAITranscriber) and self.stt.attach_local_fallback(self.wake_spotter):
+                print("[STT] Sharing the wake spotter as the local fallback to avoid loading a duplicate model.", flush=True)
 
         print("[Init] Initializing AudioStreamManager...")
         self.stream = AudioStreamManager(
@@ -288,8 +298,12 @@ class AdamDaemon:
             self.tts,
             arbiter=self.arbiter,
             speculative_router=self.speculative_router,
-            preload_ocr=True,
-            preload_vision=True,
+            preload_ocr=bool(getattr(self.config.computer_control, "ocr_preload_on_startup", False)),
+            preload_vision=bool(getattr(
+                getattr(self.config, "computer_vision", None),
+                "preload_on_startup",
+                False,
+            )),
             memory_mgr=self.memory_manager,
         )
         self.idea_router = None
@@ -458,22 +472,25 @@ class AdamDaemon:
     def _transcribe_wake_candidate(self, audio_data: np.ndarray) -> str:
         """Use local ASR for custom wake spotting; reserve cloud ASR for wake candidates."""
         provider = str(getattr(self.config.stt, "provider", "local")).lower()
-        if provider not in ("openai", "openrouter", "custom"):
+        if provider not in CLOUD_STT_PROVIDERS:
             return self._transcribe_stt(audio_data, kind="wake")
 
-        if self.wake_spotter is None:
-            cfg = self.config.stt
-            print(
-                f"[Wake] Loading local '{cfg.fallback_model}' model for private wake spotting.",
-                flush=True,
-            )
-            self.wake_spotter = WhisperTranscriber(
-                model_size=cfg.fallback_model,
-                device=cfg.fallback_device,
-                device_index=cfg.device_index,
-                compute_type=cfg.fallback_compute_type,
-            )
-        return self.wake_spotter.transcribe(audio_data)
+        with self._stt_lock:
+            if self.wake_spotter is None:
+                cfg = self.config.stt
+                print(
+                    f"[Wake] Loading local '{cfg.fallback_model}' model for private wake spotting.",
+                    flush=True,
+                )
+                self.wake_spotter = WhisperTranscriber(
+                    model_size=cfg.fallback_model,
+                    device=cfg.fallback_device,
+                    device_index=cfg.device_index,
+                    compute_type=cfg.fallback_compute_type,
+                )
+                if isinstance(self.stt, OpenAITranscriber):
+                    self.stt.attach_local_fallback(self.wake_spotter)
+            return self.wake_spotter.transcribe(audio_data)
 
     def _transcribe_stt(self, audio_data: np.ndarray, *, kind: str = "final") -> str:
         """Serialize local/cloud STT calls shared by commands and meeting worker."""
@@ -483,7 +500,7 @@ class AdamDaemon:
         stt_provider = str(getattr(self.config.stt, "provider", "local"))
         stt_model = (
             getattr(self.config.stt, "cloud_model", "")
-            if stt_provider.lower() in {"openai", "openrouter", "custom"}
+            if stt_provider.lower() in CLOUD_STT_PROVIDERS
             else getattr(self.config.stt, "model_size", "")
         )
         span_id = str(uuid.uuid4())
@@ -506,7 +523,11 @@ class AdamDaemon:
             raise
         emit_event(
             "stt.completed", span_id=span_id, component="stt", status="ok",
-            provider=stt_provider, model=stt_model, attributes={"kind": kind},
+            provider=stt_provider, model=stt_model,
+            attributes={
+                "kind": kind,
+                **({"usage": self.stt.last_usage} if getattr(self.stt, "last_usage", None) else {}),
+            },
         )
         if trace_token is not None:
             reset_trace_id(trace_token)
@@ -737,7 +758,7 @@ class AdamDaemon:
         """Returns a non-blocking callback invoked on streaming partial audio chunks.
         Performs semantic endpoint analysis to dynamically scale VAD silence duration
         and dispatches speculative pre-flight tool execution while speech is ongoing."""
-        if getattr(self.config.stt, "provider", "local").lower() in ("openai", "openrouter", "custom"):
+        if getattr(self.config.stt, "provider", "local").lower() in CLOUD_STT_PROVIDERS:
             # Avoid a cloud transcription request for every partial audio prefix.
             return lambda _audio_chunk: None
 
@@ -1466,7 +1487,7 @@ class AdamDaemon:
                                 and matched
                                 and self.wake.is_custom_mode
                                 and not is_in_followup
-                                and str(self.config.stt.provider).lower() in ("openai", "openrouter", "custom")
+                                and str(self.config.stt.provider).lower() in CLOUD_STT_PROVIDERS
                             ):
                                 # Only send audio to cloud ASR after local wake spotting.
                                 # Preserve the local result if cloud transcription misses.

@@ -1,4 +1,5 @@
 import re
+from collections import deque
 import numpy as np
 import openwakeword
 from openwakeword.model import Model as OWWModel
@@ -7,10 +8,15 @@ class WakeWordDetector:
     """Always-on wake word engine supporting openWakeWord ONNX models and custom phrase VAD spotting."""
     INTERRUPT_KEYWORDS = re.compile(r"\b(stop|cancel|shut up|wait|pause|quiet)\b", re.IGNORECASE)
 
-    def __init__(self, wake_word="hey_jarvis", threshold=0.50, aliases=None):
+    def __init__(self, wake_word="hey_jarvis", threshold=0.50, aliases=None, energy_floor=0.0005):
         self.raw_wake_word = wake_word.strip()
         self.wake_word = self.raw_wake_word.replace(" ", "_").lower()
         self.threshold = threshold
+        self.energy_floor = max(0.0, float(energy_floor))
+        self._quiet_context_max_samples = int(16000 * 2.1)
+        self._quiet_context = deque()
+        self._quiet_context_samples = 0
+        self._model_frames_processed = 0
         self.aliases = aliases or []
         self.model = None
         self.model_key = None
@@ -36,7 +42,8 @@ class WakeWordDetector:
                 self.model = OWWModel(wakeword_model_paths=[selected_path])
                 self.model_key = list(self.model.models.keys())[0] if self.model.models else self.wake_word
                 self.is_custom_mode = False
-                print(f"[Wake] openWakeWord ONNX model loaded for key: '{self.model_key}' (0% CPU background listening).")
+                behavior = "low-energy frames are gated" if self.energy_floor > 0 else "energy gating disabled"
+                print(f"[Wake] openWakeWord ONNX model loaded for key: '{self.model_key}' ({behavior}).")
             else:
                 self.is_custom_mode = True
                 self.custom_regex = self._build_wake_regex(self.raw_wake_word, self.aliases)
@@ -164,18 +171,46 @@ class WakeWordDetector:
         """Processes a 16kHz audio chunk for ONNX wake word trigger."""
         if self.model is None or self.is_custom_mode:
             return False, 0.0
+        if len(audio_chunk_16k) == 0:
+            return False, 0.0
 
         if audio_chunk_16k.dtype == np.float32:
+            energy = float(np.sqrt(np.mean(audio_chunk_16k**2))) if len(audio_chunk_16k) else 0.0
             int16_chunk = (audio_chunk_16k * 32767.0).astype(np.int16)
         else:
             int16_chunk = audio_chunk_16k.astype(np.int16)
+            normalized = int16_chunk.astype(np.float32) / 32768.0
+            energy = float(np.sqrt(np.mean(normalized**2))) if len(normalized) else 0.0
+
+        # Fill the model's five-frame prediction buffer after startup/reset before
+        # gating silence. Low-energy frames are cached to restore feature context.
+        if self.energy_floor > 0 and self._model_frames_processed >= 5 and energy < self.energy_floor:
+            self._remember_quiet_audio(int16_chunk)
+            return False, 0.0
 
         try:
+            if self._quiet_context:
+                for quiet_chunk in self._quiet_context:
+                    self.model.preprocessor(quiet_chunk)
+                self._quiet_context.clear()
+                self._quiet_context_samples = 0
             prediction = self.model.predict(int16_chunk)
+            self._model_frames_processed += 1
             score = prediction.get(self.model_key, 0.0)
             return score >= self.threshold, float(score)
         except Exception:
             return False, 0.0
+
+    def _remember_quiet_audio(self, chunk: np.ndarray) -> None:
+        """Retain recent silence so the ONNX feature window is current on wake onset."""
+        values = np.asarray(chunk, dtype=np.int16).copy()
+        if len(values) > self._quiet_context_max_samples:
+            values = values[-self._quiet_context_max_samples:]
+        self._quiet_context.append(values)
+        self._quiet_context_samples += len(values)
+        while self._quiet_context and self._quiet_context_samples > self._quiet_context_max_samples:
+            oldest = self._quiet_context.popleft()
+            self._quiet_context_samples -= len(oldest)
 
     def match_custom_wake_word(self, text: str) -> tuple[bool, str]:
         """Find the last addressed wake phrase and return only the command after it.
@@ -243,3 +278,6 @@ class WakeWordDetector:
     def reset(self):
         if self.model:
             self.model.reset()
+        self._quiet_context.clear()
+        self._quiet_context_samples = 0
+        self._model_frames_processed = 0

@@ -1,11 +1,36 @@
 import os
 import shutil
 import subprocess
+import time
 from typing import Optional
+
+
+def _read_cpu_counters() -> tuple[int, int] | None:
+    try:
+        with open("/proc/stat", "r") as f:
+            fields = f.readline().split()
+        values = [int(value) for value in fields[1:9]]
+        if fields[0] != "cpu" or len(values) < 5:
+            return None
+        return sum(values), values[3] + values[4]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _cpu_utilization_percent(before: tuple[int, int] | None, after: tuple[int, int] | None) -> float | None:
+    if before is None or after is None:
+        return None
+    total_delta = after[0] - before[0]
+    idle_delta = after[1] - before[1]
+    if total_delta <= 0 or idle_delta < 0:
+        return None
+    return min(100.0, max(0.0, (total_delta - idle_delta) * 100.0 / total_delta))
 
 def get_system_status() -> str:
     """Dynamically queries CPU, RAM, storage, and all installed GPUs without hardcoded models."""
     parts = []
+    cpu_sample_started = time.monotonic()
+    cpu_counters_before = _read_cpu_counters()
 
     # 1. CPU Load & Cores
     try:
@@ -58,8 +83,11 @@ def get_system_status() -> str:
                     idx, name, temp, util, mem_used, mem_tot = [x.strip() for x in line.split(",")]
                     used_g = int(mem_used) / 1024
                     tot_g = int(mem_tot) / 1024
-                    gpu_lines.append(f"GPU {idx} ({name}) is at {temp} degrees Celsius with {used_g:.1f} of {tot_g:.1f} gigabytes VRAM in use")
-                parts.append(" ".join(gpu_lines) + ".")
+                    gpu_lines.append(
+                        f"GPU {idx} ({name}) utilization is {util} percent, temperature is {temp} degrees Celsius, "
+                        f"and {used_g:.1f} of {tot_g:.1f} gigabytes VRAM is in use."
+                    )
+                parts.append(" ".join(gpu_lines))
                 gpu_found = True
         except Exception:
             pass
@@ -67,11 +95,36 @@ def get_system_status() -> str:
     if not gpu_found and shutil.which("rocm-smi"):
         try:
             res = subprocess.run(["rocm-smi", "--showtemp", "--showuse"], capture_output=True, text=True, timeout=2)
-            if res.returncode == 0:
-                parts.append("AMD GPU active (queried via rocm-smi).")
+            diagnostic = f"{res.stdout}\n{res.stderr}".lower()
+            if (
+                res.returncode == 0
+                and res.stdout.strip()
+                and not any(marker in diagnostic for marker in (
+                    "error:", "driver not initialized", "no devices", "not found",
+                ))
+            ):
+                parts.append("AMD GPU telemetry returned data via rocm-smi.")
                 gpu_found = True
         except Exception:
             pass
+
+    if not gpu_found:
+        parts.append("GPU telemetry is unavailable; no supported GPU driver returned data.")
+
+    # Sample over at least 100 ms when the remaining status checks were faster.
+    # This is only done for an explicit status request, and avoids another tool
+    # or model turn while returning an actual busy percentage instead of load.
+    if cpu_counters_before is not None:
+        sample_elapsed = time.monotonic() - cpu_sample_started
+        if sample_elapsed < 0.1:
+            time.sleep(0.1 - sample_elapsed)
+        cpu_percent = _cpu_utilization_percent(cpu_counters_before, _read_cpu_counters())
+        if cpu_percent is not None:
+            parts.append(f"CPU utilization was {cpu_percent:.0f} percent during this status sample.")
+        else:
+            parts.append("CPU utilization percentage is unavailable; CPU load average is reported above.")
+    else:
+        parts.append("CPU utilization percentage is unavailable; CPU load average is reported above.")
 
     if not parts:
         return "Unable to collect system status."

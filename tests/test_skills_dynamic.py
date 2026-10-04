@@ -92,6 +92,40 @@ def test_automatic_skill_matching(tmp_path):
     assert "docker system prune" in context
 
 
+def test_skill_matching_uses_declared_triggers_not_procedure_body(tmp_path):
+    sm = SkillManager(custom_skills_dir=tmp_path / "skills")
+    sm.create_or_update_skill(
+        skill_id="shenzhen_level_helper",
+        description="Navigate Shenzhen I/O levels.",
+        content=(
+            "## When to Use\n"
+            "- Trigger: solve or navigate a Shenzhen I/O level.\n\n"
+            "## Procedure\n"
+            "Explain entropy and then inspect the puzzle screen."
+        ),
+    )
+
+    assert sm.match_skills("Can you help me navigate a Shenzhen I/O level?")
+    assert sm.match_skills("Explain entropy in plain language.") == []
+
+
+def test_skill_match_rejects_incidental_shared_word_but_keeps_trigger_match(tmp_path):
+    sm = SkillManager(custom_skills_dir=tmp_path / "skills")
+    sm.create_or_update_skill(
+        skill_id="open_up_work_email",
+        description="Open the user's work webmail in the default browser.",
+        content=(
+            "## When to Use\n"
+            "- Trigger: open my work email, check my work inbox, or open Outlook.\n\n"
+            "## Procedure\nOpen the configured mailbox."
+        ),
+    )
+
+    assert sm.match_skills("What times did I work this week?") == []
+    matches = sm.match_skills("Can you open my work email?")
+    assert matches and matches[0][0] == "open_up_work_email"
+
+
 def test_startup_loaded_skills_excluded_from_auto_match(tmp_path):
     sm = SkillManager(custom_skills_dir=tmp_path)
     # computer_use is loaded by default at startup, so it shouldn't match as a specialized add-on
@@ -144,4 +178,3 @@ async def test_brain_create_skill_tool_execution(tmp_path):
     matched = brain.skill_manager.get_matched_skill_context("check kubernetes pods")
     assert matched is not None
     assert "kubectl get pods" in matched
-

@@ -123,6 +123,61 @@ class BM25Index:
         num_query_terms = len(unique_query_terms)
 
         for q_term in unique_query_terms:
+            postings = self.inverted_index.get(q_term)
+            if not postings:
+                continue
+            term_idf = self.idf.get(q_term, 1.0)
+            for doc_idx in postings:
+                tf = self.doc_term_freqs[doc_idx][q_term]
+                doc_len = self.doc_lengths[doc_idx]
+                numerator = tf * (k1 + 1.0)
+                denominator = tf + k1 * (1.0 - b + b * (doc_len / avg_len))
+                scores[doc_idx] += term_idf * (numerator / denominator)
+                matched_counts[doc_idx] += 1
+
+        final_scores = [0.0] * self.num_docs
+        for idx, raw_score in enumerate(scores):
+            if raw_score <= 0 or matched_counts[idx] == 0:
+                continue
+            overlap_ratio = matched_counts[idx] / max(num_query_terms, 1)
+            final_scores[idx] = raw_score * (0.4 + 0.6 * overlap_ratio)
+        return final_scores
+
+    def is_sparse_query(self, query: str, max_posting_fraction: float = 0.1) -> bool:
+        """Whether posting lists are small enough to favor sparse scoring."""
+        if self.num_docs == 0:
+            return True
+        query_tokens = tokenize(query, filter_stopwords=True)
+        if not query_tokens:
+            query_tokens = tokenize(query, filter_stopwords=False)
+        if not query_tokens:
+            return True
+        posting_bound = sum(
+            len(self.inverted_index.get(term, ())) for term in set(query_tokens)
+        )
+        threshold = max(32, int(self.num_docs * max(0.0, min(max_posting_fraction, 1.0))))
+        return posting_bound <= threshold
+
+    def score_sparse(self, query: str) -> dict[int, float]:
+        """Score only documents matching a query term, avoiding store-sized arrays."""
+        if self.num_docs == 0:
+            return {}
+
+        query_tokens = tokenize(query, filter_stopwords=True)
+        if not query_tokens:
+            query_tokens = tokenize(query, filter_stopwords=False)
+        if not query_tokens:
+            return {}
+
+        scores: dict[int, float] = {}
+        matched_counts: dict[int, int] = {}
+        k1 = self.k1
+        b = self.b
+        avg_len = self.avg_doc_length or 1.0
+        unique_query_terms = set(query_tokens)
+        num_query_terms = len(unique_query_terms)
+
+        for q_term in unique_query_terms:
             if q_term not in self.inverted_index:
                 continue
 
@@ -133,20 +188,55 @@ class BM25Index:
                 doc_len = self.doc_lengths[doc_idx]
                 numerator = tf * (k1 + 1.0)
                 denominator = tf + k1 * (1.0 - b + b * (doc_len / avg_len))
-                scores[doc_idx] += term_idf * (numerator / denominator)
-                matched_counts[doc_idx] += 1
+                scores[doc_idx] = scores.get(doc_idx, 0.0) + term_idf * (numerator / denominator)
+                matched_counts[doc_idx] = matched_counts.get(doc_idx, 0) + 1
 
         # Multiply by term recall/overlap ratio so a single incidental match
         # in a long query doesn't score higher than a doc matching most query terms
-        final_scores = [0.0] * self.num_docs
-        for idx, raw_score in enumerate(scores):
-            if raw_score <= 0 or matched_counts[idx] == 0:
+        final_scores: dict[int, float] = {}
+        for idx, raw_score in scores.items():
+            if raw_score <= 0:
                 continue
             overlap_ratio = matched_counts[idx] / max(num_query_terms, 1)
             # Differentiate strong overlap from weak overlap
             final_scores[idx] = raw_score * (0.4 + 0.6 * overlap_ratio)
 
         return final_scores
+
+    def score_subset(self, query: str, document_indices: Sequence[int]) -> dict[int, float]:
+        """Score only selected documents, useful after date/category prefiltering."""
+        selected = sorted({i for i in document_indices if 0 <= i < self.num_docs})
+        if not selected:
+            return {}
+        query_tokens = tokenize(query, filter_stopwords=True)
+        if not query_tokens:
+            query_tokens = tokenize(query, filter_stopwords=False)
+        if not query_tokens:
+            return {i: 0.0 for i in selected}
+
+        allowed = set(selected)
+        raw_scores = {i: 0.0 for i in selected}
+        matched_counts = {i: 0 for i in selected}
+        avg_len = self.avg_doc_length or 1.0
+        for term in set(query_tokens):
+            postings = self.inverted_index.get(term)
+            if not postings:
+                continue
+            idf = self.idf.get(term, 1.0)
+            for idx in postings:
+                if idx not in allowed:
+                    continue
+                tf = self.doc_term_freqs[idx][term]
+                doc_len = self.doc_lengths[idx]
+                denominator = tf + self.k1 * (1.0 - self.b + self.b * (doc_len / avg_len))
+                raw_scores[idx] += idf * (tf * (self.k1 + 1.0) / denominator)
+                matched_counts[idx] += 1
+
+        unique_terms = max(len(set(query_tokens)), 1)
+        return {
+            idx: raw * (0.4 + 0.6 * matched_counts[idx] / unique_terms) if raw > 0 else 0.0
+            for idx, raw in raw_scores.items()
+        }
 
     @staticmethod
     def normalize_score(raw_score: float) -> float:

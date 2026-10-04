@@ -1,26 +1,53 @@
 from types import SimpleNamespace
 from unittest.mock import patch
+from io import BytesIO
 
 import pytest
+from PIL import Image
 
 
-PNG_FIXTURE = b"\x89PNG\r\n\x1a\nfixture"
+def _png_fixture(size=(100, 80)):
+    output = BytesIO()
+    Image.new("RGB", size, (30, 50, 70)).save(output, format="PNG")
+    return output.getvalue()
+
+
+PNG_FIXTURE = _png_fixture()
 
 
 def test_capture_screenshot_returns_png_bytes():
     from src.tools import desktop
+
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command == ["hyprctl", "activewindow", "-j"]:
+            return SimpleNamespace(returncode=0, stdout='{"monitor":1}', stderr=b"")
+        if command == ["hyprctl", "monitors", "-j"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout='[{"id":1,"name":"DP-5","x":0,"y":0,"width":100,"height":80}]',
+                stderr=b"",
+            )
+        if command == ["grim", "-l", "1", "-o", "DP-5", "-"]:
+            return SimpleNamespace(returncode=0, stdout=PNG_FIXTURE, stderr=b"")
+        raise AssertionError(f"Unexpected screenshot command: {command}")
 
     with patch("src.tools.desktop.ensure_gui_environment"), patch(
         "src.tools.desktop.wait_for_application_ready"
     ), patch(
         "src.tools.desktop.get_active_backend", return_value=desktop.HyprlandBackend()
     ), patch(
-        "src.tools.desktop.subprocess.run",
-        return_value=SimpleNamespace(returncode=0, stdout=PNG_FIXTURE, stderr=b""),
-    ) as run:
-        assert desktop.capture_screenshot() == PNG_FIXTURE
+        "src.tools.desktop.subprocess.run", side_effect=run
+    ), patch("src.tools.desktop._active_window_geometry", return_value=(10, 10, 40, 30)):
+        image = desktop.capture_screenshot()
 
-    run.assert_any_call(["grim", "-l", "0", "-"], capture_output=True, timeout=3, env=desktop.os.environ)
+    with Image.open(BytesIO(image)) as captured:
+        assert captured.format == "PNG"
+        assert captured.size == (40, 30)
+    assert ["grim", "-l", "1", "-o", "DP-5", "-"] in calls
+    assert ["grim", "-l", "1", "-"] not in calls
 
 
 @pytest.mark.asyncio
@@ -91,7 +118,10 @@ async def test_screenshot_tool_attaches_image_to_followup_turn():
     assert image_message["role"] == "user"
     assert image_message["images"] == [PNG_FIXTURE]
     assert followup_messages[-2]["role"] == "tool"
-    assert brain.tts.spoken == ["I can see the desktop."]
+    assert brain.tts.spoken == [
+        "I’ve got the request. I’m checking the screen now.",
+        "I can see the desktop.",
+    ]
 
 
 @pytest.mark.asyncio
@@ -137,10 +167,13 @@ async def test_chat_inspection_does_not_stop_after_focusing_window():
         brain.computer_controller, "run",
         return_value=SimpleNamespace(screenshot=PNG_FIXTURE, message="Snapshot ID: test-snapshot"),
     ) as capture:
-        await brain.process_user_utterance("What's in the Discord mod chat?")
+        await brain.process_user_utterance("What is the Discord chat window showing?")
 
     assert brain.llm_client.calls[1][-1]["images"] == [PNG_FIXTURE]
     assert capture.call_args.kwargs["scope"] == "window"
     assert "after opening the browser" not in brain.llm_client.calls[1][-1]["content"]
-    assert tts.spoken == ["Looking at the chat, I can see a discussion about the event."]
+    assert tts.spoken == [
+        "I’ve got the request. I’m checking the screen now.",
+        "Looking at the chat, I can see a discussion about the event.",
+    ]
     assert len(brain.llm_client.calls) == 2

@@ -6,6 +6,7 @@ audio:
   chunk_size: 1280
   vad_threshold_idle: 0.45
   vad_threshold_speaking: 0.88
+  wake_energy_floor: 0.0005 # Skip wake-model inference below this normalized RMS; set 0 to disable gating
   vad_silence_duration: 1.25  # seconds of sustained silence to finalize utterance (allows natural pauses)
   max_utterance_seconds: 60.0  # hard cap per captured user utterance
 
@@ -77,8 +78,11 @@ computer_control:
   jev_timeout_seconds: 20.0
   jev_min_confidence: 0.65
   ocr_max_regions: 100
-  ocr_device: null # cuda or cpu; null inherits computer_vision.device
-  ocr_gpu_uuid: "" # Exact NVIDIA UUID for OCR only; blank inherits computer_vision.gpu_uuid
+  ocr_max_image_dimension: 1280 # Downscale larger screenshots before local OCR; reported boxes map back to screenshot pixels
+  ocr_model_size: small # PP-OCRv6 small for lower CPU/RAM; select medium for extra text accuracy
+  ocr_preload_on_startup: false # Load OCR on the first screen read to save idle RAM and CPU; enabling reduces first-read latency
+  ocr_device: null # Optional: null uses CPU on demand; select cuda to use GPU OCR
+  ocr_gpu_uuid: "" # Required with cuda; exact NVIDIA UUID for OCR only
 
 computer_vision:
   enabled: false # Optional OmniParser detector; overlays numbered candidate controls on computer_control screenshots
@@ -117,6 +121,8 @@ llm:
   temperature: 0.3
   think: false                # Disable model thinking
   max_tool_rounds: 64 # Generous per-request model/tool rounds; a ceiling reports partial progress
+  request_timeout_seconds: 45.0 # Stop a stalled text request instead of leaving the voice turn hanging
+  vision_request_timeout_seconds: 90.0 # Larger bounded budget for screenshot-based reasoning
 
 execution:
   workspace_dir: "~/workspace"

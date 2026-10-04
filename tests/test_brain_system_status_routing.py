@@ -1,0 +1,793 @@
+from types import SimpleNamespace
+import json
+
+import pytest
+import asyncio
+from unittest.mock import patch
+
+from src.llm.brain import (
+    AdamBrain,
+    _can_direct_dispatch_system_status,
+    _can_direct_dispatch_system_status_and_processes,
+    _can_answer_without_tools,
+    _direct_process_list_args,
+    _desktop_no_progress_repeats,
+    _desktop_unchanged_screen_count,
+    _desktop_screenshot_signature,
+    _explicitly_requests_expanded_capture,
+    _capture_scope_validation_error,
+    _desktop_screens_match,
+    _desktop_action_signature,
+    _application_launch_key,
+    _should_block_unverified_application_launch,
+    _filter_tools_for_dedicated_desktop_navigation,
+    _is_dedicated_desktop_navigation_request,
+    _is_bounded_visible_form_request,
+    _filter_tools_for_system_status,
+    _is_memory_only_recall_request,
+    _is_desktop_context_request,
+    _should_acknowledge_desktop_task,
+    _should_use_initial_ocr_for_desktop_request,
+    _summarize_desktop_readback_if_generic,
+    _desktop_tool_evidence_for_final_answer,
+    _is_dedicated_system_status_request,
+    _is_browser_app,
+    _should_use_compact_conversation_prompt,
+)
+
+
+@pytest.mark.parametrize("prompt", [
+    "Which works better with chunky tomato sauce, rigatoni or penne?",
+    "Explain entropy in plain language.",
+    "Explain time complexity in plain language.",
+    "What's time complexity?",
+    "What is time complexity?",
+    "Write a concise thank-you note for my neighbor.",
+    "Write a concise thank-you note for a neighbor who watered my plants.",
+    "Tell me a joke.",
+    "Could you tell me a joke?",
+    "List three ways to make a paragraph clearer.",
+    "Could you pick a number between 1 and 10?",
+])
+def test_ordinary_conversation_can_skip_irrelevant_tool_schemas(prompt):
+    assert _can_answer_without_tools(prompt)
+
+
+@pytest.mark.parametrize("prompt", [
+    "What's the weather in Boston today?",
+    "What time is it?",
+    "What's the current date?",
+    "What time is it in Tokyo?",
+    "What day is it?",
+    "Tell me the time.",
+    "Search for the latest NVIDIA news.",
+    "Check my CPU and RAM usage.",
+    "What did I say about my work hours last week?",
+    "What's my favorite food?",
+    "Could you tell me what my favorite food is?",
+    "Which of my writing drafts is better?",
+    "Set a timer for ten minutes.",
+    "Read https://example.com and summarize it.",
+    "Write this answer into a file.",
+    "Write this thank-you note into my notes.",
+])
+def test_tool_or_live_information_intent_keeps_tools_available(prompt):
+    assert not _can_answer_without_tools(prompt)
+
+
+def test_compact_conversation_prompt_requires_no_external_context():
+    assert _should_use_compact_conversation_prompt("Explain entropy in plain language.")
+    assert not _should_use_compact_conversation_prompt("What time is it?")
+    assert not _should_use_compact_conversation_prompt(
+        "Explain entropy in plain language.", memory_context="The user studies physics."
+    )
+    assert not _should_use_compact_conversation_prompt(
+        "What do you think?", needs_desktop_context=True
+    )
+    assert not _should_use_compact_conversation_prompt(
+        "Explain entropy in plain language.", skill_context="Specialized guidance"
+    )
+
+
+def test_browser_name_detection_does_not_match_part_of_an_unrelated_app_name():
+    assert _is_browser_app("Zen Browser")
+    assert _is_browser_app("Mozilla Firefox")
+    assert not _is_browser_app("SHENZHEN I/O")
+    assert not _is_browser_app("Zenith Image Editor")
+    assert not _is_browser_app("Edgecase Editor")
+
+
+def test_desktop_no_progress_breaker_stops_after_one_unchanged_repeat():
+    same_screen_click = ('{"action":"click","x":400,"y":300}', "unchanged-screen")
+    repeats, tripped = _desktop_no_progress_repeats(None, same_screen_click, 0)
+    assert (repeats, tripped) == (0, False)
+    repeats, tripped = _desktop_no_progress_repeats(same_screen_click, same_screen_click, repeats)
+    assert (repeats, tripped) == (1, True)
+    repeats, tripped = _desktop_no_progress_repeats(
+        same_screen_click, ("different-action", "new-screen"), repeats
+    )
+    assert (repeats, tripped) == (0, False)
+
+
+def test_desktop_stagnation_breaker_stops_different_actions_after_three_unchanged_screens():
+    count, tripped = _desktop_unchanged_screen_count(None, "same-screen", 0)
+    assert (count, tripped) == (0, False)
+    count, tripped = _desktop_unchanged_screen_count("same-screen", "same-screen", count)
+    assert (count, tripped) == (1, False)
+    count, tripped = _desktop_unchanged_screen_count("same-screen", "same-screen", count)
+    assert (count, tripped) == (2, False)
+    count, tripped = _desktop_unchanged_screen_count("same-screen", "same-screen", count)
+    assert (count, tripped) == (3, True)
+
+
+def test_desktop_stagnation_counter_resets_when_screen_changes():
+    count, tripped = _desktop_unchanged_screen_count("old-screen", "new-screen", 2)
+    assert (count, tripped) == (0, False)
+
+
+def test_expanded_capture_requires_explicit_user_scope():
+    assert not _explicitly_requests_expanded_capture(
+        'In Writer, type "Laptop UI smoke test" and tell me the exact text.'
+    )
+    assert _explicitly_requests_expanded_capture("Capture the entire desktop.")
+    assert _explicitly_requests_expanded_capture("Show me a screenshot of both monitors.")
+
+
+@pytest.mark.parametrize("tool_name", ["computer_control", "capture_screenshot", "observe_desktop"])
+def test_screenshot_tools_reject_unrequested_expanded_scope(tool_name):
+    prompt = 'In Writer, type "Laptop UI smoke test" and tell me the exact text.'
+    assert _capture_scope_validation_error(tool_name, {"scope": "monitor"}, prompt)
+    assert _capture_scope_validation_error(tool_name, {"scope": "desktop"}, prompt)
+    assert _capture_scope_validation_error(
+        tool_name, {"scope": "monitor"}, "Take a screenshot of the entire monitor."
+    ) is None
+    assert _capture_scope_validation_error(tool_name, {"scope": "window"}, prompt) is None
+
+
+def test_generic_desktop_ack_reads_back_explicitly_requested_visible_text():
+    prompt = 'In Writer, type "Laptop UI smoke test" and tell me the exact text.'
+    evidence = "O1 text='Laptop UI smoke test' center=(329,471) box=(184,450,475,492) confidence=1.00"
+    assert _summarize_desktop_readback_if_generic(prompt, "Done.", evidence) == (
+        "The text shown is: Laptop UI smoke test"
+    )
+    unrelated = "O1 text='Different screen text' center=(329,471) box=(184,450,475,492) confidence=1.00"
+    assert _summarize_desktop_readback_if_generic(prompt, "Done.", unrelated) is None
+
+
+def test_stale_desktop_ocr_is_compacted_but_recent_screen_evidence_is_preserved():
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+    ))
+    brain = AdamBrain(config, None, None, None, None)
+    older = {
+        "role": "tool", "name": "computer_control",
+        "content": json.dumps({
+            "status": "ok", "data": "Clicked Next.\nOCR text regions (coordinates use pixels):\n"
+            "O1 text='Welcome' center=(1,2)\nO2 text='Next' center=(3,4)"
+        }),
+    }
+    current = {
+        "role": "tool", "name": "computer_control",
+        "content": json.dumps({
+            "status": "ok", "data": "Typed requested text.\nOCR text regions (coordinates use pixels):\n"
+            "O1 text='Laptop UI smoke test' center=(5,6)"
+        }),
+    }
+    brain.messages = [older, current]
+
+    assert brain._compact_stale_desktop_ocr() == 1
+    old_data = json.loads(older["content"])
+    current_data = json.loads(current["content"])
+    assert old_data["status"] == "ok"
+    assert "Clicked Next." in old_data["data"]
+    assert "Welcome" not in old_data["data"]
+    assert "Laptop UI smoke test" in current_data["data"]
+
+
+def test_unverified_application_launch_blocks_only_the_same_target_for_current_request():
+    failed = {"shenzhen i/o"}
+    assert _application_launch_key(
+        "launch_application", {"app_name": "  SHENZHEN   I/O "}
+    ) == "shenzhen i/o"
+    assert _should_block_unverified_application_launch(
+        "launch_application", {"app_name": "Shenzhen I/O"}, failed
+    )
+    assert not _should_block_unverified_application_launch(
+        "launch_application", {"app_name": "Steam"}, failed
+    )
+    assert not _should_block_unverified_application_launch(
+        "computer_control", {"app_name": "Shenzhen I/O"}, failed
+    )
+
+
+def test_desktop_no_progress_breaker_ignores_small_live_screen_changes():
+    from PIL import Image
+    from io import BytesIO
+
+    def png(edit=None):
+        image = Image.new("RGB", (320, 180), (20, 20, 20))
+        if edit:
+            for x, y, color in edit:
+                image.putpixel((x, y), color)
+        output = BytesIO()
+        image.save(output, format="PNG")
+        return _desktop_screenshot_signature(output.getvalue())
+
+    baseline = png()
+    one_animated_pixel = png([(160, 90, (255, 255, 255))])
+    major_scene_change = png([(x, y, (255, 255, 255)) for x in range(160) for y in range(90)])
+
+    assert _desktop_screens_match(baseline, one_animated_pixel)
+    assert not _desktop_screens_match(baseline, major_scene_change)
+
+
+def test_desktop_action_signature_matches_sequence_first_step_to_standalone_action():
+    direct = {"action": "click", "x": 224, "y": 545, "include_ocr": True}
+    sequence = {
+        "action": "sequence",
+        "actions": [
+            {"action": "click", "x": 224, "y": 545},
+            {"action": "click", "x": 224, "y": 545},
+        ],
+        "snapshot_id": "old-snapshot",
+    }
+
+    assert _desktop_action_signature("computer_control", direct) == _desktop_action_signature(
+        "computer_control", sequence
+    )
+
+
+def test_desktop_action_signature_treats_small_click_jitter_as_same_target():
+    first = {"action": "click", "x": 224, "y": 535}
+    jittered = {"action": "click", "x": 228, "y": 525}
+    other_control = {"action": "click", "x": 300, "y": 535}
+
+    assert _desktop_action_signature("computer_control", first) == _desktop_action_signature(
+        "computer_control", jittered
+    )
+    assert _desktop_action_signature("computer_control", first) != _desktop_action_signature(
+        "computer_control", other_control
+    )
+
+
+def test_memory_only_recall_requires_matched_context_and_no_external_action():
+    context = "- I worked on a synthetic project on Monday at 3:45 PM."
+    assert _is_memory_only_recall_request("What times did I work this week?", context)
+    assert _is_memory_only_recall_request("What's my favorite food?", context)
+    assert not _is_memory_only_recall_request("What times did I work this week?", None)
+    assert not _is_memory_only_recall_request(
+        "What times did I work this week, and add them to my calendar?", context
+    )
+
+
+@pytest.mark.asyncio
+async def test_personal_question_keeps_automatic_memory_retrieval():
+    class SilentTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        async def speak_async(self, text):
+            self.last_text = text
+
+    class Memory:
+        def __init__(self):
+            self.queries = []
+
+        def retrieve_context(self, query):
+            self.queries.append(query)
+            return "Favorite food: rigatoni."
+
+    class Model:
+        async def chat(self, messages, tools=None, **_kwargs):
+            self.messages = messages
+            self.tools = tools
+            return {"content": "You told me your favorite food is rigatoni.", "tool_calls": []}
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+    ))
+    memory = Memory()
+    tts = SilentTTS()
+    brain = AdamBrain(config, None, None, None, tts, memory_mgr=memory)
+    brain.llm_client = Model()
+    brain.skill_manager.get_matched_skill_context = lambda _query: None
+
+    window_reads = []
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            "src.llm.brain.get_open_windows_prompt_context",
+            lambda: window_reads.append(True) or "",
+        )
+        await brain.process_user_utterance("What's my favorite food?")
+
+    assert memory.queries == ["What's my favorite food?"]
+    user_message = next(
+        message for message in brain.llm_client.messages
+        if message.get("role") == "user"
+    )
+    assert "Favorite food: rigatoni." in user_message["content"]
+    assert brain.llm_client.tools == []
+    assert window_reads == []
+    assert "Answer this personal-history question from the retrieved user memory" in (
+        brain.llm_client.messages[0]["content"]
+    )
+    assert "rigatoni" in tts.last_text
+
+
+@pytest.mark.asyncio
+async def test_dedicated_desktop_action_gets_fresh_screen_on_first_model_turn():
+    class SilentTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        async def speak_async(self, _text):
+            pass
+
+    class Model:
+        async def chat(self, messages, tools=None, **_kwargs):
+            self.messages = messages
+            self.tools = tools
+            return {"content": "The screen is ready.", "tool_calls": []}
+
+    class Memory:
+        def retrieve_context(self, _query):
+            return None
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+    ))
+    brain = AdamBrain(config, None, None, None, SilentTTS(), memory_mgr=Memory())
+    brain.llm_client = Model()
+    brain.skill_manager.get_matched_skill_context = lambda _query: None
+    captures = []
+
+    def inspect(**kwargs):
+        captures.append(kwargs)
+        return SimpleNamespace(
+            status="ok", screenshot=b"synthetic screenshot",
+            message="Snapshot ID: initial123. Active window bounds: x=0..100, y=0..100.",
+        )
+
+    brain.computer_controller = SimpleNamespace(
+        available=True, coordinate_mode="pixels", drag_active=False, run=inspect
+    )
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            "src.llm.brain.get_open_windows_prompt_context",
+            lambda: "Test dialog is open.",
+        )
+        await brain.process_user_utterance("Select 5:00 PM in the local scheduler.")
+
+    assert captures and captures[0]["action"] == "inspect"
+    assert captures[0]["include_ocr"] is True
+    user_message = next(
+        message for message in brain.llm_client.messages
+        if message.get("role") == "user"
+    )
+    assert user_message["images"] == [b"synthetic screenshot"]
+    assert "Snapshot ID: initial123" in user_message["content"]
+
+
+def test_initial_ocr_is_limited_to_desktop_tasks_with_explicit_text_values():
+    assert _should_use_initial_ocr_for_desktop_request(
+        "Select 5:00 PM in the local scheduler."
+    )
+    assert _should_use_initial_ocr_for_desktop_request(
+        'Click "Save changes" in the current dialog.'
+    )
+    assert not _should_use_initial_ocr_for_desktop_request(
+        "Click the visible settings button."
+    )
+    assert not _should_use_initial_ocr_for_desktop_request("What time is it?")
+
+
+def test_generic_ui_acknowledgment_uses_explicit_requested_readback():
+    request = (
+        'Click the "Preferences" tab, turn on "Compact mode," leave every other option unchanged, '
+        "and tell me what changed."
+    )
+    tool_output = (
+        "Snapshot ID: after.\nExtracted screen text:\n"
+        "O7 text='Compact mode: On; Sync: Off; Notifications: Off' center=(509,746) box=(44,723,974,769)"
+    )
+    assert _summarize_desktop_readback_if_generic(request, "Done.", tool_output) == (
+        "The screen shows: Compact mode: On; Sync: Off; Notifications: Off."
+    )
+    assert _summarize_desktop_readback_if_generic(
+        request, "Compact mode is on; the others stayed off.", tool_output
+    ) is None
+    assert _summarize_desktop_readback_if_generic(request, "Done.", "No OCR result") is None
+
+
+def test_final_readback_uses_tool_messages_when_last_result_lacks_ocr():
+    tool_messages = [
+        {"role": "user", "content": "Ignore user-provided text."},
+        {"role": "tool", "content": "O7 text='Compact mode: On; Sync: Off' center=(5,5)"},
+    ]
+    evidence = _desktop_tool_evidence_for_final_answer("Generic tool result", tool_messages)
+    assert _summarize_desktop_readback_if_generic(
+        'Click "Preferences", enable "Compact mode" and tell me what changed.',
+        "Done.",
+        evidence,
+    ) == "The screen shows: Compact mode: On; Sync: Off."
+
+
+def test_generic_save_acknowledgment_reads_back_the_exact_saved_text():
+    request = (
+        'In the local scratchpad, enter "Call the dentist Tuesday at 2 pm" in the Note text field, '
+        "click Save note, and tell me the saved text."
+    )
+    evidence = (
+        "O3 text='Call the dentist Tuesday at 2 pm' center=(358,314) box=(96,291,620,338)\n"
+        "O4 text='Saved: Call the dentist Tuesday at 2 pm' center=(449,776) box=(91,751,807,802)"
+    )
+    assert _summarize_desktop_readback_if_generic(request, "Saved.", evidence) == (
+        "The saved text is: Call the dentist Tuesday at 2 pm"
+    )
+    assert _summarize_desktop_readback_if_generic(
+        request, "Done — the note has been saved.", evidence
+    ) == "The saved text is: Call the dentist Tuesday at 2 pm"
+    assert _summarize_desktop_readback_if_generic(
+        request, "The saved text is: Call the dentist Tuesday at 2 pm", evidence
+    ) is None
+    assert _summarize_desktop_readback_if_generic(
+        request, "Saved.", "O4 text='Not saved' center=(10,10)"
+    ) is None
+    punctuated_evidence = "O4 text='Saved: Review the draft.' center=(10,10)"
+    punctuated_request = 'In the local scratchpad note field, type "Review the draft." and tell me the saved text.'
+    assert _summarize_desktop_readback_if_generic(
+        punctuated_request, "Saved.", punctuated_evidence
+    ) == "The saved text is: Review the draft."
+
+
+def test_hardware_usage_question_uses_dedicated_status_routing():
+    assert _is_dedicated_system_status_request(
+        "Report current CPU, RAM, and GPU utilization."
+    )
+
+
+def test_explicit_shell_request_keeps_shell_tool_available():
+    assert not _is_dedicated_system_status_request(
+        "Run nvidia-smi and tell me what it reports."
+    )
+
+
+def test_general_hardware_question_does_not_trigger_status_routing():
+    assert not _is_dedicated_system_status_request(
+        "Explain how a CPU processes instructions."
+    )
+
+
+def test_factual_status_can_dispatch_without_a_model_call():
+    assert _can_direct_dispatch_system_status(
+        "Report current CPU, RAM, and GPU utilization."
+    )
+    assert not _can_direct_dispatch_system_status(
+        "Report RAM usage and explain how I could reduce it."
+    )
+    assert not _can_direct_dispatch_system_status(
+        "Report system status and list running processes."
+    )
+    assert not _can_direct_dispatch_system_status(
+        "Compare current CPU load with yesterday's."
+    )
+
+
+def test_factual_status_and_process_request_can_dispatch_without_a_model_call():
+    request = "Check current system utilization and list the five highest CPU processes."
+    assert _is_dedicated_system_status_request(request)
+    assert _can_direct_dispatch_system_status_and_processes(request)
+    assert not _can_direct_dispatch_system_status_and_processes(
+        "Check system status and processes, then explain how to reduce the load."
+    )
+    assert _direct_process_list_args(request) == {"sort_by": "cpu", "limit": 5}
+    assert _direct_process_list_args(
+        "Report RAM utilization and list the top 10 processes by memory."
+    ) == {"sort_by": "memory", "limit": 10}
+
+
+@pytest.mark.asyncio
+async def test_status_and_process_pair_uses_two_tools_without_model_calls():
+    class SilentTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        async def speak_async(self, text):
+            self.last_text = text
+
+    class NoModelCalls:
+        provider = "custom"
+
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("direct status-plus-process routing must skip model calls")
+
+        def format_tool_response(self, tool_call_id, tool_name, result):
+            return {
+                "role": "tool",
+                "tool_call_id": tool_call_id,
+                "name": tool_name,
+                "content": result,
+            }
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+    ))
+    tts = SilentTTS()
+    brain = AdamBrain(
+        config, None, None, None, tts,
+        memory_mgr=SimpleNamespace(retrieve_context=lambda _text: None),
+    )
+    brain.llm_client = NoModelCalls()
+    called = []
+    active = 0
+    peak_active = 0
+
+    async def fake_execute(name, args):
+        nonlocal active, peak_active
+        active += 1
+        peak_active = max(peak_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        called.append((name, args))
+        if name == "get_system_status":
+            return "CPU utilization was 12 percent. GPU utilization is 0 percent."
+        if name == "list_processes":
+            return "Top processes by cpu: python (PID 7): 12% CPU, 1% RAM"
+        raise AssertionError(f"Unexpected direct tool: {name}")
+
+    brain._execute_tool = fake_execute
+    await brain.process_user_utterance(
+        "Check current system utilization and list the five highest CPU processes."
+    )
+
+    assert [name for name, _args in called] == ["get_system_status", "list_processes"]
+    assert peak_active == 2
+    assert called[1][1] == {"sort_by": "cpu", "limit": 5}
+    assert "CPU utilization was 12 percent" in tts.last_text
+    assert "Top processes by cpu" in tts.last_text
+
+
+def test_status_turn_only_exposes_the_dedicated_read_only_tool():
+    tools = [
+        SimpleNamespace(name="get_system_status"),
+        SimpleNamespace(name="run_bash_command"),
+        SimpleNamespace(name="start_background_job"),
+    ]
+
+    filtered = _filter_tools_for_system_status(
+        tools, "Report current CPU, RAM, and GPU utilization."
+    )
+
+    assert [tool.name for tool in filtered] == ["get_system_status"]
+
+
+def test_compound_status_and_action_keeps_the_full_tool_set():
+    tools = [
+        SimpleNamespace(name="get_system_status"),
+        SimpleNamespace(name="restart_service"),
+    ]
+
+    assert _filter_tools_for_system_status(
+        tools, "Report my RAM usage and restart Adam if it is over 90%."
+    ) == tools
+
+
+def test_single_domain_desktop_action_gets_compact_desktop_tools():
+    tools = [
+        SimpleNamespace(name="computer_control"),
+        SimpleNamespace(name="capture_screenshot"),
+        SimpleNamespace(name="observe_desktop"),
+        SimpleNamespace(name="focus_window"),
+        SimpleNamespace(name="list_windows"),
+        SimpleNamespace(name="run_bash_command"),
+        SimpleNamespace(name="search_web"),
+    ]
+
+    filtered = _filter_tools_for_dedicated_desktop_navigation(
+        tools, "Click the OK button in the dialog, then confirm it closed."
+    )
+
+    assert [tool.name for tool in filtered] == [
+        "computer_control", "focus_window", "list_windows",
+    ]
+
+
+@pytest.mark.parametrize("prompt", [
+    "Launch SHENZHEN I/O and beat one level.",
+    "Open GIMP and edit the current image.",
+    "Start LibreOffice and create a new document.",
+])
+def test_self_contained_app_task_keeps_launch_and_visual_interaction_tools(prompt):
+    tools = [
+        SimpleNamespace(name="launch_application"),
+        SimpleNamespace(name="list_applications"),
+        SimpleNamespace(name="computer_control"),
+        SimpleNamespace(name="capture_screenshot"),
+        SimpleNamespace(name="observe_desktop"),
+        SimpleNamespace(name="focus_window"),
+        SimpleNamespace(name="list_windows"),
+        SimpleNamespace(name="run_bash_command"),
+        SimpleNamespace(name="search_web"),
+        SimpleNamespace(name="get_weather"),
+    ]
+
+    filtered = _filter_tools_for_dedicated_desktop_navigation(
+        tools, prompt
+    )
+
+    assert [tool.name for tool in filtered] == [
+        "launch_application", "list_applications", "computer_control",
+        "capture_screenshot", "observe_desktop", "focus_window", "list_windows",
+    ]
+
+
+def test_desktop_control_label_start_minimized_does_not_disable_single_domain_route():
+    request = (
+        "In Notification Preferences, enable Always on top, change Notification level "
+        "from Normal to Quiet, leave Start minimized unchanged, click Apply, and verify."
+    )
+    assert _is_dedicated_desktop_navigation_request(request)
+    assert not _is_dedicated_desktop_navigation_request(
+        "Click Save and start Firefox."
+    )
+
+
+def test_desktop_navigation_keeps_full_tools_when_another_domain_is_requested():
+    tools = [
+        SimpleNamespace(name="computer_control"),
+        SimpleNamespace(name="capture_screenshot"),
+        SimpleNamespace(name="run_bash_command"),
+    ]
+    assert _filter_tools_for_dedicated_desktop_navigation(
+        tools, "Click the button and search the web for the matching instructions."
+    ) == tools
+
+
+def test_status_and_other_capability_keeps_the_full_tool_set():
+    tools = [
+        SimpleNamespace(name="get_system_status"),
+        SimpleNamespace(name="get_weather"),
+        SimpleNamespace(name="search_web"),
+    ]
+
+    assert _filter_tools_for_system_status(
+        tools, "Report CPU usage and check tomorrow's weather."
+    ) == tools
+
+
+def test_desktop_request_gets_desktop_context():
+    assert _is_desktop_context_request("Click the green button in the browser.")
+    assert _is_desktop_context_request("Click it, then press Enter.")
+    assert _is_desktop_context_request("Help me beat this game level.")
+    assert _is_desktop_context_request("Read the text on my screen.")
+
+
+def test_scheduler_slot_selection_routes_to_visual_desktop_tools():
+    request = (
+        "Select 5:00 PM in the local scheduler, but stop before confirming. "
+        "Tell me which time is selected."
+    )
+    assert _is_desktop_context_request(request)
+    assert _is_dedicated_desktop_navigation_request(request)
+    assert not _can_answer_without_tools(request)
+    assert _should_acknowledge_desktop_task(request)
+
+
+def test_document_editing_in_a_named_app_routes_to_computer_use():
+    request = (
+        'Create a two-column table in Writer with headers "Item" and "Count" and rows '
+        '"apples" / "3" and "oranges" / "5". Make the header row bold, save it, and report the rows.'
+    )
+    assert _is_desktop_context_request(request)
+    assert _is_dedicated_desktop_navigation_request(request)
+    assert not _can_answer_without_tools(request)
+    assert not _is_dedicated_desktop_navigation_request(
+        "Create a two-column document table with apples and oranges."
+    )
+    assert not _is_dedicated_desktop_navigation_request(
+        "Create a table in Writer and email it to Sam."
+    )
+
+
+def test_local_visible_form_that_stops_before_commit_uses_compact_gui_tools():
+    request = (
+        "On the local reservation preview, choose tomorrow at 5:00 PM for two people. "
+        "Fill the form and stop before placing it. Tell me the status."
+    )
+    assert _is_bounded_visible_form_request(request)
+    assert _is_dedicated_desktop_navigation_request(request)
+    assert not _can_answer_without_tools(request)
+    available = [
+        SimpleNamespace(name="computer_control"),
+        SimpleNamespace(name="observe_desktop"),
+        SimpleNamespace(name="capture_screenshot"),
+        SimpleNamespace(name="focus_window"),
+        SimpleNamespace(name="list_windows"),
+        SimpleNamespace(name="web_search"),
+    ]
+    assert [tool.name for tool in _filter_tools_for_dedicated_desktop_navigation(available, request)] == [
+        "computer_control", "focus_window", "list_windows",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_desktop_task_stops_without_model_retry_when_display_is_dpms_off():
+    class DummyClient:
+        def __init__(self):
+            self.chat_calls = 0
+
+        async def chat(self, *_args, **_kwargs):
+            self.chat_calls += 1
+            return {"content": "", "tool_calls": []}
+
+    class DummyTTS:
+        def __init__(self):
+            self.spoken = []
+
+        async def speak_async(self, text):
+            self.spoken.append(text)
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="local", local_model="qwen", cloud_model="", ollama_host="",
+        temperature=0.3, num_ctx=4096,
+    ))
+    tts = DummyTTS()
+    brain = AdamBrain(config, None, None, None, tts)
+    client = DummyClient()
+    brain.llm_client = client
+    brain.computer_controller = SimpleNamespace(
+        available=True,
+        coordinate_mode="pixels",
+        run=lambda **_kwargs: SimpleNamespace(
+            status="failed",
+            screenshot=None,
+            message="Could not capture: focused monitor is powered off (DPMS).",
+        ),
+    )
+
+    await brain.process_user_utterance(
+        "Click the blue button in the browser and tell me what happens."
+    )
+
+    assert client.chat_calls == 0
+    assert tts.spoken == [
+        "I’ve got the request. I’m checking the screen now.",
+        "The display is powered off, so I couldn't inspect the screen or make changes. Wake the display and I can continue.",
+    ]
+
+
+def test_visible_desktop_work_gets_an_immediate_status_cue():
+    assert _should_acknowledge_desktop_task("Click Reveal code in the Safe UI Pilot.")
+    assert _should_acknowledge_desktop_task("What is the Discord chat window showing?")
+    assert _should_acknowledge_desktop_task("Could you move Spotify to Workspace One?")
+    assert not _should_acknowledge_desktop_task("What's on my browser right now?")
+
+
+def test_general_question_skips_desktop_context():
+    assert not _is_desktop_context_request(
+        "In two sentences, compare rigatoni and penne for a chunky tomato sauce."
+    )
+    assert not _is_desktop_context_request("What time is it in Tokyo?")
+    assert not _is_dedicated_desktop_navigation_request("Pick a movie to watch.")
+
+
+def test_system_prompt_can_omit_or_include_startup_desktop_guidance():
+    brain = SimpleNamespace(
+        ocr_only=False,
+        computer_controller=SimpleNamespace(coordinate_mode="pixels"),
+        skill_manager=SimpleNamespace(get_startup_context=lambda: "DESKTOP SETUP GUIDANCE"),
+    )
+
+    concise = AdamBrain._build_system_prompt(brain, include_startup_context=False)
+    desktop = AdamBrain._build_system_prompt(brain, include_startup_context=True)
+
+    assert "DESKTOP SETUP GUIDANCE" not in concise
+    assert "DESKTOP SETUP GUIDANCE" in desktop

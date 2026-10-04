@@ -170,25 +170,8 @@ def detect_desktop_environment(refresh_env: bool = True) -> str:
     if "cosmic" in desktop_session:
         return "cosmic"
 
-    # 4. Fallback: Binary presence check when display server is active
-    if os.environ.get("WAYLAND_DISPLAY"):
-        if shutil.which("swaymsg") and os.environ.get("SWAYSOCK"):
-            return "sway"
-        if shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
-            return "hyprland"
-        if shutil.which("niri") and os.environ.get("NIRI_SOCKET"):
-            return "niri"
-        if shutil.which("hyprctl"):
-            return "hyprland"
-        if shutil.which("swaymsg"):
-            return "sway"
-        if shutil.which("cosmic-comp"):
-            return "cosmic"
-
-    if os.environ.get("DISPLAY"):
-        if shutil.which("i3-msg"):
-            return "i3"
-
+    # A compositor CLI may be installed for occasional remote control while a
+    # different desktop is active. Session identity or its socket is required.
     if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
         return "hyprland"
     if os.environ.get("SWAYSOCK"):
@@ -223,6 +206,66 @@ def _get_app_directories() -> list[Path]:
     return [d for d in dirs if d.exists()]
 
 
+def _steamapps_directories(home: Optional[Path] = None) -> list[Path]:
+    """Find installed Steam library manifests without starting or contacting Steam."""
+    home = home or Path.home()
+    candidates = [
+        home / ".steam" / "steam" / "steamapps",
+        home / ".local" / "share" / "Steam" / "steamapps",
+        home / ".var" / "app" / "com.valvesoftware.Steam" / ".local" / "share" / "Steam" / "steamapps",
+    ]
+    roots = list(candidates)
+    for steamapps in candidates:
+        library_file = steamapps / "libraryfolders.vdf"
+        try:
+            content = library_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for raw_path in re.findall(r'"path"\s+"((?:\\.|[^"\\])*)"', content):
+            path = raw_path.replace("\\\\", "\\").replace('\\"', '"')
+            roots.append(Path(path) / "steamapps")
+
+    found: list[Path] = []
+    seen: set[str] = set()
+    for directory in roots:
+        try:
+            canonical = str(directory.resolve())
+        except OSError:
+            canonical = str(directory)
+        if canonical not in seen and directory.is_dir():
+            seen.add(canonical)
+            found.append(directory)
+    return found
+
+
+def _scan_steam_entries(home: Optional[Path] = None) -> dict[str, dict]:
+    """Expose installed Steam titles as ordinary launchable desktop applications."""
+    apps: dict[str, dict] = {}
+    for steamapps in _steamapps_directories(home):
+        for manifest in steamapps.glob("appmanifest_*.acf"):
+            try:
+                content = manifest.read_text(encoding="utf-8", errors="replace")
+                app_id = re.search(r'"appid"\s+"(\d+)"', content)
+                name = re.search(r'"name"\s+"([^"]+)"', content)
+                if not app_id or not name:
+                    continue
+                title = name.group(1).strip()
+                if not title:
+                    continue
+                key = title.casefold()
+                apps.setdefault(key, {
+                    "name": title,
+                    "exec": "steam",
+                    "comment": "Installed Steam application",
+                    "desktop_path": str(manifest),
+                    "desktop_id": manifest.name,
+                    "steam_app_id": app_id.group(1),
+                })
+            except OSError:
+                continue
+    return apps
+
+
 def _scan_desktop_entries() -> dict[str, dict]:
     """Scans all standard desktop entries across the system."""
     apps = {}
@@ -255,6 +298,8 @@ def _scan_desktop_entries() -> dict[str, dict]:
                         }
             except Exception:
                 continue
+    for key, entry in _scan_steam_entries().items():
+        apps.setdefault(key, entry)
     return apps
 
 
@@ -607,6 +652,9 @@ class BaseDesktopBackend:
 
     def __init__(self) -> None:
         self.last_screenshot_origin = (0, 0)
+        self.last_screenshot_bounds: tuple[int, int, int, int] | None = None
+        self.last_screenshot_target = ""
+        self.last_screenshot_scale = (1.0, 1.0)
 
     def get_capabilities(self) -> set[str]:
         return {
@@ -644,6 +692,13 @@ class BaseDesktopBackend:
     def capture_screenshot(self) -> bytes:
         raise RuntimeError(f"Screenshot capture is not supported on {self.name}.")
 
+    def capture_desktop_screenshot(self) -> bytes:
+        """Capture the full desktop only when the caller explicitly requests it."""
+        self.last_screenshot_origin = (0, 0)
+        self.last_screenshot_bounds = None
+        self.last_screenshot_target = "full desktop"
+        return self.capture_screenshot()
+
     def get_default_macros(self) -> dict[str, str]:
         return dict(UNIVERSAL_SYSTEM_MACROS)
 
@@ -657,6 +712,31 @@ class HyprlandBackend(BaseDesktopBackend):
             "window_close", "window_list", "window_swap",
             "screenshot", "desktop_macro", "app_launch", "app_list"
         }
+
+    @staticmethod
+    def _run_grim(command: list[str], *, full_desktop: bool = False) -> bytes:
+        label = "Full-desktop" if full_desktop else "Focused-monitor"
+        try:
+            result = subprocess.run(
+                command, capture_output=True, timeout=3, env=os.environ,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"{label} screenshot capture timed out. Check that Hyprland allows "
+                "grim screen capture and that the display is awake."
+            ) from exc
+        if result.returncode != 0:
+            error = result.stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(error or f"{label} screenshot capture failed.")
+        if not result.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
+            raise RuntimeError(f"{label} screenshot capture returned invalid PNG data.")
+        return result.stdout
+
+    def _record_monitor_scale(self, monitor: dict[str, Any]) -> None:
+        scale = float(monitor.get("scale", 1.0) or 1.0)
+        if scale <= 0:
+            raise RuntimeError("Hyprland reported an invalid monitor scale.")
+        self.last_screenshot_scale = (scale, scale)
 
     def focus_window(self, target: str) -> str:
         import json
@@ -894,48 +974,51 @@ class HyprlandBackend(BaseDesktopBackend):
                 ["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=2,
                 env=os.environ,
             )
+            if active_result.returncode != 0:
+                raise RuntimeError("Hyprland did not report the focused window.")
             monitor_id = json.loads(active_result.stdout or "{}").get("monitor")
             monitors_result = subprocess.run(
                 ["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=2,
                 env=os.environ,
             )
+            if monitors_result.returncode != 0:
+                raise RuntimeError("Hyprland did not report its monitor layout.")
             monitors = json.loads(monitors_result.stdout or "[]")
             monitor = next((item for item in monitors if item.get("id") == monitor_id), None)
             if monitor:
+                if monitor.get("dpmsStatus") is False:
+                    raise RuntimeError(
+                        "The focused monitor is powered off (DPMS); wake the display before requesting a screenshot."
+                    )
                 x, y = int(monitor.get("x", 0)), int(monitor.get("y", 0))
                 width, height = int(monitor.get("width", 0)), int(monitor.get("height", 0))
                 output_name = str(monitor.get("name") or "").strip() or None
                 if width > 0 and height > 0:
                     geometry = (x, y, width, height)
-        except Exception:
-            geometry = None
-        if geometry:
-            x, y, width, height = geometry
-            self.last_screenshot_origin = (x, y)
-            # grim can hang on Hyprland when an output is selected by its
-            # explicit geometry, especially on mixed-resolution/HDR setups.
-            # Selecting the compositor output by name is both more direct and
-            # robust; keep geometry only for older compositors without a name.
-            command = (
-                ["grim", "-l", "0", "-o", output_name, "-"]
-                if output_name
-                else ["grim", "-l", "0", "-g", f"{x},{y} {width}x{height}", "-"]
-            )
-        else:
-            self.last_screenshot_origin = (0, 0)
-            command = ["grim", "-l", "0", "-"]
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            timeout=3,
-            env=os.environ,
+        except Exception as exc:
+            raise RuntimeError(f"Could not verify the focused Hyprland monitor: {exc}") from exc
+        if geometry is None:
+            raise RuntimeError("Could not verify the focused Hyprland monitor; refusing an unscoped screenshot.")
+        x, y, width, height = geometry
+        self._record_monitor_scale(monitor)
+        self.last_screenshot_origin = (x, y)
+        self.last_screenshot_bounds = (x, y, x + width, y + height)
+        self.last_screenshot_target = output_name or f"monitor at {x},{y}"
+        # Selecting the compositor output is reliable on mixed-resolution
+        # setups; use its geometry only when no output name is available.
+        command = (
+            ["grim", "-l", "1", "-o", output_name, "-"]
+            if output_name
+            else ["grim", "-l", "1", "-g", f"{x},{y} {width}x{height}", "-"]
         )
-        if result.returncode != 0:
-            error = result.stderr.decode("utf-8", errors="replace").strip()
-            raise RuntimeError(error or "Screenshot capture failed.")
-        if not result.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
-            raise RuntimeError("Screenshot capture returned invalid PNG data.")
-        return result.stdout
+        return self._run_grim(command)
+
+    def capture_desktop_screenshot(self) -> bytes:
+        self.last_screenshot_origin = (0, 0)
+        self.last_screenshot_bounds = None
+        self.last_screenshot_target = "full desktop"
+        self.last_screenshot_scale = (1.0, 1.0)
+        return self._run_grim(["grim", "-l", "1", "-"], full_desktop=True)
 
     def get_default_macros(self) -> dict[str, str]:
         return {
@@ -1984,7 +2067,8 @@ TOOL_CAPABILITY_MAP = {
 
 def get_active_backend(refresh_env: bool = True) -> BaseDesktopBackend:
     """Returns the backend instance for the active desktop environment."""
-    ensure_gui_environment()
+    if refresh_env:
+        ensure_gui_environment()
     xdg_current = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
     desktop_session = os.environ.get("DESKTOP_SESSION", "").lower()
 
@@ -1994,11 +2078,24 @@ def get_active_backend(refresh_env: bool = True) -> BaseDesktopBackend:
         return HyprlandBackend()
 
     # Sway
-    if shutil.which("swaymsg") and (os.environ.get("SWAYSOCK") or os.environ.get("WAYLAND_DISPLAY")):
+    is_sway_session = (
+        bool(os.environ.get("SWAYSOCK"))
+        or "sway" in xdg_current
+        or "sway" in desktop_session
+    )
+    if shutil.which("swaymsg") and is_sway_session:
         return SwayBackend()
 
     # i3
-    if shutil.which("i3-msg") and (os.environ.get("I3SOCK") or os.environ.get("DISPLAY")):
+    # The i3 CLI can be installed on any X11 session. DISPLAY alone is not
+    # evidence that the active window manager is i3 (for example, private Xvfb
+    # sessions use DISPLAY with Openbox or no window manager).
+    is_i3_session = (
+        bool(os.environ.get("I3SOCK"))
+        or "i3" in xdg_current
+        or "i3" in desktop_session
+    )
+    if shutil.which("i3-msg") and is_i3_session:
         return I3Backend()
 
     # Niri
@@ -2006,7 +2103,7 @@ def get_active_backend(refresh_env: bool = True) -> BaseDesktopBackend:
         return NiriBackend()
 
     # KDE Plasma
-    if "kde" in xdg_current or "plasma" in xdg_current or os.environ.get("KDE_SESSION_VERSION") or "kde" in desktop_session or shutil.which("kdotool"):
+    if "kde" in xdg_current or "plasma" in xdg_current or os.environ.get("KDE_SESSION_VERSION") or "kde" in desktop_session or "plasma" in desktop_session:
         return KdePlasmaBackend()
 
     # GNOME
@@ -2014,7 +2111,7 @@ def get_active_backend(refresh_env: bool = True) -> BaseDesktopBackend:
         return GnomeBackend()
 
     # COSMIC
-    if "cosmic" in xdg_current or shutil.which("cosmic-comp"):
+    if "cosmic" in xdg_current or "cosmic" in desktop_session:
         return CosmicBackend()
 
     de = detect_desktop_environment(refresh_env=refresh_env)
@@ -2143,13 +2240,17 @@ def _active_window_metadata() -> dict[str, Any]:
 def screenshot_delay_for_focused_window(
     default_seconds: float = 0.25,
     browser_seconds: float = 1.5,
+    expected_application: str | None = None,
 ) -> float:
     """Choose a short deterministic screenshot settle delay from the focused app."""
     try:
-        window = _active_window_metadata()
-        app_identity = f"{window.get('class', '')} {window.get('title', '')}"
+        if expected_application:
+            app_identity = str(expected_application)
+        else:
+            window = _active_window_metadata()
+            app_identity = f"{window.get('class', '')} {window.get('title', '')}"
         browser = re.search(
-            r"browser|firefox|mozilla|chrom(e|ium)|edge|msedge|brave|vivaldi|opera|zen",
+            r"\b(?:browser|firefox|mozilla|chrome|chromium|edge|msedge|brave|vivaldi|opera|zen)\b",
             app_identity,
             re.IGNORECASE,
         )
@@ -2253,47 +2354,114 @@ def wait_for_application_ready(target: Optional[str] = None, timeout: float | No
     raise TimeoutError(f"The focused application{target_text} did not become ready for a screenshot within {timeout:g} seconds.")
 
 
+class ScreenshotCapture(tuple):
+    """Two-item compatible screenshot result carrying pixel-to-desktop scale."""
+
+    def __new__(
+        cls,
+        image: bytes,
+        origin: tuple[int, int],
+        scale: tuple[float, float] = (1.0, 1.0),
+        backend: str = "unknown",
+        target: str = "",
+    ):
+        value = super().__new__(cls, (image, origin))
+        value.scale = scale
+        value.backend = backend
+        value.target = target
+        return value
+
+
 def capture_screenshot_with_origin(
-    scope: str = "monitor", *, expected_application: Optional[str] = None, wait_until_ready: bool = True
-) -> tuple[bytes, tuple[int, int]]:
-    """Capture the focused monitor or crop the screenshot to the focused window."""
-    scope = (scope or "monitor").strip().lower()
-    if scope not in {"monitor", "window"}:
-        raise ValueError("Screenshot scope must be 'monitor' or 'window'.")
+    scope: str = "window", *, expected_application: Optional[str] = None, wait_until_ready: bool = True
+) -> ScreenshotCapture:
+    """Capture the focused window, a verified single monitor, or explicit full desktop."""
+    scope = (scope or "window").strip().lower()
+    if scope not in {"window", "monitor", "desktop"}:
+        raise ValueError("Screenshot scope must be 'window', 'monitor', or 'desktop'.")
     ensure_gui_environment()
     if wait_until_ready:
         wait_for_application_ready(expected_application)
     with timed_stage("desktop.capture.backend_selection"):
         backend = get_active_backend()
+    if scope == "monitor" and backend.name != "hyprland":
+        raise RuntimeError(
+            f"Single-monitor capture is not verified for {backend.name}; "
+            "request the focused window or explicitly request the full desktop."
+        )
     with timed_stage("desktop.capture.backend"):
-        image = backend.capture_screenshot()
+        image = (
+            backend.capture_desktop_screenshot()
+            if scope == "desktop"
+            else backend.capture_screenshot()
+        )
     origin = getattr(backend, "last_screenshot_origin", (0, 0))
+    scale = getattr(backend, "last_screenshot_scale", (1.0, 1.0))
+    target = getattr(backend, "last_screenshot_target", "") or {
+        "window": "focused window",
+        "monitor": "focused monitor",
+        "desktop": "full desktop (explicitly requested)",
+    }[scope]
+    try:
+        from io import BytesIO
+        from PIL import Image
+
+        with Image.open(BytesIO(image)) as captured_image:
+            if captured_image.format != "PNG":
+                raise RuntimeError("Screenshot data was not PNG.")
+            captured_image.load()
+            image_width, image_height = captured_image.size
+    except Exception as exc:
+        if isinstance(exc, RuntimeError):
+            raise
+        raise RuntimeError(f"Screenshot could not be decoded and verified: {exc}") from exc
+    if image_width <= 0 or image_height <= 0:
+        raise RuntimeError("Screenshot has empty image dimensions.")
     if scope == "monitor":
-        return image, origin
+        expected_bounds = getattr(backend, "last_screenshot_bounds", None)
+        if not expected_bounds:
+            raise RuntimeError("The backend did not report bounds for the requested monitor capture.")
+        if (image_width, image_height) != (expected_bounds[2] - expected_bounds[0], expected_bounds[3] - expected_bounds[1]):
+            raise RuntimeError(
+                "Captured image dimensions do not match the reported focused-monitor bounds; "
+                "refusing to attach an unverified image."
+            )
+        return ScreenshotCapture(image, origin, scale, backend.name, target)
+
+    if scope == "desktop":
+        return ScreenshotCapture(image, origin, scale, backend.name, target)
 
     with timed_stage("desktop.capture.window_geometry"):
         x, y, width, height = _active_window_geometry()
-        left, top = x - origin[0], y - origin[1]
+        left = round((x - origin[0]) * scale[0])
+        top = round((y - origin[1]) * scale[1])
+        crop_width = round(width * scale[0])
+        crop_height = round(height * scale[1])
     try:
         from PIL import Image
         from io import BytesIO
 
         with timed_stage("desktop.capture.window_crop"):
             with Image.open(BytesIO(image)) as screenshot:
-                bounds = (
-                    max(0, left), max(0, top),
-                    min(screenshot.width, left + width), min(screenshot.height, top + height),
-                )
-                if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
-                    raise RuntimeError("The focused window is outside the captured monitor image.")
+                bounds = (left, top, left + crop_width, top + crop_height)
+                if (
+                    bounds[0] < 0 or bounds[1] < 0
+                    or bounds[2] > screenshot.width or bounds[3] > screenshot.height
+                ):
+                    raise RuntimeError(
+                        "The focused window is not fully contained in the captured image; "
+                        "refusing a clipped or mismatched window screenshot."
+                    )
                 output = BytesIO()
                 screenshot.crop(bounds).save(output, format="PNG")
-            return output.getvalue(), (origin[0] + bounds[0], origin[1] + bounds[1])
+                if (bounds[2] - bounds[0], bounds[3] - bounds[1]) != (crop_width, crop_height):
+                    raise RuntimeError("Focused-window crop dimensions do not match the reported window bounds.")
+            return ScreenshotCapture(output.getvalue(), (x, y), scale, backend.name, f"focused window at {x},{y}")
     except ImportError as exc:
         raise RuntimeError("Focused-window screenshots require Pillow; install the 'pillow' package.") from exc
 
 
-def capture_screenshot(scope: str = "monitor", *, expected_application: Optional[str] = None) -> bytes:
+def capture_screenshot(scope: str = "window", *, expected_application: Optional[str] = None) -> bytes:
     """Capture the focused monitor or application window as PNG bytes."""
     return capture_screenshot_with_origin(scope, expected_application=expected_application)[0]
 
@@ -2324,6 +2492,22 @@ def launch_application(app_name: str, args: Optional[str] = "") -> str:
 
     apps = _scan_desktop_entries()
     selected = _resolve_application_entry(target, apps)
+
+    if selected and selected.get("steam_app_id"):
+        app_id = str(selected["steam_app_id"])
+        if args:
+            return "Custom launch arguments are not supported for Steam applications."
+        if not shutil.which("steam"):
+            return f"Steam is not available to launch {selected['name']}."
+        try:
+            subprocess.Popen(
+                ["steam", f"steam://rungameid/{app_id}"],
+                start_new_session=True,
+                env=os.environ,
+            )
+            return f"Launched {selected['name']} through Steam."
+        except Exception as exc:
+            return f"Failed to launch {selected['name']} through Steam: {exc}"
 
     exec_cmd = selected["exec"] if selected else target
     display_name = selected["name"] if selected else app_name

@@ -2,7 +2,7 @@ import os
 import yaml
 from pathlib import Path
 from typing import Union, Literal, Any
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 class AudioConfig(BaseModel):
     target_sink: str = "Adam_Playback_Sink"
@@ -11,6 +11,7 @@ class AudioConfig(BaseModel):
     chunk_size: int = 1280
     vad_threshold_idle: float = 0.25
     vad_threshold_speaking: float = 0.85
+    wake_energy_floor: float = Field(default=0.0005, ge=0.0, le=0.1)
     vad_silence_duration: float = 1.25
     max_utterance_seconds: float = Field(default=60.0, ge=1.0, le=300.0)
 
@@ -147,6 +148,9 @@ class ComputerControlConfig(BaseModel):
     jev_min_confidence: float = 0.65
     ocr_max_regions: int = 100
     ocr_max_candidates: int = Field(default=800, ge=1, le=5000)
+    ocr_max_image_dimension: int = Field(default=1280, ge=320, le=4096)
+    ocr_model_size: Literal["small", "medium"] = "small"
+    ocr_preload_on_startup: bool = False
     ocr_device: Literal["cpu", "cuda"] | None = None
     ocr_gpu_uuid: str = ""
     max_sequence_actions: int = Field(default=8, ge=1, le=8)
@@ -156,6 +160,7 @@ class ComputerControlConfig(BaseModel):
 class ComputerVisionConfig(BaseModel):
     enabled: bool = False
     backend: Literal["omniparser"] = "omniparser"
+    preload_on_startup: bool = False
     device: Literal["cpu", "cuda"] = "cuda"
     gpu_uuid: str = ""
     python_path: str = "~/.local/share/adam/omniparser-runtime/bin/python"
@@ -208,7 +213,25 @@ class LLMConfig(BaseModel):
     num_ctx: int = 65536
     temperature: float = 0.1
     think: Union[bool, str] = False
+    disable_reasoning_for_tool_free: bool = False
+    tool_free_reasoning_effort: (
+        Literal["max", "xhigh", "high", "medium", "low", "minimal", "none"] | None
+    ) = None
     max_tool_rounds: int = Field(default=64, ge=1, le=256)
+    request_timeout_seconds: float = Field(default=45.0, ge=1.0, le=120.0)
+    vision_request_timeout_seconds: float = Field(default=90.0, ge=1.0, le=120.0)
+
+    @model_validator(mode="after")
+    def validate_tool_free_reasoning_options(self):
+        if (
+            self.disable_reasoning_for_tool_free
+            and self.tool_free_reasoning_effort is not None
+        ):
+            raise ValueError(
+                "disable_reasoning_for_tool_free and tool_free_reasoning_effort "
+                "cannot both be configured"
+            )
+        return self
 
 class ExecutionConfig(BaseModel):
     workspace_dir: str = "~/workspace"

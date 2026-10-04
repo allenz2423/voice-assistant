@@ -133,6 +133,88 @@ async def test_empty_model_turn_gets_one_recovery_without_dispatching_actions():
 
 
 @pytest.mark.asyncio
+async def test_independent_native_web_reads_run_concurrently_and_keep_call_order():
+    import asyncio
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": [
+            {"id": "search-a", "function": {"name": "web_search", "arguments": {"query": "alpha"}}},
+            {"id": "fetch-b", "function": {"name": "fetch_webpage", "arguments": {"url": "https://example.test/b"}}},
+        ]},
+        {"content": "Both lookups completed.", "tool_calls": []},
+    ])
+    active = 0
+    peak_active = 0
+
+    async def fake_execute(name, args):
+        nonlocal active, peak_active
+        active += 1
+        peak_active = max(peak_active, active)
+        await asyncio.sleep(0.05)
+        active -= 1
+        return f"{name}:{args.get('query', args.get('url'))}"
+
+    brain._execute_tool = fake_execute
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
+        await brain.process_user_utterance("Search alpha and read this page")
+
+    tool_messages = [message for message in brain.messages if message.get("role") == "tool"]
+    assert peak_active == 2
+    assert [message["tool_call_id"] for message in tool_messages] == ["search-a", "fetch-b"]
+    assert [json.loads(message["content"])["data"] for message in tool_messages] == [
+        "web_search:alpha", "fetch_webpage:https://example.test/b",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sync_web_tools_are_offloaded_so_parallel_batching_does_not_block():
+    import asyncio
+    import time
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    active = 0
+    peak_active = 0
+
+    def fake_search(query):
+        nonlocal active, peak_active
+        active += 1
+        peak_active = max(peak_active, active)
+        time.sleep(0.05)
+        active -= 1
+        return query
+
+    with patch("src.llm.brain.web_search", side_effect=fake_search):
+        results = await asyncio.gather(
+            brain._execute_tool("web_search", {"query": "alpha"}),
+            brain._execute_tool("web_search", {"query": "beta"}),
+        )
+
+    assert peak_active == 2
+    assert results == ["alpha", "beta"]
+
+
+@pytest.mark.asyncio
+async def test_long_wait_speaks_progress_but_short_wait_does_not(monkeypatch):
+    import asyncio
+    import src.llm.brain as brain_module
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    monkeypatch.setattr(brain_module, "LONG_TASK_PROGRESS_INTERVAL_SECONDS", 0.005)
+
+    quick = await brain._await_with_progress(asyncio.sleep(0, result="quick"))
+    assert quick == "quick"
+    assert brain.tts.spoken == []
+
+    slow = await brain._await_with_progress(asyncio.sleep(0.02, result="done"))
+    assert slow == "done"
+    assert brain.tts.spoken == ["I’m still working through your request."]
+
+
+@pytest.mark.asyncio
 async def test_explicit_screen_read_uses_ocr_evidence_without_tools_or_image():
     from src.llm.brain import AdamBrain, _is_explicit_screen_read_request
 
@@ -369,6 +451,33 @@ async def test_agent_loop_reobserves_between_desktop_sequence_and_goal_assessmen
 
 
 @pytest.mark.asyncio
+async def test_standalone_desktop_wait_becomes_bounded_fresh_inspection():
+    from unittest.mock import Mock
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain.__new__(AdamBrain)
+    brain.speculative_router = None
+    brain.custom_tool_mgr = SimpleNamespace(has_tool=lambda _name: False)
+    brain.computer_controller = SimpleNamespace(
+        available=True,
+        run=Mock(return_value=SimpleNamespace(message="Inspected screen", screenshot=b"image")),
+    )
+    brain.messages = [{"role": "system", "content": "system"}]
+    brain._pending_screenshot = None
+
+    result = await brain._execute_tool_impl(
+        "computer_control", {"action": "wait", "seconds": 5}
+    )
+
+    assert result.message == "Inspected screen"
+    brain.computer_controller.run.assert_called_once()
+    call = brain.computer_controller.run.call_args.kwargs
+    assert call["action"] == "inspect"
+    assert call["screenshot_delay_seconds"] == 5
+    assert brain._pending_screenshot == b"image"
+
+
+@pytest.mark.asyncio
 async def test_file_write_failure_returns_failed_execution_status(tmp_path):
     from src.llm.brain import AdamBrain
 
@@ -397,3 +506,42 @@ async def test_file_write_failure_returns_failed_execution_status(tmp_path):
     assert payload["effect_status"] == "unknown"
     assert "refusing to overwrite" in payload["data"]
     assert target.read_text() == "keep existing content"
+
+
+@pytest.mark.asyncio
+async def test_process_status_turn_keeps_the_dedicated_tools_for_model_selection():
+    from src.llm.brain import AdamBrain
+
+    memory = SimpleNamespace(retrieve_context=lambda _text: None)
+    brain = AdamBrain(_config("custom"), None, None, None, _DummyTTS(), memory_mgr=memory)
+    brain.llm_client = _DummyClient("custom", [
+        {"content": "I can check that.", "tool_calls": []},
+    ])
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance(
+            "Report current CPU and memory status, list processes, and explain what the results suggest."
+        )
+
+    sent_tools = brain.llm_client.request_tools[0]
+    assert [tool.name for tool in sent_tools] == ["get_system_status", "list_processes"]
+
+
+@pytest.mark.asyncio
+async def test_simple_system_status_skips_model_and_speaks_validated_tool_result():
+    from src.llm.brain import AdamBrain
+
+    status = "CPU load average is 0.10. Memory is 40 percent in use. GPU utilization is 2 percent."
+    brain = AdamBrain(_config("custom"), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("custom", [])
+
+    async def return_status(_name, _args):
+        return status
+
+    brain._execute_tool = return_status
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
+        await brain.process_user_utterance("Report current CPU, RAM, and GPU utilization.")
+
+    assert len(brain.llm_client.requests) == 0
+    assert brain.tts.spoken == [status]
+    assert brain.messages[-1] == {"role": "assistant", "content": status}

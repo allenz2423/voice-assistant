@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import json
 import math
 import re
@@ -91,6 +92,55 @@ def _png_size(image: bytes) -> tuple[int, int]:
     raise RuntimeError("Screenshot did not contain a valid PNG image.")
 
 
+def _screens_visually_unchanged(previous: bytes, current: bytes) -> bool:
+    """Compare tiny grayscale previews to flag clicks with no visible response."""
+    try:
+        from io import BytesIO
+        from PIL import Image, ImageChops, ImageStat
+
+        with Image.open(BytesIO(previous)) as before, Image.open(BytesIO(current)) as after:
+            if before.size != after.size:
+                return False
+            before_preview = before.convert("L").resize((32, 18), Image.Resampling.BILINEAR)
+            after_preview = after.convert("L").resize((32, 18), Image.Resampling.BILINEAR)
+            difference = ImageStat.Stat(ImageChops.difference(before_preview, after_preview)).mean[0]
+        # A value changing in a small status label should count as progress even
+        # when most of the full-window screenshot is blank. The next controller
+        # action still provides the repeated-action circuit breaker if this
+        # lower threshold causes a minor animated region to look like progress.
+        return difference <= 0.03
+    except Exception:
+        return False
+
+
+def _normalize_ocr_target(value: str) -> str:
+    return " ".join(re.sub(r"[^\w]+", " ", value.casefold()).split())
+
+
+def _match_ocr_region(
+    target_text: str,
+    regions: list[OCRRegion],
+) -> tuple[OCRRegion | None, str]:
+    """Resolve a visible text target only when its OCR match is unambiguous."""
+    target = _normalize_ocr_target(target_text)
+    if not target:
+        return None, "target_text must name a visible OCR label."
+    if not regions:
+        return None, (
+            "No OCR labels are available for this screenshot. "
+            "Inspect the current window with include_ocr=true, then select a visible label."
+        )
+    normalized = [(_normalize_ocr_target(region.text), region) for region in regions]
+    exact = [region for text, region in normalized if text == target]
+    matches = exact or [region for text, region in normalized if target in text]
+    if len(matches) == 1:
+        return matches[0], f"Matched visible OCR label {matches[0].text!r}."
+    if len(matches) > 1:
+        labels = ", ".join(repr(region.text) for region in matches[:5])
+        return None, f"target_text is ambiguous among visible labels: {labels}."
+    return None, f"No visible OCR label matched {target_text!r}. Inspect the latest screen again."
+
+
 @dataclass
 class ComputerControlResult:
     message: str
@@ -126,7 +176,9 @@ class ComputerController:
         self.enabled = enabled
         self.max_text_length = max(1, int(max_text_length))
         self._screenshot_fn = screenshot_fn
-        self._scope = "monitor"
+        self._scope = "window"
+        self._capture_target = "focused window"
+        self._capture_backend = "injected screenshot provider" if screenshot_fn is not None else "unresolved"
         self._runner = runner or subprocess.run
         self._env = environ
         self._ensure_wayland_daemon_override = ensure_wayland_daemon
@@ -141,18 +193,21 @@ class ComputerController:
         self.sequence_timeout_seconds = min(max(float(sequence_timeout_seconds), 1.0), 120.0)
         self._ocr_regions: list[OCRRegion] = []
         self._ocr_state = ""
-        self._include_visual_grounding = True
+        self._include_visual_grounding = False
         self._include_ocr = bool(self.ocr_only)
         if coordinate_mode not in {"pixels", "normalized_1000"}:
             raise ValueError("coordinate_mode must be 'pixels' or 'normalized_1000'.")
         self.coordinate_mode = coordinate_mode
         self._snapshot_id = ""
+        self._last_screenshot: bytes | None = None
         self._width = self._height = 0
         self._origin_x = self._origin_y = 0
+        self._capture_scale = (1.0, 1.0)
         self._active_bounds: tuple[int, int, int, int] | None = None
         self._active_identity: str | None = None
         self._snapshot_identity: str | None = None
         self._held_drag_button: str | None = None
+        self._held_drag_position: tuple[int, int] | None = None
         self._action_lock = threading.RLock()
 
     def _wayland_window_adapter(self) -> str:
@@ -218,8 +273,12 @@ class ComputerController:
                 width, height = int(values["WIDTH"]), int(values["HEIGHT"])
             else:
                 return None, None
-            left, top = x - self._origin_x, y - self._origin_y
-            bounds = (left, top, left + width, top + height) if width > 0 and height > 0 else None
+            scale_x, scale_y = self._capture_scale
+            left = round((x - self._origin_x) * scale_x)
+            top = round((y - self._origin_y) * scale_y)
+            scaled_width = round(width * scale_x)
+            scaled_height = round(height * scale_y)
+            bounds = (left, top, left + scaled_width, top + scaled_height) if width > 0 and height > 0 else None
             return identity, bounds
         except Exception:
             return None, None
@@ -277,9 +336,15 @@ class ComputerController:
             )
         if isinstance(captured, tuple):
             image, (self._origin_x, self._origin_y) = captured
+            self._capture_scale = getattr(captured, "scale", (1.0, 1.0))
+            self._capture_backend = getattr(captured, "backend", "injected screenshot provider")
+            self._capture_target = getattr(captured, "target", "") or self._scope
         else:
             image = captured
             self._origin_x = self._origin_y = 0
+            self._capture_scale = (1.0, 1.0)
+            self._capture_backend = "injected screenshot provider"
+            self._capture_target = self._scope
         metadata_started = time.perf_counter()
         self._width, self._height = _png_size(image)
         log_duration(
@@ -289,6 +354,11 @@ class ComputerController:
         with timed_stage("controller.window_state_after"):
             after_identity, self._active_bounds = self._read_active_window_state()
         self._active_identity = after_identity
+        if self._scope == "window" and after_identity:
+            self._capture_target = f"focused window ({after_identity})"
+        if self._scope == "desktop":
+            issue_action_token = False
+            prefix += " Full-desktop inspection is read-only; inspect the focused window or a verified monitor before input."
         focus_stable = bool(before_identity and before_identity == after_identity)
         issue_action_token = issue_action_token and focus_stable
         if not focus_stable:
@@ -410,8 +480,11 @@ class ComputerController:
             if issue_action_token
             else "Call inspect to obtain an action-capable Snapshot ID before input. "
         )
+        self._last_screenshot = image_for_model
         return ComputerControlResult(
-            f"{prefix} Current {self._scope} capture is {self._width}x{self._height}.\n"
+            f"{prefix} Capture: scope={self._scope}, target={self._capture_target}, "
+            f"backend={self._capture_backend}, image={self._width}x{self._height}, "
+            f"origin=({self._origin_x},{self._origin_y}).\n"
             f"{token_text}"
             f"{bounds_text}"
             + next_action_hint + coordinate_instructions
@@ -477,6 +550,13 @@ class ComputerController:
             y = round(y * (self._height - 1) / 1000)
         return x, y
 
+    def _screenshot_to_desktop(self, x: int, y: int) -> tuple[int, int]:
+        scale_x, scale_y = self._capture_scale
+        return (
+            round(x / scale_x) + self._origin_x,
+            round(y / scale_y) + self._origin_y,
+        )
+
     def _click(self, x: int, y: int, button: str) -> None:
         if not (0 <= x < self._width and 0 <= y < self._height):
             raise ValueError(f"Click coordinates must be within the screenshot (0–{self._width - 1}, 0–{self._height - 1}).")
@@ -487,7 +567,7 @@ class ComputerController:
                     "Click rejected because it is outside the active window. "
                     "Focus the intended application first, then inspect the screen again."
                 )
-            if y <= top + 36 and x >= right - 40:
+            if y <= top + round(36 * self._capture_scale[1]) and x >= right - round(40 * self._capture_scale[0]):
                 raise ValueError(
                     "Click rejected because it targets the window-close corner. "
                     "Use close_application for an intentional window close; for visibility recovery, prefer hiding or moving an obstruction unless it is clearly disposable."
@@ -505,19 +585,21 @@ class ComputerController:
         raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
 
     def _position_cursor(self, x: int, y: int) -> None:
+        desktop_x, desktop_y = self._screenshot_to_desktop(x, y)
         if self.backend == "x11":
-            self._call(["xdotool", "mousemove", "--sync", str(x + self._origin_x), str(y + self._origin_y)])
+            # --sync can hang against some fullscreen games/compositors. The
+            # following click is sent by the same X server and remains ordered.
+            self._call(["xdotool", "mousemove", str(desktop_x), str(desktop_y)])
             return
         if self.backend == "wayland":
             if not self._ensure_ydotoold():
                 raise RuntimeError("Wayland mouse control needs ydotoold and access to /dev/uinput.")
             if shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
-                global_x, global_y = x + self._origin_x, y + self._origin_y
-                self._move_wayland_cursor_to(global_x, global_y)
+                self._move_wayland_cursor_to(desktop_x, desktop_y)
             else:
                 self._call([
                     "ydotool", "mousemove", "--absolute",
-                    str(x + self._origin_x), str(y + self._origin_y),
+                    str(desktop_x), str(desktop_y),
                 ])
             return
         raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
@@ -589,7 +671,7 @@ class ComputerController:
         buttons = {"left": (1, "0x40"), "right": (3, "0x41"), "middle": (2, "0x42")}
         if button not in buttons:
             raise ValueError("Mouse button must be left, right, or middle.")
-        self._position_cursor(x + self._origin_x, y + self._origin_y)
+        self._position_cursor(x, y)
         if self.backend == "x11":
             self._call(["xdotool", "mousedown", str(buttons[button][0])])
         elif self.backend == "wayland":
@@ -599,18 +681,23 @@ class ComputerController:
         else:
             raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
         self._held_drag_button = button
+        self._held_drag_position = self._screenshot_to_desktop(x, y)
 
     def _move_held_drag(self, x: int, y: int) -> None:
         if self._held_drag_button is None:
             raise ValueError("No drag is active; call drag first.")
         if not (0 <= x < self._width and 0 <= y < self._height):
             raise ValueError("Drag waypoint must be inside the latest screenshot.")
-        end_x, end_y = x + self._origin_x, y + self._origin_y
+        end_x, end_y = self._screenshot_to_desktop(x, y)
         if self.backend == "x11":
-            self._call([
-                "xdotool", "mousemove", "--sync", "--duration", "0.18",
-                str(end_x), str(end_y),
-            ])
+            start_x, start_y = self._held_drag_position or (end_x, end_y)
+            steps = max(1, min(12, max(abs(end_x - start_x), abs(end_y - start_y)) // 24))
+            for step in range(1, steps + 1):
+                px = round(start_x + (end_x - start_x) * step / steps)
+                py = round(start_y + (end_y - start_y) * step / steps)
+                self._call(["xdotool", "mousemove", str(px), str(py)])
+                time.sleep(0.025)
+            self._held_drag_position = (end_x, end_y)
             return
         if self.backend != "wayland":
             raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
@@ -675,6 +762,7 @@ class ComputerController:
                 raise RuntimeError("No supported X11 or Wayland desktop session was detected.")
         finally:
             self._held_drag_button = None
+            self._held_drag_position = None
 
     def release_held_drag(self) -> None:
         """Release any mouse button left down by a multi-step drag."""
@@ -695,18 +783,23 @@ class ComputerController:
             left, top, right, bottom = self._active_bounds
             if not (left <= x < right and top <= y < bottom):
                 raise ValueError("Drag must begin inside the active window. Inspect it and start on the control or title bar to move.")
-            if y <= top + 36 and x >= right - 40:
+            if y <= top + round(36 * self._capture_scale[1]) and x >= right - round(40 * self._capture_scale[0]):
                 raise ValueError("Drag start is on the window-close corner; choose a title-bar point away from window controls.")
         buttons = {"left": (1, "0x40", "0x80"), "right": (3, "0x41", "0x81"), "middle": (2, "0x42", "0x82")}
         if button not in buttons:
             raise ValueError("Mouse button must be left, right, or middle.")
-        sx, sy = x + self._origin_x, y + self._origin_y
-        ex, ey = end_x + self._origin_x, end_y + self._origin_y
+        sx, sy = self._screenshot_to_desktop(x, y)
+        ex, ey = self._screenshot_to_desktop(end_x, end_y)
         if self.backend == "x11":
-            self._call(["xdotool", "mousemove", "--sync", str(sx), str(sy)])
+            self._call(["xdotool", "mousemove", str(sx), str(sy)])
             self._call(["xdotool", "mousedown", str(buttons[button][0])])
             try:
-                self._call(["xdotool", "mousemove", "--sync", "--duration", "0.35", str(ex), str(ey)])
+                steps = max(1, min(16, max(abs(ex - sx), abs(ey - sy)) // 24))
+                for step in range(1, steps + 1):
+                    px = round(sx + (ex - sx) * step / steps)
+                    py = round(sy + (ey - sy) * step / steps)
+                    self._call(["xdotool", "mousemove", str(px), str(py)])
+                    time.sleep(0.025)
             finally:
                 self._call(["xdotool", "mouseup", str(buttons[button][0])])
             return
@@ -937,6 +1030,8 @@ class ComputerController:
         actions: list[dict],
         *,
         screenshot_delay_seconds: float | None = None,
+        include_ocr: bool | None = None,
+        include_visual_grounding: bool | None = None,
         goal: str = "",
         expected_application: str | None = None,
         cancel_event: threading.Event | None = None,
@@ -1022,11 +1117,18 @@ class ComputerController:
             coordinate_free_continuation = (
                 action == "wait"
             ) or (
-                last_concrete_action in {"click", "type"}
+                last_concrete_action in {"click", "ocr_click"}
                 and action == "type"
             ) or (
                 last_concrete_action == "type"
                 and action == "press"
+            ) or (
+                # A text label is resolved against current OCR for each step;
+                # it does not reuse the prior click's pixel coordinates.
+                last_concrete_action in {"ocr_click", "type"}
+                and action == "click"
+                and bool(str(step.get("target_text", "")).strip())
+                and bool(include_ocr or self._include_ocr)
             )
             if index and not coordinate_free_continuation:
                 return ComputerControlResult(
@@ -1051,8 +1153,18 @@ class ComputerController:
                         expected_application=expected_application,
                     )
                 continue
-            last_concrete_action = action
+            last_concrete_action = (
+                "ocr_click"
+                if action == "click"
+                and bool(str(step.get("target_text", "")).strip())
+                and bool(include_ocr or self._include_ocr)
+                else action
+            )
             kwargs = {key: value for key, value in step.items() if key != "action"}
+            if include_ocr is not None:
+                kwargs.setdefault("include_ocr", include_ocr)
+            if include_visual_grounding is not None:
+                kwargs.setdefault("include_visual_grounding", include_visual_grounding)
             latest = self.run(
                 action=action,
                 snapshot_id=current_snapshot,
@@ -1124,40 +1236,50 @@ class ComputerController:
                 "Computer control is disabled in config.yaml.", status="unavailable"
             )
         action = (action or "inspect").strip().lower()
+        previous_screenshot = self._last_screenshot
         if action == "inspect":
             self._include_ocr = (self.ocr_only if include_ocr is None else bool(include_ocr))
-            self._include_visual_grounding = (
-                self._include_ocr if include_visual_grounding is None else bool(include_visual_grounding)
-            )
+            self._include_visual_grounding = bool(include_visual_grounding)
         elif include_ocr is not None:
             self._include_ocr = bool(include_ocr)
-            self._include_visual_grounding = (
-                self._include_ocr if include_visual_grounding is None else bool(include_visual_grounding)
-            )
+            if include_visual_grounding is not None:
+                self._include_visual_grounding = bool(include_visual_grounding)
         with timed_stage("controller.screenshot_delay_selection"):
+            max_configured_delay = screenshot_delay_for_focused_window(
+                self.screenshot_delay_seconds,
+                self.browser_screenshot_delay_seconds,
+                expected_application,
+            )
             if screenshot_delay_seconds is None:
-                delay = screenshot_delay_for_focused_window(
-                    self.screenshot_delay_seconds,
-                    self.browser_screenshot_delay_seconds,
-                )
+                # A browser's contents may need extra time after opening or
+                # navigating, but a click/type/scroll should not inherit that
+                # full navigation wait on every step. Refresh quickly after
+                # direct actions; the model can request a longer fresh inspect
+                # or use the explicit wait action when a transition is still
+                # in progress.
+                delay = max_configured_delay if action == "inspect" else self.screenshot_delay_seconds
             else:
                 try:
                     delay = float(screenshot_delay_seconds)
                 except (TypeError, ValueError):
-                    delay = screenshot_delay_for_focused_window(
-                        self.screenshot_delay_seconds,
-                        self.browser_screenshot_delay_seconds,
-                    )
+                    delay = max_configured_delay
                 if not math.isfinite(delay):
-                    delay = self.screenshot_delay_seconds
-                delay = min(max(delay, 0.0), 10.0)
+                    delay = max_configured_delay
+                # Agent supplied waits may shorten the configured app-aware
+                # settle time, but cannot override it with seconds of avoidable
+                # latency. Longer waits belong in configuration.
+                delay = min(max(delay, 0.0), max_configured_delay)
         if action == "inspect":
             try:
-                requested_scope = (scope or "monitor").strip().lower()
-                if requested_scope not in {"monitor", "window"}:
-                    raise ValueError("Screenshot scope must be 'monitor' or 'window'.")
+                requested_scope = (scope or "window").strip().lower()
+                if requested_scope not in {"monitor", "window", "desktop"}:
+                    raise ValueError("Screenshot scope must be 'window', 'monitor', or 'desktop'.")
                 self._scope = requested_scope
-                label = "focused application" if self._scope == "window" else "active monitor"
+                label = {
+                    "window": "focused application",
+                    "monitor": "active monitor",
+                    "desktop": "full desktop",
+                }[self._scope]
                 if delay:
                     with timed_stage("controller.screenshot_settle", configured_delay_ms=round(delay * 1000)):
                         time.sleep(delay)
@@ -1196,6 +1318,26 @@ class ComputerController:
                     x, y = region.center
                     internal_ocr_target = True
                     selection_message = f"Clicked Jev-selected OCR target {region.ref}."
+                elif target_text.strip() and not self.ocr_only:
+                    if (
+                        not self._ocr_regions
+                        and self._include_ocr
+                        and self._ocr_reader is not None
+                        and self._last_screenshot
+                    ):
+                        try:
+                            with timed_stage("controller.ocr_target_lookup"):
+                                self._ocr_regions = self._ocr_reader.read(self._last_screenshot)
+                            self._ocr_state = ScreenOCR.format(self._ocr_regions)
+                        except Exception as exc:
+                            selection_message = (
+                                f"OCR target lookup failed ({type(exc).__name__}: {str(exc)[:160]})."
+                            )
+                    region, selection_message = _match_ocr_region(target_text, self._ocr_regions)
+                    if region is None:
+                        raise ValueError(selection_message)
+                    x, y = region.center
+                    internal_ocr_target = True
                 elif self.ocr_only and self._target_selector is not None:
                     if not target_text.strip():
                         raise ValueError("OCR target selection requires target_text; coordinates are not accepted in this mode.")
@@ -1225,7 +1367,7 @@ class ComputerController:
                     )
                 else:
                     message = f"Clicked {button} at ({pixel_x}, {pixel_y})."
-                if self.ocr_only and target_text.strip():
+                if target_text.strip() and (self.ocr_only or internal_ocr_target):
                     message = f"{selection_message} Clicked the selected OCR region."
                 elif self.ocr_only and ocr_region_ref.strip():
                     message = f"{selection_message}"
@@ -1352,6 +1494,17 @@ class ComputerController:
                 else failure_status
             )
             captured.dispatched = action_succeeded if action_succeeded else (None if action_attempted else False)
+            if (
+                action == "click"
+                and action_succeeded
+                and previous_screenshot
+                and captured.screenshot
+                and _screens_visually_unchanged(previous_screenshot, captured.screenshot)
+            ):
+                captured.message += (
+                    " The fresh screen appears unchanged after this click. The input was dispatched, "
+                    "but its effect is not visually confirmed; reassess the current target before claiming completion."
+                )
             return captured
         except Exception as exc:
             self._snapshot_id = ""

@@ -1,4 +1,4 @@
-from src.llm.tools import ADAM_TOOLS, CanonicalTool, validate_tool_arguments
+from src.llm.tools import ADAM_TOOLS, CanonicalTool, normalize_tool_arguments, validate_tool_arguments
 
 
 def _tool(name: str) -> CanonicalTool:
@@ -44,3 +44,57 @@ def test_sequence_schema_validates_each_action():
         },
     )
     assert "missing: text" in error
+
+
+def test_schema_normalization_coerces_only_exact_numeric_strings_at_numeric_fields():
+    tool = _tool("computer_control")
+    arguments = {
+        "action": "sequence",
+        "snapshot_id": "s1",
+        "actions": [
+            {"action": "click", "x": "520", "y": " 350 "},
+            {"action": "type", "text": "hello"},
+            {"action": "click", "target_text": "Save note"},
+        ],
+    }
+
+    normalized = normalize_tool_arguments(tool, arguments)
+
+    assert normalized == {
+        "action": "sequence",
+        "snapshot_id": "s1",
+        "actions": [
+            {"action": "click", "x": 520, "y": 350},
+            {"action": "type", "text": "hello"},
+            {"action": "click", "target_text": "Save note"},
+        ],
+    }
+    assert arguments["actions"][0]["x"] == "520"
+    assert validate_tool_arguments(tool, normalized) is None
+
+    fractional = normalize_tool_arguments(
+        tool,
+        {"action": "click", "snapshot_id": "s1", "x": "520.5", "y": "350"},
+    )
+    assert fractional["x"] == "520.5"
+    assert "must be integer" in validate_tool_arguments(tool, fractional)
+
+
+def test_standalone_wait_is_a_documented_delayed_inspection_alias():
+    tool = _tool("computer_control")
+
+    assert "standalone action='wait' is accepted as a delayed inspection" in tool.description
+    assert "wait" in tool.parameters["properties"]["action"]["enum"]
+    assert validate_tool_arguments(
+        tool,
+        {"action": "wait", "snapshot_id": "s1", "seconds": 1},
+    ) is None
+    assert validate_tool_arguments(tool, {"action": "wait", "seconds": 1}) is None
+    assert validate_tool_arguments(
+        tool,
+        {
+            "action": "sequence",
+            "snapshot_id": "s1",
+            "actions": [{"action": "wait", "seconds": 1}],
+        },
+    ) is None

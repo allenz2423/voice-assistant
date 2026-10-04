@@ -133,9 +133,23 @@ def _optimize_image_for_llm(image_bytes: bytes, max_dim: int = 1600, quality: in
         return image_bytes, mime_type
 
 
+def _request_timeout_seconds(llm_config, *, has_image: bool) -> float:
+    """Return a bounded provider timeout, with a larger budget for vision calls."""
+    field = "vision_request_timeout_seconds" if has_image else "request_timeout_seconds"
+    fallback = 90.0 if has_image else 45.0
+    try:
+        timeout = float(getattr(llm_config, field, fallback))
+    except (TypeError, ValueError):
+        timeout = fallback
+    if not math.isfinite(timeout):
+        timeout = fallback
+    return min(max(timeout, 1.0), 120.0)
+
+
 class UniversalLLMClient:
     """Unified LLM client supporting local Ollama models and cloud providers with a single switch."""
     def __init__(self, config):
+        self.llm_config = config.llm
         self.provider = config.llm.provider.lower()
         self.local_model = config.llm.local_model
         self.cloud_model = config.llm.cloud_model
@@ -145,6 +159,12 @@ class UniversalLLMClient:
         self.temperature = config.llm.temperature
         self.num_ctx = config.llm.num_ctx
         self.think = getattr(config.llm, "think", False)
+        self.disable_reasoning_for_tool_free = getattr(
+            config.llm, "disable_reasoning_for_tool_free", False
+        )
+        self.tool_free_reasoning_effort = getattr(
+            config.llm, "tool_free_reasoning_effort", None
+        )
         self.provider_only = getattr(config.llm, "provider_only", [])
         self.allow_provider_fallbacks = getattr(config.llm, "allow_provider_fallbacks", True)
 
@@ -352,15 +372,21 @@ class UniversalLLMClient:
                     "allow_fallbacks": self.allow_provider_fallbacks,
                 }
             effective_think = self.think if think is None else think
-            if effective_think:
+            if self.disable_reasoning_for_tool_free and not openai_tools:
+                # A tool-free response should not spend its budget on hidden
+                # reasoning when this opt-in is enabled. Keep tool calls on
+                # the configured reasoning path.
+                payload["reasoning"] = {"enabled": False}
+                payload.setdefault("provider", {})["require_parameters"] = True
+            elif self.tool_free_reasoning_effort and not openai_tools:
+                payload["reasoning"] = {"effort": self.tool_free_reasoning_effort}
+                payload.setdefault("provider", {})["require_parameters"] = True
+            elif effective_think:
                 payload["reasoning"] = {"enabled": True}
 
         try:
-            # Vision calls include screenshots and can take longer than a text turn.
-            # Keep ordinary voice responses snappy while giving computer-use turns
-            # enough time to reason over the full image and structured UI hints.
             has_image = any(bool(message.get("images")) for message in messages)
-            timeout_seconds = 600
+            timeout_seconds = _request_timeout_seconds(self.llm_config, has_image=has_image)
             request_span_id = uuid.uuid4().hex
             started_at = asyncio.get_running_loop().time()
             configured_provider = _telemetry_safe_text(self.provider, 64) or "unknown"
