@@ -286,7 +286,11 @@ def _scan_desktop_entries() -> dict[str, dict]:
                             nodisplay = True
                 if name and exec_cmd and not nodisplay:
                     clean_exec = re.sub(r"@@[a-zA-Z0-9]*\s*@@", "", exec_cmd)
-                    clean_exec = re.sub(r"%[a-zA-Z0-9%]", "", clean_exec).strip()
+                    clean_exec = re.sub(r"--[a-zA-Z0-9_-]+=%[a-zA-Z0-9%]", "", clean_exec)
+                    clean_exec = re.sub(r"-[a-zA-Z0-9]=%[a-zA-Z0-9%]", "", clean_exec)
+                    clean_exec = re.sub(r"%[a-zA-Z0-9%]", "", clean_exec)
+                    clean_exec = re.sub(r"--[a-zA-Z0-9_-]+=(?:\s|$)", " ", clean_exec)
+                    clean_exec = re.sub(r"\s+", " ", clean_exec).strip()
                     key = name.lower()
                     if key not in apps:
                         apps[key] = {
@@ -2509,7 +2513,8 @@ def launch_application(app_name: str, args: Optional[str] = "") -> str:
         except Exception as exc:
             return f"Failed to launch {selected['name']} through Steam: {exc}"
 
-    exec_cmd = selected["exec"] if selected else target
+    clean_target = (target or "").strip().lower()
+    exec_cmd = selected["exec"] if selected else (clean_target if shutil.which(clean_target) else target)
     display_name = selected["name"] if selected else app_name
 
     if args:
