@@ -4,6 +4,8 @@ import asyncio
 from pathlib import Path
 import tempfile
 import shutil
+from unittest.mock import MagicMock
+import numpy as np
 
 from src.main import merge_overlapping_transcripts
 from src.arbiter.confirmation import TriStateConfirmationManager, sanitize_confirmation_speech
@@ -743,3 +745,58 @@ def test_cosyvoice_config_and_fallback():
     )
     # Cosyvoice engine is exclusive — no Kokoro fallback initialized
     assert tts.kokoro is None
+
+
+def test_silent_to_kokoro_dynamic_initialization(monkeypatch):
+    """Switching from silent mode to kokoro dynamically initializes Kokoro without Piper fallback."""
+    from src.config import load_config
+    cfg = load_config()
+
+    init_calls = []
+    fake_kokoro = MagicMock()
+    monkeypatch.setattr(StreamingVoiceSynthesizer, "_init_kokoro", lambda self: (init_calls.append(True), setattr(self, "kokoro", fake_kokoro)))
+
+    tts = StreamingVoiceSynthesizer(
+        engine="silent",
+        model_path=cfg.tts.model_path,
+        voices_path=cfg.tts.voices_path,
+    )
+    assert tts.engine == "silent"
+    assert tts.kokoro is None
+    assert len(init_calls) == 0
+
+    # Dynamically restoring kokoro triggers initialization
+    tts.engine = "kokoro"
+    assert tts.engine == "kokoro"
+    assert tts.kokoro is fake_kokoro
+    assert len(init_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_kokoro_synthesis_does_not_fall_through_to_piper(monkeypatch):
+    """When engine is kokoro, synthesis never invokes Piper subprocess even if kokoro object is initially None."""
+    from src.config import load_config
+    cfg = load_config()
+
+    tts = StreamingVoiceSynthesizer(
+        engine="silent",
+        model_path="assets/voices/kokoro/kokoro-v1.0.onnx",
+        voices_path="assets/voices/kokoro/voices-v1.0.bin",
+    )
+    fake_kokoro = MagicMock()
+    fake_kokoro.create.return_value = (np.zeros(100, dtype=np.float32), 24000)
+    fake_kokoro.voices = {"am_adam": 0}
+
+    monkeypatch.setattr(tts, "_init_kokoro", lambda: setattr(tts, "kokoro", fake_kokoro))
+    played = []
+    monkeypatch.setattr(tts, "_play_float32_audio", lambda *args, **kwargs: played.append(args))
+
+    subprocess_calls = []
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", lambda *args, **kwargs: subprocess_calls.append(args))
+
+    tts.engine = "kokoro"
+    await tts._synthesize_and_play_clause("Hello world", tts.current_epoch)
+
+    assert len(played) == 1
+    assert len(subprocess_calls) == 0
+

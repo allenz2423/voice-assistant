@@ -133,6 +133,18 @@ class StreamingVoiceSynthesizer:
     """Natural streaming Voice Synthesizer supporting Kokoro-82M (CUDA/CPU) and Piper with barge-in cancellation and epoch barriers."""
     SENTENCE_SPLIT_REGEX = re.compile(r"(?<=[.!?。！？])\s*(?=[A-Z0-9\u3040-\u30ff\u4e00-\u9fff])|\n+")
 
+    @property
+    def engine(self) -> str:
+        return self._engine
+
+    @engine.setter
+    def engine(self, new_engine: str):
+        self._engine = str(new_engine or "").lower()
+        if self._engine == "kokoro" and self.kokoro is None:
+            self._init_kokoro()
+        elif self._engine == "cosyvoice" and not getattr(self, "_cosyvoice_checked", False):
+            self._init_cosyvoice()
+
     def __init__(
         self,
         engine="kokoro",
@@ -148,24 +160,27 @@ class StreamingVoiceSynthesizer:
         cloud_voice="marin",
         api_key="",
         cosyvoice_api_url="http://localhost:50000",
-        cosyvoice_model_dir="pretrained_models/CosyVoice2-0.5B"
+        cosyvoice_model_dir="pretrained_models/CosyVoice2-0.5B",
+        config_path="assets/voices/en_US-ryan-high.onnx.json"
     ):
         setup_audio_routing(target_sink)
-        self.engine = engine
+        self._engine = str(engine or "").lower()
         self.model_path = model_path
         self.voices_path = voices_path
+        self.config_path = config_path
         self.voice = voice
         self.device_id = device_id
         self.speed = speed
         self.piper_bin = piper_bin
         self.target_sink = target_sink
-        self.sample_rate = 24000 if engine == "openai" else sample_rate
+        self.sample_rate = 24000 if self._engine == "openai" else sample_rate
         self.cloud_model = cloud_model
         self.cloud_voice = cloud_voice
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY", "")
         self.cosyvoice_api_url = cosyvoice_api_url
         self.cosyvoice_model_dir = cosyvoice_model_dir
         self.cosyvoice_model = None
+        self._cosyvoice_checked = False
         self.pulse_idx = None
         self._pulse_idx_resolved = False
         self.current_epoch = 0
@@ -186,18 +201,19 @@ class StreamingVoiceSynthesizer:
         self.speaker_verifier = None
         self.speech_history: deque[tuple[float, str]] = deque(maxlen=30)
 
-        if self.engine == "cosyvoice":
+        if self._engine == "cosyvoice":
             self._init_cosyvoice()
-        elif self.engine == "kokoro":
+        elif self._engine == "kokoro":
             self._init_kokoro()
-        elif self.engine == "silent":
+        elif self._engine == "silent":
             print("[TTS] Silent mode — responses will appear as desktop notifications only.")
-        elif self.engine == "openai":
+        elif self._engine == "openai":
             print(f"[TTS] OpenAI cloud speech enabled ({self.cloud_model}, voice {self.cloud_voice}).")
 
     def _init_cosyvoice(self):
         """Check CosyVoice once without delaying assistant startup."""
         import urllib.request
+        self._cosyvoice_checked = True
         print(f"[TTS] Checking CosyVoice server at {self.cosyvoice_api_url}...")
         try:
             with urllib.request.urlopen(f"{self.cosyvoice_api_url}/health", timeout=1.0) as resp:
@@ -211,6 +227,8 @@ class StreamingVoiceSynthesizer:
 
     def _init_kokoro(self):
         """Initializes Kokoro ONNX on configured device with graceful fallback to CPU."""
+        if self.kokoro is not None:
+            return
         try:
             _ensure_nvidia_libs()
             import onnxruntime as ort
@@ -733,36 +751,63 @@ class StreamingVoiceSynthesizer:
                 await self._play_interruptibly(self._play_float32_audio, samples, sr, epoch, epoch=epoch)
                 return
 
-        if (self.engine == "kokoro" or self.engine == "cosyvoice") and self.kokoro:
-            try:
-                # Detect language: if Japanese kana or kanji present, use 'ja'
-                is_ja = any('\u3040' <= c <= '\u30ff' or '\u4e00' <= c <= '\u9fff' for c in clause)
-                lang = "ja" if is_ja else "en-us"
-                samples, sr = await asyncio.to_thread(
-                    self.kokoro.create,
-                    clause,
-                    voice=self.voice if self.voice in getattr(self.kokoro, "voices", {}) or hasattr(self.kokoro, "get_voice") else "am_onyx",
-                    speed=self.speed,
-                    lang=lang
-                )
-            except Exception as e:
-                print(f"[TTS] Kokoro synthesis error: {e}")
-                emit_event(
-                    "tts.clause_synthesized", span_id=clause_span, component="tts", status="error",
-                    attributes={"error_type": type(e).__name__},
-                )
-                return
+        if self.engine == "kokoro" or (self.engine == "cosyvoice" and self.kokoro):
+            if self.kokoro is None and self.engine == "kokoro":
+                self._init_kokoro()
+            if self.kokoro:
+                try:
+                    # Detect language: if Japanese kana or kanji present, use 'ja'
+                    is_ja = any('\u3040' <= c <= '\u30ff' or '\u4e00' <= c <= '\u9fff' for c in clause)
+                    lang = "ja" if is_ja else "en-us"
+                    samples, sr = await asyncio.to_thread(
+                        self.kokoro.create,
+                        clause,
+                        voice=self.voice if self.voice in getattr(self.kokoro, "voices", {}) or hasattr(self.kokoro, "get_voice") else "am_onyx",
+                        speed=self.speed,
+                        lang=lang
+                    )
+                except Exception as e:
+                    print(f"[TTS] Kokoro synthesis error: {e}")
+                    emit_event(
+                        "tts.clause_synthesized", span_id=clause_span, component="tts", status="error",
+                        attributes={"error_type": type(e).__name__},
+                    )
+                    return
 
-            if epoch != self.current_epoch:
-                emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="cancelled")
+                if epoch != self.current_epoch:
+                    emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="cancelled")
+                    return
+                if len(samples) == 0:
+                    emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="error")
+                    return
+
+                emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="ok")
+                await self._play_interruptibly(self._play_float32_audio, samples, sr, epoch, epoch=epoch)
                 return
-            if len(samples) == 0:
+            elif self.engine == "kokoro":
                 emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="error")
                 return
 
-            emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="ok")
-            await self._play_interruptibly(self._play_float32_audio, samples, sr, epoch, epoch=epoch)
+        if self.engine != "piper":
             return
+
+        piper_model = self.model_path
+        if not (os.path.exists(f"{piper_model}.json") or os.path.exists(re.sub(r"\.onnx$", ".onnx.json", piper_model))):
+            candidates = [
+                getattr(self, "config_path", "").replace(".json", ""),
+                "assets/voices/en_US-ryan-high.onnx",
+                "assets/voices/en_US-lessac-medium.onnx",
+                "assets/voices/en_US-bryce-medium.onnx",
+                "assets/voices/en_US-joe-medium.onnx",
+            ]
+            for cand in candidates:
+                if cand and os.path.exists(cand) and (os.path.exists(f"{cand}.json") or os.path.exists(re.sub(r"\.onnx$", ".onnx.json", cand))):
+                    piper_model = cand
+                    break
+            else:
+                print(f"[TTS] Cannot use Piper: '{self.model_path}' has no Piper JSON config and no fallback Piper voice model was found.", flush=True)
+                emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="error")
+                return
 
         # Fallback to Piper
         env = os.environ.copy()
@@ -773,7 +818,7 @@ class StreamingVoiceSynthesizer:
         try:
             proc = await asyncio.create_subprocess_exec(
                 self.piper_bin,
-                "-m", self.model_path,
+                "-m", piper_model,
                 "--output-raw",
                 "--length-scale", "0.92",
                 "--sentence-silence", "0.05",
