@@ -160,6 +160,75 @@ async def test_false_filesystem_access_refusal_reprompts_when_read_tool_is_avail
 
 
 @pytest.mark.asyncio
+async def test_file_management_refusal_reprompts_with_confirmed_organizer_tool():
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {
+            "content": "I can't actually move or delete files for you; I don't have file management tools hooked up.",
+            "tool_calls": [],
+        },
+        {"content": "", "tool_calls": [{
+            "id": "organize-downloads",
+            "function": {
+                "name": "organize_files",
+                "arguments": {"directory": "~/Downloads", "group_by": "show"},
+            },
+        }]},
+        {"content": "The organization request is waiting for your confirmation.", "tool_calls": []},
+        {"content": "The organization request is waiting for your confirmation.", "tool_calls": []},
+    ])
+    brain._execute_tool = AsyncMock(
+        return_value="Confirmation requested from user. Execution is paused waiting for user's verbal confirmation."
+    )
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Organize my Downloads folder by show")
+
+    assert "organize_files" in brain.llm_client.requests[1][-1]["content"]
+    brain._execute_tool.assert_awaited_once_with(
+        "organize_files", {"directory": "~/Downloads", "group_by": "show"}
+    )
+    assert "confirmation" in brain.tts.spoken[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_find_files_missing_directory_is_retried_as_a_tool_failure(tmp_path):
+    from src.llm.brain import AdamBrain
+
+    good_directory = tmp_path / "downloads"
+    good_directory.mkdir()
+    (good_directory / "synthetic.txt").write_text("synthetic", encoding="utf-8")
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": [{
+            "id": "bad-folder",
+            "function": {"name": "find_files", "arguments": {
+                "directory": str(tmp_path / "missing"), "pattern": "*",
+            }},
+        }]},
+        {"content": "", "tool_calls": [{
+            "id": "good-folder",
+            "function": {"name": "find_files", "arguments": {
+                "directory": str(good_directory), "pattern": "*",
+            }},
+        }]},
+        {"content": "I found the synthetic file.", "tool_calls": []},
+        {"content": "I found the synthetic file.", "tool_calls": []},
+    ])
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Check the test Downloads folder")
+
+    assert len(brain.llm_client.requests) == 3
+    assert "Tool recovery 1/3" in brain.llm_client.requests[1][-1]["content"]
+    assert "does not exist" in brain.llm_client.requests[1][-2]["content"]
+    assert "synthetic file" in brain.tts.spoken[-1]
+
+
+@pytest.mark.asyncio
 async def test_capability_refusal_recovery_stops_after_three_reprompts():
     from src.llm.brain import AdamBrain
 

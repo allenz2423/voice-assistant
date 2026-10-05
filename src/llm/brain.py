@@ -599,15 +599,24 @@ def _available_tools_for_capability_refusal(
     user_text: str, response_text: str, available_tools: list,
 ) -> list[str]:
     """Find relevant available tools when the model falsely claims it lacks access."""
+    response_text = str(response_text or "")
     refusal = re.search(
         r"\b(?:i|we)\s+(?:(?:do\s+not|don't|cannot|can't|can\s+not)\s+"
         r"(?:directly\s+)?(?:access|browse|inspect|read|view|see|open|control|interact\s+with)|"
         r"(?:do\s+not|don't)\s+have\s+access(?:\s+to)?|"
+        r"(?:do\s+not|don't)\s+have\b[^.!?\n]{0,80}\b(?:tools?|capabilit(?:y|ies))\b|"
+        r"(?:cannot|can't|can\s+not)\s+(?:actually\s+)?(?:move|delete|organize|rename|manage)\b|"
         r"(?:am|are)\s+unable\s+to\s+(?:access|browse|inspect|read|view|see|open|control))\b",
-        str(response_text or ""),
+        response_text,
         re.IGNORECASE,
     )
-    if not refusal:
+    no_tools_claim = re.search(
+        r"\b(?:no|zero)\s+(?:[\w-]+\s+){0,3}(?:tools?|capabilit(?:y|ies))\b"
+        r"[^.!?\n]{0,60}\b(?:available|connected|hooked\s+up)\b",
+        response_text,
+        re.IGNORECASE,
+    )
+    if not refusal and not no_tools_claim:
         return []
 
     request = str(user_text or "")
@@ -615,8 +624,14 @@ def _available_tools_for_capability_refusal(
     relevant_names: set[str] = set()
     if re.search(r"\b(?:files?|folders?|directories|downloads?|documents?|filesystem|file\s+system|paths?)\b", request, re.I):
         relevant_names |= tool_names & {"find_files", "read_file"}
-        if re.search(r"\b(?:create|write|edit|update|organize|move|delete|remove|rename)\b", request, re.I):
+        if re.search(r"\b(?:create|write|edit|update)\b", request, re.I):
             relevant_names |= tool_names & {"create_file", "write_file"}
+        if re.search(r"\b(?:organize|sort|group)\b", request, re.I):
+            relevant_names |= tool_names & {"organize_files"}
+        if re.search(r"\b(?:delete|remove)\b", request, re.I):
+            relevant_names |= tool_names & {"delete_file", "remove_file"}
+        if re.search(r"\brename\b", request, re.I):
+            relevant_names |= tool_names & {"rename_file"}
     if re.search(r"\b(?:desktop|screen|display|window|computer|mouse|keyboard|click|app|application)\b", request, re.I):
         relevant_names |= tool_names & {
             "computer_control", "capture_screenshot", "observe_desktop",
@@ -2922,7 +2937,10 @@ class AdamBrain:
             directory = Path(args.get("directory", "~/Downloads")).expanduser()
             pattern = args.get("pattern", "*").strip()
             if not directory.exists():
-                return f"Directory '{directory}' does not exist."
+                return json.dumps({
+                    "ok": False,
+                    "error": f"Directory '{directory}' does not exist.",
+                }, ensure_ascii=False)
 
             video_exts = {".mkv", ".mp4", ".avi", ".webm", ".mov", ".flv", ".m4v"}
             pat_lower = pattern.lower()
@@ -3362,7 +3380,10 @@ class AdamBrain:
         dry_run = args.get("dry_run", False)
 
         if not directory.exists() or not directory.is_dir():
-            return f"Directory '{directory}' does not exist or is not a folder."
+            return json.dumps({
+                "ok": False,
+                "error": f"Directory '{directory}' does not exist or is not a folder.",
+            }, ensure_ascii=False)
 
         # Collect top-level files in directory
         files = [p for p in directory.iterdir() if p.is_file()]
