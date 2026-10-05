@@ -8,6 +8,32 @@ from src.stt.diarizer import NemotronDiarizer, SpeakerSpan
 from src.main import AdamDaemon
 
 
+def test_diarizer_availability_checks_package_specs_without_importing_runtime(monkeypatch):
+    checked = []
+    monkeypatch.delitem(sys.modules, "transformers", raising=False)
+    monkeypatch.delitem(sys.modules, "torch", raising=False)
+
+    def find_spec(package):
+        checked.append(package)
+        return object()
+
+    monkeypatch.setattr("src.stt.diarizer.importlib.util.find_spec", find_spec)
+
+    assert NemotronDiarizer().available is True
+    assert checked == ["transformers", "torch"]
+
+
+def test_diarizer_availability_accepts_already_loaded_runtime_modules(monkeypatch):
+    monkeypatch.setitem(sys.modules, "transformers", types.ModuleType("transformers"))
+    monkeypatch.setitem(sys.modules, "torch", types.ModuleType("torch"))
+    monkeypatch.setattr(
+        "src.stt.diarizer.importlib.util.find_spec",
+        lambda _package: pytest.fail("must not look up an already imported package"),
+    )
+
+    assert NemotronDiarizer().available is True
+
+
 def test_exclusive_speaker_audio_drops_overlapping_frames():
     audio = np.arange(20000, dtype=np.float32)
     spans = [SpeakerSpan("a", 0.0, 0.75), SpeakerSpan("b", 0.5, 1.25)]
