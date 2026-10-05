@@ -213,6 +213,7 @@ class ComputerController:
         self.coordinate_mode = coordinate_mode
         self._snapshot_id = ""
         self._last_screenshot: bytes | None = None
+        self._has_captured_frame = False
         self._width = self._height = 0
         self._origin_x = self._origin_y = 0
         self._capture_scale = (1.0, 1.0)
@@ -494,6 +495,7 @@ class ComputerController:
             else "Call inspect to obtain an action-capable Snapshot ID before input. "
         )
         self._last_screenshot = image_for_model
+        self._has_captured_frame = True
         return ComputerControlResult(
             f"{prefix} Capture: scope={self._scope}, target={self._capture_target}, "
             f"backend={self._capture_backend}, image={self._width}x{self._height}, "
@@ -1348,13 +1350,15 @@ class ComputerController:
                 expected_application,
             )
             if screenshot_delay_seconds is None:
-                # A browser's contents may need extra time after opening or
-                # navigating, but a click/type/scroll should not inherit that
-                # full navigation wait on every step. Refresh quickly after
-                # direct actions; the model can request a longer fresh inspect
-                # or use the explicit wait action when a transition is still
-                # in progress.
-                delay = max_configured_delay if action == "inspect" else self.screenshot_delay_seconds
+                # The first observation reads the currently focused app, so it
+                # can use the normal short settle. Later browser inspections and
+                # identified app transitions retain the longer wait in case a
+                # page is still loading after launch or navigation.
+                delay = (
+                    max_configured_delay
+                    if action == "inspect" and (expected_application or self._has_captured_frame)
+                    else self.screenshot_delay_seconds
+                )
             else:
                 try:
                     delay = float(screenshot_delay_seconds)

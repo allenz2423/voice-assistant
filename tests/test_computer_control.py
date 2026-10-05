@@ -36,10 +36,11 @@ def test_model_requested_screenshot_wait_is_capped_by_configured_app_delay(monke
     assert waits == [0.25]
 
 
-def test_browser_inspection_waits_for_app_but_input_refresh_is_fast_by_default(monkeypatch):
+def test_plain_browser_inspection_is_fast_but_app_transition_keeps_browser_wait(monkeypatch):
     waits = []
     monkeypatch.setattr(computer, "screenshot_delay_for_focused_window", lambda *_args: 3.0)
     monkeypatch.setattr(computer.time, "sleep", waits.append)
+    monkeypatch.setattr(computer, "wait_for_application_ready", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
     controller = computer.ComputerController(
         screenshot_fn=_valid_png,
@@ -52,12 +53,60 @@ def test_browser_inspection_waits_for_app_but_input_refresh_is_fast_by_default(m
 
     inspected = controller.run("inspect")
     assert inspected.status == "ok"
-    assert waits == [3.0]
+    assert waits == [0.25]
 
     waits.clear()
     clicked = controller.run("click", snapshot_id=inspected.snapshot_id, x=50, y=50)
     assert clicked.status == "ok"
     assert waits == [0.25]
+
+    waits.clear()
+    verified = controller.run("inspect")
+    assert verified.status == "ok"
+    assert waits == [3.0]
+
+    waits.clear()
+    transitioned = controller.run("inspect", expected_application="Firefox")
+    assert transitioned.status == "ok"
+    assert waits == [3.0]
+
+    waits.clear()
+    fresh_controller = computer.ComputerController(
+        screenshot_fn=_valid_png,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        screenshot_delay_seconds=0.25,
+        browser_screenshot_delay_seconds=3.0,
+    )
+    fresh_controller._read_active_window_state = lambda: ("test-window", (0, 0, 1000, 700))
+    launched = fresh_controller.run("inspect", expected_application="Firefox")
+    assert launched.status == "ok"
+    assert waits == [3.0]
+
+
+def test_ocr_only_follow_up_inspection_keeps_browser_wait(monkeypatch):
+    waits = []
+    monkeypatch.setattr(computer, "screenshot_delay_for_focused_window", lambda *_args: 3.0)
+    monkeypatch.setattr(computer.time, "sleep", waits.append)
+    controller = computer.ComputerController(
+        screenshot_fn=_valid_png,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_only=True,
+        screenshot_delay_seconds=0.25,
+        browser_screenshot_delay_seconds=3.0,
+    )
+    controller._read_active_window_state = lambda: ("test-window", (0, 0, 1000, 700))
+
+    first = controller.run("inspect", include_ocr=False)
+    assert first.status == "ok"
+    assert first.screenshot is None
+    assert waits == [0.25]
+
+    controller.invalidate_snapshot()
+    waits.clear()
+    second = controller.run("inspect", include_ocr=False)
+    assert second.status == "ok"
+    assert second.screenshot is None
+    assert waits == [3.0]
 
 
 def test_visual_mode_clicks_unambiguous_ocr_label_without_model_coordinates(monkeypatch):
