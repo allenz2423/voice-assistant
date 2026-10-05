@@ -81,3 +81,70 @@ def test_openai_compatible_requests_apply_text_and_vision_timeouts(monkeypatch):
     asyncio.run(run_requests())
 
     assert [session.timeout.total for session in sessions] == [17, 73]
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['json', 'shape', 'choices', 'message', '429', 'provider429'])
+async def test_provider_failure_recovers_with_three_retries_and_preserves_progress(monkeypatch, failure):
+    import aiohttp
+    from unittest.mock import AsyncMock
+    from src.llm.provider import UniversalLLMClient
+    requests = []
+
+    class Response:
+        headers = {}
+        def __init__(self, attempt):
+            self.attempt = attempt
+            self.status = 429 if failure == '429' and attempt < 4 else 200
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return False
+        async def json(self):
+            if self.attempt == 4:
+                return {'choices': [{'message': {'content': 'Recovered', 'tool_calls': []}}]}
+            if failure == 'json': raise ValueError('malformed JSON')
+            if failure == 'shape': return []
+            if failure == 'choices': return {'choices': []}
+            if failure == 'provider429': return {'error': {'code': 429}}
+            return {'choices': [{'message': None}]}
+
+    class Session:
+        def __init__(self, **_kwargs): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_args): return False
+        def post(self, *_args, **kwargs):
+            requests.append(kwargs['json'])
+            return Response(len(requests))
+
+    monkeypatch.setattr(aiohttp, 'ClientSession', Session)
+    sleep = AsyncMock()
+    monkeypatch.setattr('src.llm.provider.asyncio.sleep', sleep)
+    client = UniversalLLMClient(SimpleNamespace(llm=LLMConfig(provider='custom', api_base='https://example.test/v1')))
+    messages = [{'role': 'user', 'content': 'Continue the task'},
+                {'role': 'assistant', 'tool_calls': [{'id':'done', 'type':'function', 'function':{'name':'read_file', 'arguments':'{}'}}]},
+                {'role':'tool', 'tool_call_id':'done', 'content':'Already inspected the file'}]
+    result = await client.chat(messages, tools=[])
+    assert result['content'] == 'Recovered'
+    assert len(requests) == 4
+    assert sleep.await_count == 3
+    assert all(any(m.get('tool_call_id') == 'done' for m in r['messages']) for r in requests)
+    assert len(messages) == 3
+    if failure not in {'429', 'provider429'}:
+        assert 'do not repeat completed actions' in requests[-1]['messages'][-1]['content']
+
+
+@pytest.mark.asyncio
+async def test_provider_retries_stop_at_three_and_do_not_retry_permanent_errors(monkeypatch):
+    from unittest.mock import AsyncMock
+    from src.llm.provider import UniversalLLMClient
+    client = UniversalLLMClient(SimpleNamespace(llm=LLMConfig()))
+    monkeypatch.setattr('src.llm.provider.asyncio.sleep', AsyncMock())
+    request = AsyncMock(side_effect=lambda *args: {'provider_error':True, '_retry_status':429})
+    result = await client._chat_with_retries(request, [], [], None, None)
+    assert result['provider_error'] is True
+    assert request.await_count == 4
+    permanent = AsyncMock(return_value={'provider_error':True})
+    await client._chat_with_retries(permanent, [], [], None, None)
+    assert permanent.await_count == 1
+    cancelled = AsyncMock(side_effect=asyncio.CancelledError)
+    with pytest.raises(asyncio.CancelledError):
+        await client._chat_with_retries(cancelled, [], [], None, None)
+    assert cancelled.await_count == 1

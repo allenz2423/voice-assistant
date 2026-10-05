@@ -1641,6 +1641,8 @@ class AdamBrain:
         hop = 0
         resource_limit_reached = False
         empty_completion_retries = 0
+        tool_recovery_attempts = 0
+        tool_recovery_exhausted_reason = None
         while True:
             if self._is_interrupted or getattr(self.tts, "pending_barge_in_text", None):
                 print("[Adam] Interrupted by user. Halting turn immediately.", flush=True)
@@ -1708,12 +1710,20 @@ class AdamBrain:
                 break
             content = response.get("content", "")
             tool_calls = response.get("tool_calls") or []
+            if response.get("provider_error"):
+                # The provider has already exhausted its bounded retry policy.
+                # Do not run another synthesis request or replay prior actions.
+                response_text = content or "The language model is unavailable. I stopped with the existing task results preserved."
+                print(f"[Adam] Response: {response_text}", flush=True)
+                self.messages.append({"role": "assistant", "content": response_text})
+                await self.tts.speak_async(response_text)
+                return
             if not str(content or "").strip() and not tool_calls:
-                if empty_completion_retries == 0:
+                if empty_completion_retries < 3:
                     empty_completion_retries += 1
                     print(
                         "[LLM] Model returned neither an answer nor a tool call; "
-                        "retrying once with the current task state.",
+                        f"reprompting with the current task state ({empty_completion_retries}/3).",
                         flush=True,
                     )
                     self.messages.append({"role": "assistant", "content": ""})
@@ -1729,7 +1739,7 @@ class AdamBrain:
                     continue
 
                 response_text = (
-                    "The model returned no usable answer or action after one recovery attempt. "
+                    "The model returned no usable answer or action after three recovery attempts. "
                     "I stopped without repeating any desktop actions. Please try again."
                 )
                 print(f"[Adam] Response: {response_text}", flush=True)
@@ -2042,6 +2052,14 @@ class AdamBrain:
                             else:
                                 tool_output = str(raw_output)
                                 tool_status = "returned"
+                                structured_result = raw_output
+                                if isinstance(raw_output, str) and raw_output.lstrip().startswith("{"):
+                                    try:
+                                        structured_result = json.loads(raw_output)
+                                    except (ValueError, TypeError):
+                                        pass
+                                if isinstance(structured_result, dict) and structured_result.get("ok") is False:
+                                    tool_status = "failed"
                     except asyncio.TimeoutError as exc:
                         tool_output = f"Tool timed out: {type(exc).__name__}: {exc}"
                         tool_status = "timed_out"
@@ -2262,6 +2280,30 @@ class AdamBrain:
             if resource_limit_reached and desktop_no_progress_reason:
                 break
 
+            failed_calls = [name for name, _args, _output, status in executed_hop_results
+                            if status in {"failed", "invalid_input", "timed_out"}]
+            if failed_calls:
+                if tool_recovery_attempts >= 3:
+                    resource_limit_reached = True
+                    tool_recovery_exhausted_reason = (
+                        "Tool calls are still failing after three recovery prompts. "
+                        "I stopped without confirming the remaining work; successful earlier steps may still be in place."
+                    )
+                    break
+                tool_recovery_attempts += 1
+                print(f"[Adam] Tool recovery prompt {tool_recovery_attempts}/3.", flush=True)
+                self.messages.append({
+                    "role": "user",
+                    "content": (
+                        f"Tool recovery {tool_recovery_attempts}/3: {', '.join(failed_calls)} failed. "
+                        "Use the failure details in the tool results to correct the approach or arguments. "
+                        "Continue the original request, preserving successful steps. For a timed-out or "
+                        "partially dispatched action, inspect its current effects before repeating it. "
+                        "Do not repeat a write, click, or other action blindly; do not expand authorization "
+                        "or claim completion. If no permitted recovery exists, explain the blocker."
+                    ),
+                })
+
             if direct_status_with_processes:
                 direct_results = {
                     name: (output, status)
@@ -2326,7 +2368,7 @@ class AdamBrain:
         # If turn finished without any spoken response, ask model for concise spoken answer
         if not turn_completed_with_speech:
             if resource_limit_reached:
-                response_text = desktop_no_progress_reason or (
+                response_text = desktop_no_progress_reason or tool_recovery_exhausted_reason or (
                     "I reached the per-request interaction limit before confirming all requested outcomes. "
                     "The task may be partially complete; please ask me to continue from the current state."
                 )
@@ -2338,9 +2380,9 @@ class AdamBrain:
                 self.llm_client.chat(self.messages, tools=[])
             )
             final_content = summary_response.get("content", "")
-            if not final_content or not final_content.strip():
-                # Qwen can occasionally return only a tool result/thinking with no
-                # user-facing text. Give it one explicit, tool-free synthesis retry.
+            for synthesis_attempt in range(3):
+                if str(final_content or "").strip() or summary_response.get("provider_error"):
+                    break
                 retry_messages = [*self.messages, {
                     "role": "user",
                     "content": (
@@ -2352,6 +2394,7 @@ class AdamBrain:
                 retry_response = await self._await_with_progress(
                     self.llm_client.chat(retry_messages, tools=[])
                 )
+                summary_response = retry_response
                 final_content = retry_response.get("content", "")
 
             if not final_content or not final_content.strip():
@@ -2721,6 +2764,8 @@ class AdamBrain:
                     out_text = out_text[:12000] + "\n[... output truncated ...]"
                 if getattr(self, "_is_interrupted", False):
                     raise asyncio.CancelledError("Command execution was interrupted.")
+                if proc.returncode:
+                    return json.dumps({"ok": False, "exit_code": proc.returncode, "output": out_text})
                 return out_text
             except asyncio.CancelledError:
                 try:

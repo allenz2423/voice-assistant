@@ -113,11 +113,13 @@ async def test_current_request_is_active_task_and_prior_dialogue_is_context_only
 
 
 @pytest.mark.asyncio
-async def test_empty_model_turn_gets_one_recovery_without_dispatching_actions():
+async def test_empty_model_turn_gets_three_recoveries_without_dispatching_actions():
     from src.llm.brain import AdamBrain
 
     brain = AdamBrain(_config(), None, None, None, _DummyTTS())
     brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": []},
+        {"content": "", "tool_calls": []},
         {"content": "", "tool_calls": []},
         {"content": "", "tool_calls": []},
     ])
@@ -127,9 +129,9 @@ async def test_empty_model_turn_gets_one_recovery_without_dispatching_actions():
     with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
         await brain.process_user_utterance("Open Spotify")
 
-    assert brain.llm_client.requests.__len__() == 2
+    assert brain.llm_client.requests.__len__() == 4
     assert executed == []
-    assert "one recovery attempt" in brain.tts.spoken[0]
+    assert "three recovery attempts" in brain.tts.spoken[0]
 
 
 @pytest.mark.asyncio
@@ -545,3 +547,77 @@ async def test_simple_system_status_skips_model_and_speaks_validated_tool_result
     assert len(brain.llm_client.requests) == 0
     assert brain.tts.spoken == [status]
     assert brain.messages[-1] == {"role": "assistant", "content": status}
+
+@pytest.mark.asyncio
+async def test_failed_tool_reprompts_model_to_correct_path_without_replaying_success():
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    def call(path):
+        return {'content':'', 'tool_calls':[{'function':{'name':'read_file','arguments':{'path':path}}}]}
+    brain.llm_client = _DummyClient('local', [call('/wrong/note.md'), call('/right/note.md'),
+                                            {'content':'Read the note.', 'tool_calls':[]},
+                                            {'content':'Read the note.', 'tool_calls':[]}])
+    brain._execute_tool = AsyncMock(side_effect=[FileNotFoundError('wrong path'), 'Verified note'])
+    with patch('src.llm.brain.get_open_windows_prompt_context',return_value='Desktop'):
+        await brain.process_user_utterance('Read my note file')
+    assert [c.args[1]['path'] for c in brain._execute_tool.await_args_list] == ['/wrong/note.md','/right/note.md']
+    request = brain.llm_client.requests[1]
+    assert any('Tool recovery 1/3' in str(m.get('content')) for m in request)
+    assert any('FileNotFoundError' in str(m.get('content')) for m in request)
+    assert brain.tts.spoken[-1] == 'Read the note.'
+
+
+@pytest.mark.asyncio
+async def test_failed_tools_stop_after_three_correction_prompts():
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient('local', [
+        {'content':'', 'tool_calls':[{'function':{'name':'read_file','arguments':{'path':f'/missing/{i}'}}}]}
+        for i in range(4)])
+    brain._execute_tool = AsyncMock(return_value='{"ok": false, "error": "File unavailable"}')
+    with patch('src.llm.brain.get_open_windows_prompt_context',return_value='Desktop'):
+        await brain.process_user_utterance('Read my note file')
+    assert brain._execute_tool.await_count == 4
+    assert len(brain.llm_client.requests) == 4
+    assert 'three recovery prompts' in brain.tts.spoken[-1]
+    assert not any('completed' in str(m.get('content','')).lower() for m in brain.messages[-1:])
+
+
+@pytest.mark.asyncio
+async def test_exhausted_provider_error_does_not_trigger_another_synthesis_or_tool():
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient('local', [{'content':'Provider unavailable', 'provider_error':True}])
+    brain._execute_tool = AsyncMock()
+    with patch('src.llm.brain.get_open_windows_prompt_context',return_value='Desktop'):
+        await brain.process_user_utterance('Read my note file')
+    assert len(brain.llm_client.requests) == 1
+    brain._execute_tool.assert_not_awaited()
+    assert brain.tts.spoken == ['Provider unavailable']
+
+
+@pytest.mark.asyncio
+async def test_nonzero_shell_exit_is_a_failure_even_with_output():
+    from src.llm.brain import AdamBrain
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    output = await brain._execute_tool('run_bash_command', {'command':'printf test-output; exit 2'})
+    result = json.loads(output)
+    assert result == {'ok':False, 'exit_code':2, 'output':'test-output'}
+
+@pytest.mark.asyncio
+async def test_cancelled_tool_is_not_reprompted():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient('local', [
+        {'content':'', 'tool_calls':[{'function':{'name':'read_file','arguments':{'path':'/tmp/a'}}}]}])
+    brain._execute_tool = AsyncMock(side_effect=asyncio.CancelledError)
+    with patch('src.llm.brain.get_open_windows_prompt_context',return_value='Desktop'):
+        with pytest.raises(asyncio.CancelledError):
+            await brain.process_user_utterance('Read my note file')
+    assert len(brain.llm_client.requests) == 1
+    assert brain._execute_tool.await_count == 1
