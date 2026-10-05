@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Adam // WebUI Sidecar</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Top Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="brand-logo">A</div>
+        <div class="brand-info">
+          <h1>Adam <span class="tag">Sidecar</span></h1>
+          <p class="subtitle">Voice-First Autonomous Terminal Agent</p>
+        </div>
+      </div>
+
+      <div class="header-badges">
+        <div id="connBadge" class="badge badge-offline">
+          <span class="indicator-dot"></span>
+          <span id="connText">Connecting...</span>
+        </div>
+        <div id="stateBadge" class="badge badge-state">
+          <span id="stateText">IDLE</span>
+        </div>
+        <div id="authBadge" class="badge badge-auth badge-auth-off" title="Authentication status (click to configure token)">
+          <span class="indicator-dot"></span>
+          <span id="authText">Auth: Checking...</span>
+        </div>
+        <div class="badge badge-voice">
+          <span>Voice: Primary</span>
+        </div>
+        <div class="badge badge-loopback" title="Bound strictly to loopback">
+          <span id="hostText">127.0.0.1</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Area -->
+    <main class="main-layout">
+      <!-- Left Column: Chat Area -->
+      <section class="chat-section">
+        <div class="section-header">
+          <h2>Conversation</h2>
+          <span class="header-note">Uses Adam's normal turn and interruption handling</span>
+        </div>
+
+        <div id="chatMessages" class="chat-messages">
+          <div class="system-notice">
+            <p>Welcome to Adam's WebUI Sidecar. Ordinary conversation and tool commands are executed through Adam's normal ReAct pipeline. Voice remains the primary interaction channel.</p>
+          </div>
+        </div>
+
+        <!-- Activity / Status Bar -->
+        <div id="statusBar" class="status-bar hidden">
+          <div class="spinner"></div>
+          <span id="statusMessage">Adam is processing request...</span>
+        </div>
+
+        <!-- Prompt Suggestions -->
+        <div class="quick-prompts">
+          <button type="button" class="prompt-chip" data-prompt="What time is it?">What time is it?</button>
+          <button type="button" class="prompt-chip" data-prompt="Check system status">Check system status</button>
+          <button type="button" class="prompt-chip" data-prompt="What is the weather report?">Weather report</button>
+        </div>
+
+        <!-- Chat Input Form -->
+        <form id="chatForm" class="chat-form">
+          <textarea
+            id="chatInput"
+            placeholder="Type a message to Adam... (Enter to send, Shift+Enter for new line)"
+            rows="2"
+            required
+          ></textarea>
+          <button id="sendBtn" type="submit" class="btn btn-primary">
+            <span>Send</span>
+          </button>
+        </form>
+      </section>
+
+      <!-- Right Column: Telemetry & Gapped Features -->
+      <aside class="sidebar-section">
+        <div class="card">
+          <div class="card-header"><h3>Tool Activity</h3></div>
+          <div id="toolActivity" class="tool-activity-list" aria-live="polite">
+            <p id="toolActivityEmpty" class="tool-activity-empty">Waiting for tool calls.</p>
+          </div>
+        </div>
+        <!-- Runtime Telemetry Card -->
+        <div class="card">
+          <div class="card-header">
+            <h3>Runtime Telemetry</h3>
+          </div>
+          <div class="card-body telemetry-grid">
+            <div class="telemetry-item">
+              <span class="telemetry-label">Mode</span>
+              <span id="telemetryMode" class="telemetry-value">--</span>
+            </div>
+            <div class="telemetry-item">
+              <span class="telemetry-label">LLM Model</span>
+              <span id="telemetryModel" class="telemetry-value">--</span>
+            </div>
+            <div class="telemetry-item">
+              <span class="telemetry-label">Available Tools</span>
+              <span id="telemetryTools" class="telemetry-value">--</span>
+            </div>
+            <div class="telemetry-item">
+              <span class="telemetry-label">Binding</span>
+              <span class="telemetry-value">Loopback only</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Long-Running Tasks Card (Planned Feature - P3 Gate) -->
+        <div class="card card-unavailable">
+          <div class="card-header">
+            <h3>Long-Running Tasks</h3>
+            <span class="gap-tag">UNAVAILABLE (P3 GATE)</span>
+          </div>
+          <div class="card-body">
+            <div class="gap-callout">
+              <strong>Runtime Gap:</strong> Adam currently executes bounded turn-by-turn ReAct loops. A durable task checkpoint store, milestone tracking, and task recovery are part of the Priority P3 gate in <code>docs/proposed-codebase-fixes.md</code> and have not yet been implemented in the runtime.
+            </div>
+            <div class="empty-state">
+              <p>No active long-running tasks.</p>
+            </div>
+            <div class="action-buttons-disabled">
+              <button type="button" class="btn btn-disabled" disabled title="Feature unavailable in current runtime">Pause</button>
+              <button type="button" class="btn btn-disabled" disabled title="Feature unavailable in current runtime">Resume</button>
+              <button type="button" class="btn btn-disabled" disabled title="Feature unavailable in current runtime">Stop</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Approvals Card (Planned Feature - P4 Gate) -->
+        <div class="card card-unavailable">
+          <div class="card-header">
+            <h3>Remote Approvals</h3>
+            <span class="gap-tag">UNAVAILABLE (P4 GATE)</span>
+          </div>
+          <div class="card-body">
+            <div class="gap-callout">
+              <strong>Runtime Gap:</strong> Verbal confirmation via microphone is Adam's only active confirmation path. Multi-channel remote approval API is not yet implemented in the runtime. Sensitive actions require voice confirmation.
+            </div>
+            <div class="empty-state">
+              <p>No remote approvals pending.</p>
+            </div>
+            <div class="action-buttons-disabled">
+              <button type="button" class="btn btn-disabled" disabled title="Feature unavailable in current runtime">Approve</button>
+              <button type="button" class="btn btn-disabled" disabled title="Feature unavailable in current runtime">Deny</button>
+            </div>
+          </div>
+        </div>
+      </aside>
+    </main>
+  </div>
+
+  <!-- Auth Token Modal -->
+  <div id="authModal" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3>Sidecar Authentication</h3>
+        <button id="closeAuthModalBtn" type="button" class="btn-icon" aria-label="Close">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">If Adam is configured with an authentication token (<code>webui.auth_token</code>), enter it below to authenticate this browser session.</p>
+        <div class="form-group">
+          <label for="tokenInput">Bearer Token</label>
+          <input type="password" id="tokenInput" placeholder="Enter webui.auth_token..." autocomplete="off">
+        </div>
+        <div id="authModalStatus" class="auth-modal-status hidden"></div>
+      </div>
+      <div class="modal-footer">
+        <button id="clearTokenBtn" type="button" class="btn btn-secondary">Clear Token</button>
+        <button id="saveTokenBtn" type="button" class="btn btn-primary">Save & Connect</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

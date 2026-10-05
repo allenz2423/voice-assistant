@@ -305,6 +305,20 @@ class DesktopConfig(BaseModel):
     disabled_capabilities: list[str] = Field(default_factory=list)
     disabled_tools: list[str] = Field(default_factory=list)
 
+class WebUIConfig(BaseModel):
+    enabled: bool = False
+    host: str = "127.0.0.1"
+    port: int = Field(default=8765, ge=1, le=65535)
+    auth_token: str = ""
+
+    @field_validator("host")
+    @classmethod
+    def validate_host(cls, host: str) -> str:
+        cleaned = host.strip()
+        if not cleaned:
+            return "127.0.0.1"
+        return cleaned
+
 class AppConfig(BaseModel):
     audio: AudioConfig = Field(default_factory=AudioConfig)
     wake: WakeConfig = Field(default_factory=WakeConfig)
@@ -321,6 +335,7 @@ class AppConfig(BaseModel):
     execution: ExecutionConfig = Field(default_factory=ExecutionConfig)
     telemetry: TelemetryConfig = Field(default_factory=TelemetryConfig)
     desktop: DesktopConfig = Field(default_factory=DesktopConfig)
+    webui: WebUIConfig = Field(default_factory=WebUIConfig)
 
 def load_config(config_path: str = "config.yaml") -> AppConfig:
     p = Path(config_path)

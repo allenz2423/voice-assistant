@@ -435,7 +435,11 @@ def test_cuda_ocr_uses_bounded_arena_and_lightweight_cudnn_search(monkeypatch):
     rapidocr.OCRVersion = SimpleNamespace(PPOCRV6="ppocrv6", PPOCRV4="ppocrv4")
     rapidocr.RapidOCR = build_engine
     monkeypatch.setitem(sys.modules, "rapidocr", rapidocr)
-    monkeypatch.setattr(ScreenOCR, "_resolve_gpu_index", staticmethod(lambda _uuid: 0))
+    gpu_index = {"value": 0}
+    monkeypatch.setattr(ScreenOCR, "_resolve_gpu_index", staticmethod(lambda _uuid: gpu_index["value"]))
+    monkeypatch.setattr(
+        ScreenOCR, "_resolve_gpu_compute_capability", staticmethod(lambda _index: (8, 6))
+    )
     ocr = ScreenOCR(device="cuda", gpu_uuid="GPU-test")
 
     assert ocr.load() is engine
@@ -444,12 +448,46 @@ def test_cuda_ocr_uses_bounded_arena_and_lightweight_cudnn_search(monkeypatch):
     assert captured["EngineConfig.onnxruntime.cuda_ep_cfg.cudnn_conv_use_max_workspace"] is False
     assert captured["Det.model_type"] == "small"
     assert captured["Rec.model_type"] == "small"
+    assert "EngineConfig.onnxruntime.cuda_ep_cfg.device_id" not in captured
 
     captured.clear()
+    gpu_index["value"] = 1
     medium_ocr = ScreenOCR(device="cuda", gpu_uuid="GPU-test", model_size="medium")
     assert medium_ocr.load() is engine
     assert captured["Det.model_type"] == "medium"
     assert captured["Rec.model_type"] == "medium"
+    assert captured["EngineConfig.onnxruntime.cuda_ep_cfg.device_id"] == 1
+
+
+def test_cuda_ocr_uses_cpu_for_pre_turing_gpu(monkeypatch, capsys):
+    import sys
+    import types
+
+    captured = {}
+
+    def build_engine(params):
+        captured.update(params)
+        return object()
+
+    rapidocr = types.ModuleType("rapidocr")
+    rapidocr.ModelType = SimpleNamespace(SMALL="small", MEDIUM="medium", MOBILE="mobile")
+    rapidocr.OCRVersion = SimpleNamespace(PPOCRV6="ppocrv6", PPOCRV4="ppocrv4")
+    rapidocr.RapidOCR = build_engine
+    monkeypatch.setitem(sys.modules, "rapidocr", rapidocr)
+    monkeypatch.setattr(ScreenOCR, "_resolve_gpu_index", staticmethod(lambda _uuid: 0))
+    monkeypatch.setattr(
+        ScreenOCR, "_resolve_gpu_compute_capability", staticmethod(lambda _index: (6, 1))
+    )
+    ocr = ScreenOCR(device="cuda", gpu_uuid="GPU-pascal")
+
+    assert ocr.requested_device == "cuda"
+    assert ocr.device == "cpu"
+    assert ocr._device_id is None
+    assert "compute capability 6.1" in ocr._device_fallback_reason
+
+    ocr.load()
+    assert captured["EngineConfig.onnxruntime.use_cuda"] is False
+    assert "using CPU" in capsys.readouterr().out
 
 
 def test_brain_preloads_ocr_at_startup():

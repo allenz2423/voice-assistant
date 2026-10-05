@@ -70,6 +70,14 @@ def test_ordinary_conversation_can_skip_irrelevant_tool_schemas(prompt):
     "Read https://example.com and summarize it.",
     "Write this answer into a file.",
     "Write this thank-you note into my notes.",
+    "can you check my downloads folder?",
+    "Is my downloads folder a mess?",
+    "How organized are the folders in Documents?",
+    "Are there duplicates in ~/Downloads?",
+    "No, the other terminal.",
+    "Show the files in my Documents directory.",
+    "What's in my Downloads?",
+    "List the folders at ~/workspace.",
 ])
 def test_tool_or_live_information_intent_keeps_tools_available(prompt):
     assert not _can_answer_without_tools(prompt)

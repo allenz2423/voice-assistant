@@ -2,7 +2,7 @@
 
 **Checked:** 2026-10-04
 **Checkout:** `/home/incoming/voice-assistant`
-**HEAD:** `fcdf160 Fix desktop interaction and provider reliability`
+**HEAD:** `5fc141c Improve assistant resource use and desktop reliability` (working tree has uncommitted changes)
 
 ## Executive summary
 
@@ -14,7 +14,7 @@ The current development task resumed by fixing screenshot scope after earlier li
 
 ## Current worktree and scope
 
-The reviewed change set includes edits to configuration, runtime, model/provider and tool code, memory, speech recognition, desktop control/vision, skills, telemetry, and tests, plus new implementation and documentation files. Two local untracked artifacts, `:memory:.ses` and `json`, were intentionally excluded. The working plan was moved from the repository root to `docs/PLAN.md`.
+The reviewed change set includes edits to configuration, runtime, model/provider and tool code, memory, speech recognition, desktop control/vision, skills, telemetry, and tests, plus a new optional WebUI sidecar and documentation. The unrelated untracked `:memory:.ses` artifact is intentionally excluded. The working plan is in `docs/PLAN.md`.
 
 The work relevant to this status includes lazy speech-recognition loading, provider timeout/reliability changes, shorter ordinary-chat context, lexical and temporal memory retrieval work, desktop tool filtering and batching, OCR/OmniParser changes, system telemetry, and Steam application discovery. Individual improvements still need matched before/after benchmarks.
 
@@ -55,6 +55,8 @@ There are multiple forms of feedback, with different purposes:
 
 The current target is a task-relevant first-turn acknowledgment within 5 seconds of the end of the user's request; a wake/capture earcon alone does not count because it does not show that Adam understood the task. A quick answer can itself be the acknowledgment; a longer task should get a concise confirmation of the understood goal. Visible desktop requests now schedule a short confirmation before capture and inference; the latest direct Brain trial scheduled it 8 ms after the call began. This does not establish end-to-end voice latency: the measurement used a silent TTS test double and excluded ASR, actual notification/audio playback, and the live daemon. The timer-based long-task progress path is also implemented, but its exact delay depends on configuration. Earcons, terminal logging, speech, and notifications are separate signals; users may not see terminal logs during ordinary use.
 
+An optional browser sidecar is now available but disabled by default. When enabled, it shows daemon status, conversation history, and text chat; accepted chat requests use the daemon's normal turn executor and microphone interruption monitor. It binds only to loopback, rejects cross-origin requests and non-loopback Host headers, and can require a bearer token. For WebSocket auth, the browser exchanges that token for a one-hour HttpOnly cookie scoped to the WebSocket route so the secret does not appear in the request URL. A standalone sidecar stays disconnected and does not load a second brain. Durable long-running task controls and remote approvals are not implemented. See [WebUI setup and architecture](webui-sidecar-setup.md).
+
 ## Tool calling: selection, execution, and safety behavior
 
 Adam exposes canonical tool schemas to the model. On each request `AdamBrain.get_tools()` filters tools according to configuration and currently available desktop capabilities, then adds user-defined tools. The model can return an ordinary answer or one or more structured tool calls. Adam validates arguments against the schema, executes the requested tool(s), adds the result to the conversation, and asks the model to continue until it answers or reaches the configured tool-round bound. Provider adapters translate the canonical representation to the active provider's format.
@@ -89,7 +91,7 @@ The visual system is a pipeline, not one single model:
 
 1. **Observe context.** `observe_desktop` can combine available window metadata and AT-SPI accessibility information, and may use browser DOM when a local CDP endpoint is configured. `list_windows` and focus/workspace tools help identify the target application.
 2. **Capture pixels.** `capture_screenshot`, `computer_control` inspection, or a launch/focus operation with screenshot enabled obtains a current image. Screen reads now default to the focused window, verify that its full reported bounds fit inside the captured image, and refuse partial crops. On Hyprland, window crops and pointer coordinates account for the monitor's scale factor. A single-monitor request is accepted only on Hyprland after checking the active monitor and matching the PNG dimensions to its reported bounds. Other backends fail closed for monitor scope. Full-desktop capture is a separate explicit `desktop` scope; computer-control inspection in that scope is read-only.
-3. **Extract visual cues.** The small PP-OCRv6 `ScreenOCR` path reads text and regions and is loaded lazily/on demand by default. `computer_control.ocr_preload_on_startup: true` trades idle memory and startup CPU for lower first-read latency. In OCR-only mode, the screenshot is processed locally to text/boxes and the image itself is not sent to the model. The tool can target recognized text instead of guessed coordinates. A fresh laptop subprocess measured **164.2 MiB USS** added when OCR initialized; the first synthetic 1280×720 read took **1.00 s** including initialization and correctly returned the target text at 0.991 confidence.
+3. **Extract visual cues.** The small PP-OCRv6 `ScreenOCR` path reads text and regions and is loaded lazily/on demand by default. `computer_control.ocr_preload_on_startup: true` trades idle memory and startup CPU for lower first-read latency. In OCR-only mode, the screenshot is processed locally to text/boxes and the image itself is not sent to the model. The tool can target recognized text instead of guessed coordinates. A fresh laptop subprocess measured **164.2 MiB USS** added when OCR initialized; the first synthetic 1280×720 read took **1.00 s** including initialization and correctly returned the target text at 0.991 confidence. If CUDA is requested on a GPU below compute capability 7.5, OCR now selects CPU: the current CUDA 13 build did not initialize on the tested Pascal card, and the tested compatible CUDA 12 stack was slower than the CPU control. Full caveats and measurements are in [the CUDA OCR compatibility report](desky-ocr-cuda-compatibility-20261004.md).
 4. **Optionally ground controls.** OmniParser can be loaded as a separate worker to identify candidate interface regions. This can provide visual candidates/boxes, but it has substantial CPU, time, and memory cost. It is optional and should not be presumed to be a default laptop-friendly path.
 5. **Choose and act.** The model receives image content in image-enabled modes, or textual OCR/accessibility evidence in OCR-only mode. It selects a tool action, which uses pixel coordinates or normalized 0–1000 coordinates depending on the configured backend. Fresh snapshots and follow-up inspection are used to check what changed.
 
@@ -193,17 +195,18 @@ An earlier local laptop capture smoke check did not produce an image: `grim` tim
 - Current screenshot-scope, desktop-backend, and computer-control checks: **64 passed** in 15.47 seconds. These cover exact focused-window crops, rejection of clipped crops, monitor-scope fail-closed behavior on unsupported backends, explicit full-desktop dispatch, and invalid PNG rejection.
 - `git diff --check`: passed after the status document was updated.
 - `python -m py_compile` passed for the changed desktop, computer-control, observer, brain, tool-schema, and screenshot-test modules.
+- Current focused OCR and WebUI sidecar suites: **37 passed** after adding the pre-Turing CPU fallback, shared daemon turn execution, cross-origin/Host rejection, and cookie-based WebSocket authentication. A subsequent broader local regression rerun passed 29 tests and then stalled at `tests/test_interruption.py::test_monitor_execution_interrupt_stops_on_explicit_wake_phrase`; it was stopped without a reported assertion failure.
 
 These results include successful narrow live visual tasks as well as the failures and disclosure incident recorded above. They do not establish broad GUI success rates, end-to-end voice latency, comparable laptop/Desky resource use, or low power draw. Live GUI testing needs stronger fixture isolation than a broad Chromium title match.
 
-## Remaining work, if development resumes
+## Next work
 
 1. Establish repeatable paired baselines on the laptop and Desky: speech, a simple factual comparison (such as rigatoni vs. penne), system-status questions, and bounded general GUI tasks. Record time to first acknowledgment and final answer, tool calls, CPU/GPU/RAM, energy if available, and request cost.
 2. Improve and evaluate general visual grounding for low-cost models using OCR, accessibility/DOM data, optional OmniParser, and compact visual/text evidence. First pass a general computer-use task set; then try one or two Shenzhen I/O levels as a final stress test. Do not add game-specific behavior.
 3. Extend screenshot-scope verification across supported compositor backends and scaling setups; verify captured-image scope before any live GUI evaluation and avoid sending unrelated desktop content to a model provider.
 4. Evaluate audio quality, recognition latency, and memory use with the actual configured pipeline, including wake word, speaker checks, diarization, and TTS.
 5. Evaluate temporal memory on dated and relative-date examples over day/week/year queries, including timezone and correction cases.
-6. Review all worktree changes and untracked artifacts; rerun the full suite after any code changes and only then create a reviewable commit.
+6. Review all worktree changes and untracked artifacts; rerun the full suite after any code changes and only then create a reviewable commit. Keep the work laptop-only while Desky experiments are paused at the user's request after a reported host crash; resume remote runs only when the user authorizes them.
 
 ## Related documents
 

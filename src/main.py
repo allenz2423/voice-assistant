@@ -115,8 +115,12 @@ class _LockedTranscriber:
 
 class AdamDaemon:
     """Master orchestrator for the Adam Voice Terminal Agent."""
-    def __init__(self, config_path="config.yaml"):
+    def __init__(self, config_path="config.yaml", enable_webui: bool | None = None):
         self.config = load_config(config_path)
+        if enable_webui is not None:
+            self.config.webui.enabled = enable_webui
+        self.sidecar_runner = None
+        self.sidecar_bridge = None
         configure_telemetry(self.config.telemetry)
         if hasattr(self.config, "desktop"):
             configure_desktop_aliases(
@@ -1058,6 +1062,18 @@ class AdamDaemon:
         self.earcon.play("done")
         print(f"\n[Adam] System is online and listening. (Say '{self.config.wake.wake_word}' or issue commands)\n")
 
+        # Start optional WebUI sidecar if enabled
+        if getattr(self.config, "webui", None) and self.config.webui.enabled:
+            from sidecar.bridge import DaemonBridge
+            from sidecar.server import start_sidecar
+            self.sidecar_bridge = DaemonBridge(self)
+            self.sidecar_runner = await start_sidecar(self.config.webui, self.sidecar_bridge)
+            print(
+                f"[WebUI] Sidecar listening on http://{self.config.webui.host}:{self.config.webui.port} "
+                "(loopback only, opt-in).",
+                flush=True,
+            )
+
         while self.running:
             state = self.arbiter.current_state
 
@@ -1844,6 +1860,12 @@ class AdamDaemon:
             else:
                 await asyncio.sleep(0.05)
 
+        if getattr(self, "sidecar_runner", None) is not None:
+            try:
+                await self.sidecar_runner.cleanup()
+            except Exception as exc:
+                print(f"[WebUI] Error cleaning up sidecar: {exc}", flush=True)
+            self.sidecar_runner = None
         self._is_shutting_down = False
 
     def shutdown(self):
@@ -1853,6 +1875,16 @@ class AdamDaemon:
         print("\n[Adam] Shutting down cleanly...")
         self.running = False
         try:
+            if getattr(self, "sidecar_runner", None) is not None:
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        loop.create_task(self.sidecar_runner.cleanup())
+                    else:
+                        loop.run_until_complete(self.sidecar_runner.cleanup())
+                except Exception:
+                    pass
+                self.sidecar_runner = None
             brain = getattr(self, "brain", None)
             if brain is not None:
                 brain.close()
@@ -1862,7 +1894,13 @@ class AdamDaemon:
             pass
 
 def main():
-    daemon = AdamDaemon()
+    import argparse
+    parser = argparse.ArgumentParser(description="Adam Voice-Activated Autonomous Terminal Agent")
+    parser.add_argument("--config", default="config.yaml", help="Path to configuration file")
+    parser.add_argument("--webui", action="store_true", help="Enable optional WebUI sidecar for this session")
+    args = parser.parse_args()
+
+    daemon = AdamDaemon(config_path=args.config, enable_webui=True if args.webui else None)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 

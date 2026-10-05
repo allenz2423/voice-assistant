@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 _trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -25,6 +25,19 @@ _trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _writer_lock = threading.Lock()
 _writer: "EventWriter | None" = None
 _reported_write_failure = False
+_event_listeners: set[Callable[[dict[str, Any]], None]] = set()
+
+
+def subscribe_events(listener: Callable[[dict[str, Any]], None]) -> Callable[[], None]:
+    """Subscribe to operational metadata in memory, independently of disk logging."""
+    with _writer_lock:
+        _event_listeners.add(listener)
+
+    def unsubscribe():
+        with _writer_lock:
+            _event_listeners.discard(listener)
+
+    return unsubscribe
 
 _SENSITIVE_KEY_PARTS = (
     "transcript", "prompt", "text", "audio", "image", "argument", "result",
@@ -171,6 +184,19 @@ def configure_telemetry(config) -> EventWriter:
 def emit_event(event: str, **kwargs) -> dict[str, Any] | None:
     """Emit one event through the configured writer; safe before configuration."""
     writer = _writer
-    if writer is None:
-        return None
-    return writer.emit(event, **kwargs)
+    row = writer.emit(event, **kwargs) if writer is not None else None
+    with _writer_lock:
+        listeners = tuple(_event_listeners)
+    if listeners:
+        live_row = {
+            "event": str(event)[:96], "span_id": kwargs.get("span_id"),
+            "status": kwargs.get("status"), "clock_ns": time.monotonic_ns(),
+            "attributes": _safe_attributes(kwargs.get("attributes")),
+        }
+        for listener in listeners:
+            try:
+                listener(live_row)
+            except Exception:
+                # A display subscriber must never prevent execution.
+                pass
+    return row

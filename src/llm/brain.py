@@ -48,6 +48,7 @@ from src.tools.jev_decision import JevDecisionClient
 from src.tools.desktop_agent import DesktopComputerAgent
 from src.tools.omniparser import OmniParserScreenshotGrounder
 from src.tools.observe_desktop import observe_desktop
+from src.tools.terminal_text import detect_terminal, read_terminal_text
 from src.tools.timers import TimerManager
 from src.tools.reminders import ReminderManager
 from src.tools.noctalia import open_noctalia_calendar
@@ -76,7 +77,8 @@ TEXT_FALLBACK_READ_ONLY_TOOLS = {
     "list_windows", "get_system_status", "list_processes", "list_audio_devices",
     "get_now_playing", "web_search", "list_timers", "list_reminders",
     "get_financial_quote", "calculate_math", "list_skills", "get_skill_context",
-    "fetch_webpage", "observe_desktop", "read_file", "manage_memory",
+    "fetch_webpage", "observe_desktop", "read_terminal", "detect_terminal",
+    "read_file", "manage_memory",
 }
 
 DESKTOP_MUTATION_TOOLS = {
@@ -91,7 +93,7 @@ DESKTOP_MUTATION_TOOLS = {
 # and desktop observations/actions depend on current UI state.
 PARALLEL_READ_ONLY_TOOLS = {
     "web_search", "fetch_webpage", "get_weather", "get_system_status",
-    "list_processes",
+    "list_processes", "read_terminal", "detect_terminal",
 }
 def _tool_result_message(
     *, call_id: str, origin: str, status: str,
@@ -481,6 +483,17 @@ def _should_block_unverified_application_launch(
 
 def _filter_tools_for_dedicated_desktop_navigation(available_tools: list, user_text: str) -> list:
     text = str(user_text or "")
+    terminal_read = re.search(
+        r"\b(?:read|show|inspect|capture|what(?:'s|\s+is)?|check)\b[^\n]{0,70}"
+        r"\b(?:terminal|scrollback|shell\s+output|pane\s+output)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if terminal_read:
+        allowed_names = {"read_terminal", "detect_terminal"}
+        filtered = [tool for tool in available_tools if tool.name in allowed_names]
+        if filtered:
+            return filtered
     if _is_dedicated_desktop_navigation_request(text):
         allowed_names = {
             "computer_control", "focus_window", "list_windows",
@@ -512,6 +525,18 @@ def _can_answer_without_tools(user_text: str) -> bool:
     if not text or len(text) > 500:
         return False
 
+    # Questions about local resources can require inspection even without an
+    # imperative verb (for example, asking whether a folder is disorganized).
+    # Be conservative: irrelevant schemas are cheaper than withholding access.
+    if re.search(
+        r"\b(?:files?|folders?|director(?:y|ies)|downloads?|documents?|paths?|"
+        r"terminals?|scrollback|clipboard|permissions?|services?|processes?|"
+        r"settings?|notifications?|logs?)\b|(?:~/|/home/|/tmp/|/etc/|/var/)",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+
     tool_intent = re.search(
         r"\b(?:search|look\s+up|browse|fetch|open|launch|close|click|drag|drop|press|"
         r"run|execute|install|restart|kill|move|resize|tile|focus|switch|navigate|type|scroll|"
@@ -520,6 +545,11 @@ def _can_answer_without_tools(user_text: str) -> bool:
         r"write\b[^.!?]{0,60}\b(?:file|document)\b|"
         r"write\b[^.!?]{0,60}\b(?:to|in|into|on)\s+(?:my|the)\s+notes?\b|"
         r"read\s+(?:(?:my|the)\s+)?(?:file|document|screen|email)|"
+        r"(?:check|inspect|show|list|find|read|summarize)\b[^.!?\n]{0,100}\b"
+        r"(?:files?|folders?|director(?:y|ies)|downloads?|documents?|paths?)|"
+        r"what(?:'s|\s+is)?\s+in\b[^.!?\n]{0,80}\b(?:folders?|director(?:y|ies)|downloads?|documents?)|"
+        r"read\s+(?:(?:my|the|this)\s+)?(?:terminal|scrollback|shell\s+output|pane\s+output)|"
+        r"(?:what(?:'s|\s+is)?|show|inspect|check)\b[^.!?\n]{0,60}\b(?:terminal|scrollback|shell\s+output|pane\s+output)\b|"
         r"(?:select|choose|pick)\b[^.!?\n]{0,80}\b(?:scheduler|reservation|booking|time\s+slot|"
         r"local\s+preview|menu|button|option|form|page|window|screen|desktop|app|application)\b|"
         r"check\s+what\s+(?:you|i)\s+(?:wrote|saved)|send\s+(?:an?\s+)?(?:email|message)|"
@@ -1149,6 +1179,7 @@ class AdamBrain:
                 content = content[:497].rstrip() + "..."
             recent.append({"role": role, "content": content})
         self.messages = [{"role": "system", "content": self.system_prompt}, *recent[-6:]]
+        self._turn_message_start = len(self.messages)
 
     def _compact_stale_desktop_ocr(self, keep_recent: int = 1) -> int:
         """Remove verbose OCR from older tool results after a newer screen arrives."""
@@ -1279,6 +1310,8 @@ class AdamBrain:
 
     async def process_user_utterance(self, user_text: str, memory_context: str | None = None):
         """Processes a transcribed user prompt through the autonomous ReAct cycle."""
+        # The WebUI needs the actual current-turn boundary after history trimming.
+        self._turn_message_start = len(self.messages)
         self._is_interrupted = False
         self._active_react_task = asyncio.current_task()
         previous_skill_authorization = self._skill_creation_authorized
@@ -2385,6 +2418,18 @@ class AdamBrain:
                 bool(args.get("overwrite", False)),
             )
 
+        elif name == "detect_terminal":
+            result = await asyncio.to_thread(detect_terminal)
+            return json.dumps(result, ensure_ascii=False)
+
+        elif name == "read_terminal":
+            result = await asyncio.to_thread(
+                read_terminal_text,
+                args.get("scope", "screen"),
+                args.get("max_chars", 12_000),
+            )
+            return json.dumps(result, ensure_ascii=False)
+
         elif name == "manage_memory":
             action = str(args.get("action", "search")).lower()
             if action == "save":
@@ -2734,7 +2779,7 @@ class AdamBrain:
                 matched = [p for p in directory.rglob("*") if p.is_file() and p.suffix.lower() in video_exts]
                 by_dir = Counter([str(p.parent.relative_to(directory)) for p in matched])
                 sample = [p.name for p in matched[:10]]
-                return f"Found {len(matched)} video files across {len(by_dir)} folders (e.g., Wistoria: {by_dir.get('Wistoria', 0)} files). Sample files: {sample}"
+                return f"Found {len(matched)} video files across {len(by_dir)} folders. Sample files: {sample}"
 
             elif pat_lower in ["*", "*.*", "all", ""]:
                 top_files = [p for p in directory.iterdir() if p.is_file()]
@@ -2744,7 +2789,7 @@ class AdamBrain:
                 recent_names = [p.name for p in top_files_sorted[:10]]
                 return (
                     f"Directory '{directory.name}' contains {len(top_files)} top-level files and {len(top_dirs)} subfolders "
-                    f"(including {len(all_videos)} video files in subfolders like 'Wistoria'). "
+                    f"(including {len(all_videos)} video files found recursively). "
                     f"Top subfolders: {[p.name for p in top_dirs[:6]]}. "
                     f"Most recent files: {recent_names}"
                 )
