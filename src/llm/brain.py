@@ -400,8 +400,8 @@ def _desktop_no_progress_repeats(
 
 
 def _desktop_unchanged_screen_count(
-    previous: bytes | str | None,
-    current: bytes | str,
+    previous: bytes | str | tuple[bytes, tuple[str, ...]] | None,
+    current: bytes | str | tuple[bytes, tuple[str, ...]],
     consecutive_unchanged_actions: int,
 ) -> tuple[int, bool]:
     """Stop a desktop task after several different inputs leave the screen unchanged."""
@@ -411,10 +411,19 @@ def _desktop_unchanged_screen_count(
     return count, count >= 3
 
 
-def _desktop_screens_match(previous: bytes | str, current: bytes | str) -> bool:
+def _desktop_screens_match(
+    previous: bytes | str | tuple[bytes, tuple[str, ...]],
+    current: bytes | str | tuple[bytes, tuple[str, ...]],
+) -> bool:
     """Ignore tiny animated pixels while distinguishing meaningful screen changes."""
     if previous == current:
         return True
+    if isinstance(previous, tuple) and isinstance(current, tuple):
+        if previous[1] != current[1]:
+            return False
+        return _desktop_screens_match(previous[0], current[0])
+    if isinstance(previous, tuple) or isinstance(current, tuple):
+        return False
     if not isinstance(previous, bytes) or not isinstance(current, bytes):
         return False
     if len(previous) != len(current) or not previous:
@@ -425,14 +434,16 @@ def _desktop_screens_match(previous: bytes | str, current: bytes | str) -> bool:
     return mean_difference <= 2.0
 
 
-def _desktop_screenshot_signature(image_bytes: bytes) -> bytes:
-    """Reduce a desktop capture to a cheap perceptual signature."""
+def _desktop_screenshot_signature(image_bytes: bytes, ocr_regions=None):
+    """Reduce a desktop capture and its recognized text to cheap progress evidence."""
     try:
         from io import BytesIO
         from PIL import Image
 
         with Image.open(BytesIO(image_bytes)) as image:
-            return image.convert("L").resize((32, 18), Image.Resampling.BILINEAR).tobytes()
+            pixels = image.convert("L").resize((32, 18), Image.Resampling.BILINEAR).tobytes()
+        text = ScreenOCR.text_signature(ocr_regions or [])
+        return (pixels, text) if text is not None else pixels
     except Exception:
         return image_bytes
 
@@ -1763,7 +1774,9 @@ class AdamBrain:
         turn_completed_with_speech = False
         last_tool_output: str | None = None
         desktop_mutation_seen = False
-        last_desktop_attempt: tuple[str, bytes | str] | None = None
+        last_desktop_attempt: tuple[
+            str, bytes | str | tuple[bytes, tuple[str, ...]]
+        ] | None = None
         desktop_no_progress_repeats = 0
         desktop_no_progress_reason: str | None = None
         desktop_unchanged_screen_count = 0
@@ -2198,7 +2211,10 @@ class AdamBrain:
                                 signature_args = dict(args) if isinstance(args, dict) else {}
                                 action_signature = _desktop_action_signature(name, signature_args)
                                 if raw_output.screenshot:
-                                    state_fingerprint = _desktop_screenshot_signature(raw_output.screenshot)
+                                    state_fingerprint = _desktop_screenshot_signature(
+                                        raw_output.screenshot,
+                                        getattr(raw_output, "ocr_regions", None),
+                                    )
                                 else:
                                     state_evidence = re.sub(
                                         r"Snapshot ID:\s*[A-Za-z0-9_-]+", "Snapshot ID: <current>",

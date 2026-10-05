@@ -104,13 +104,26 @@ def _screens_visually_unchanged(previous: bytes, current: bytes) -> bool:
             before_preview = before.convert("L").resize((32, 18), Image.Resampling.BILINEAR)
             after_preview = after.convert("L").resize((32, 18), Image.Resampling.BILINEAR)
             difference = ImageStat.Stat(ImageChops.difference(before_preview, after_preview)).mean[0]
-        # A value changing in a small status label should count as progress even
-        # when most of the full-window screenshot is blank. The next controller
-        # action still provides the repeated-action circuit breaker if this
-        # lower threshold causes a minor animated region to look like progress.
+        # This deliberately cheap pixel check ignores cursor-level changes.
+        # Recognized OCR text is compared separately when the caller requested it.
         return difference <= 0.03
     except Exception:
         return False
+
+
+def _screen_state_unchanged(
+    previous_image: bytes,
+    current_image: bytes,
+    previous_text: tuple[str, ...] | None = None,
+    current_text: tuple[str, ...] | None = None,
+) -> bool:
+    """Use recognized text changes to catch small controls missed by pixel sampling."""
+    if previous_text is not None or current_text is not None:
+        # If OCR ran on only one frame, the controller cannot establish that the
+        # screen stayed the same. Avoid turning missing evidence into a no-change claim.
+        if previous_text is None or current_text is None or previous_text != current_text:
+            return False
+    return _screens_visually_unchanged(previous_image, current_image)
 
 
 def _normalize_ocr_target(value: str) -> str:
@@ -1237,6 +1250,7 @@ class ComputerController:
             )
         action = (action or "inspect").strip().lower()
         previous_screenshot = self._last_screenshot
+        previous_ocr_text = ScreenOCR.text_signature(self._ocr_regions)
         if action == "inspect":
             self._include_ocr = (self.ocr_only if include_ocr is None else bool(include_ocr))
             self._include_visual_grounding = bool(include_visual_grounding)
@@ -1499,7 +1513,12 @@ class ComputerController:
                 and action_succeeded
                 and previous_screenshot
                 and captured.screenshot
-                and _screens_visually_unchanged(previous_screenshot, captured.screenshot)
+                and _screen_state_unchanged(
+                    previous_screenshot,
+                    captured.screenshot,
+                    previous_ocr_text,
+                    ScreenOCR.text_signature(captured.ocr_regions),
+                )
             ):
                 captured.message += (
                     " The fresh screen appears unchanged after this click. The input was dispatched, "

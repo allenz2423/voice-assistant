@@ -324,6 +324,59 @@ def test_click_reports_when_fresh_screenshot_is_visually_unchanged(monkeypatch):
     assert "effect is not visually confirmed" in clicked.message
 
 
+def test_click_treats_changed_ocr_text_as_visible_progress(monkeypatch):
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    class Reader:
+        def __init__(self):
+            self.reads = 0
+
+        def read(self, _image):
+            self.reads += 1
+            text = "Normal" if self.reads == 1 else "Quiet"
+            return [computer.OCRRegion("O1", text, 0.99, 100, 100, 180, 130)]
+
+    controller = computer.ComputerController(
+        screenshot_fn=_valid_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (0, 0, 1000, 700))
+    monkeypatch.setattr(computer.ComputerController, "available", property(lambda _self: True))
+    inspected = controller.run("inspect", include_ocr=True, screenshot_delay_seconds=0)
+
+    clicked = controller.run(
+        "click", snapshot_id=inspected.snapshot_id, x=120, y=115,
+        include_ocr=True, screenshot_delay_seconds=0,
+    )
+
+    assert clicked.status == "ok"
+    assert "Quiet" in clicked.message
+    assert "screen appears unchanged" not in clicked.message
+
+
+def test_missing_ocr_comparison_does_not_claim_that_the_screen_was_unchanged():
+    screenshot = _valid_png()
+
+    assert computer._screen_state_unchanged(
+        screenshot, screenshot, None, ("quiet",)
+    ) is False
+    assert computer._screen_state_unchanged(
+        screenshot, screenshot, ("normal",), None
+    ) is False
+    assert computer._screen_state_unchanged(
+        screenshot, screenshot, ("quiet",), ("quiet",)
+    ) is True
+
+
 def test_x11_type_shortcut_and_scroll_have_xdotool_counterparts(monkeypatch):
     monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
     commands = []

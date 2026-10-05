@@ -261,6 +261,27 @@ def test_desktop_no_progress_breaker_ignores_small_live_screen_changes():
     assert not _desktop_screens_match(baseline, major_scene_change)
 
 
+def test_ocr_text_change_counts_as_desktop_progress_when_pixels_look_unchanged():
+    from src.tools.ocr import OCRRegion
+    from PIL import Image
+    from io import BytesIO
+
+    image = Image.new("RGB", (320, 180), (20, 20, 20))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    screenshot = output.getvalue()
+    changed_text = [OCRRegion("O1", "Quiet", 0.99, 100, 80, 150, 110)]
+    same_text_repositioned = [OCRRegion("O2", "quiet", 0.80, 105, 85, 155, 115)]
+    original_text = [OCRRegion("O1", "Normal", 0.99, 100, 80, 150, 110)]
+
+    before = _desktop_screenshot_signature(screenshot, original_text)
+    changed = _desktop_screenshot_signature(screenshot, changed_text)
+    repositioned = _desktop_screenshot_signature(screenshot, same_text_repositioned)
+
+    assert not _desktop_screens_match(before, changed)
+    assert _desktop_screens_match(changed, repositioned)
+
+
 def test_desktop_action_signature_matches_sequence_first_step_to_standalone_action():
     direct = {"action": "click", "x": 224, "y": 545, "include_ocr": True}
     sequence = {
