@@ -272,16 +272,18 @@ class DaemonBridge(RuntimeBridge):
                 # preserves its microphone interruption monitoring and turn
                 # cleanup instead of leaving WebUI turns uninterruptible.
                 brain._turn_message_start = prev_len
-                await execute_turn(text, memory_context=mem_ctx)
+                turn_response = await execute_turn(text, memory_context=mem_ctx)
 
                 turn_start = getattr(brain, "_turn_message_start", prev_len)
                 new_messages = brain.messages[turn_start:]
-                final_response = ""
+                # Some daemon-handled controls (such as meeting-mode start/stop)
+                # return a local reply without adding synthetic LLM history.
+                final_response = turn_response.strip() if isinstance(turn_response, str) else ""
                 tool_calls_executed = []
 
                 for m in new_messages:
                     if m.get("role") == "assistant":
-                        if m.get("content"):
+                        if m.get("content") and not final_response:
                             final_response = m.get("content", "")
                         for tc in m.get("tool_calls") or []:
                             fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", {})

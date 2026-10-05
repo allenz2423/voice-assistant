@@ -167,6 +167,103 @@ def test_pretrained_wake_text_dispatches_meeting_and_falls_back_to_brain():
     asyncio.run(scenario())
 
 
+def test_execute_turn_dispatches_meeting_command_before_brain():
+    async def scenario():
+        class Arbiter:
+            def __init__(self):
+                self.current_state = "IDLE_LISTENING"
+                self.state_history = []
+
+            async def set_state(self, state):
+                self.current_state = state
+                self.state_history.append(state)
+
+        class Stream:
+            def __init__(self):
+                self.flush_calls = 0
+                self.quench_durations = []
+
+            def flush(self):
+                self.flush_calls += 1
+
+            def quench(self, duration):
+                self.quench_durations.append(duration)
+
+        daemon = AdamDaemon.__new__(AdamDaemon)
+        daemon.meeting_session = SimpleNamespace(active=False)
+        daemon._start_meeting = AsyncMock()
+        daemon._stop_meeting = AsyncMock()
+        daemon.arbiter = Arbiter()
+        daemon.stream = Stream()
+        daemon.running = True
+        daemon.config = SimpleNamespace(wake=SimpleNamespace(followup_window_seconds=7.0))
+        speculative_cancellations = []
+        daemon.speculative_router = SimpleNamespace(
+            cancel_active=lambda: speculative_cancellations.append(True)
+        )
+        daemon._monitor_execution_interrupt = AsyncMock(return_value=(False, None))
+        daemon.brain = SimpleNamespace(process_user_utterance=AsyncMock())
+
+        response = await daemon._execute_turn("start meeting mode")
+
+        assert response == "Meeting mode is on. Recording now."
+        daemon._start_meeting.assert_awaited_once_with()
+        daemon.brain.process_user_utterance.assert_not_awaited()
+        assert daemon.arbiter.current_state == "IDLE_LISTENING"
+        assert daemon.arbiter.state_history == ["PROCESSING_REACT", "IDLE_LISTENING"]
+        assert daemon.stream.flush_calls == 1
+        assert daemon.stream.quench_durations == [0.4]
+        assert speculative_cancellations == [True]
+
+    asyncio.run(scenario())
+
+
+def test_interrupt_requeue_dispatches_meeting_command_before_brain():
+    async def scenario():
+        class Arbiter:
+            current_state = "IDLE_LISTENING"
+
+            async def set_state(self, state):
+                self.current_state = state
+
+        class Stream:
+            def __init__(self):
+                self.flush_calls = 0
+                self.quench_durations = []
+
+            def flush(self):
+                self.flush_calls += 1
+
+            def quench(self, duration):
+                self.quench_durations.append(duration)
+
+        daemon = AdamDaemon.__new__(AdamDaemon)
+        daemon.meeting_session = SimpleNamespace(active=False)
+        daemon._start_meeting = AsyncMock()
+        daemon._stop_meeting = AsyncMock()
+        daemon.arbiter = Arbiter()
+        daemon.stream = Stream()
+        daemon.running = True
+        daemon.config = SimpleNamespace(wake=SimpleNamespace(followup_window_seconds=7.0))
+        daemon.speculative_router = SimpleNamespace(cancel_active=lambda: None)
+        daemon.earcon = SimpleNamespace(play=lambda _name: None)
+        daemon.wake = SimpleNamespace(match_custom_wake_word=lambda _text: (False, ""))
+        daemon._monitor_execution_interrupt = AsyncMock(return_value=(True, "start meeting mode"))
+        daemon.brain = SimpleNamespace(process_user_utterance=AsyncMock())
+
+        await daemon._execute_turn("check the weather")
+
+        daemon._start_meeting.assert_awaited_once_with()
+        daemon.brain.process_user_utterance.assert_awaited_once_with(
+            "check the weather", memory_context=None
+        )
+        assert daemon.arbiter.current_state == "IDLE_LISTENING"
+        assert daemon.stream.flush_calls == 1
+        assert daemon.stream.quench_durations == [0.4]
+
+    asyncio.run(scenario())
+
+
 def test_meeting_speaker_registry_reuses_anonymous_labels():
     class Encoder:
         enrolled = False

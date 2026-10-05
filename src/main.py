@@ -670,7 +670,7 @@ class AdamDaemon:
             score_text = f" (voice score={score:.3f})" if score is not None else ""
             print(f"[Meeting] {label}{score_text}: {text}", flush=True)
 
-    async def _dispatch_meeting_command(self, command: str) -> bool:
+    async def _dispatch_meeting_command(self, command: str, *, cleanup: bool = True) -> bool:
         """Handle a recognized meeting-mode command before normal LLM routing."""
         action = meeting_command_kind(command)
         if action != "start" and not (action == "stop" and self.meeting_session.active):
@@ -682,11 +682,28 @@ class AdamDaemon:
             else:
                 await self._stop_meeting("voice command")
         finally:
-            if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
+            if cleanup and self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
                 await self.arbiter.set_state("IDLE_LISTENING")
                 self.stream.flush()
                 self.stream.quench(duration=0.4)
         return True
+
+    async def _meeting_turn_response(self, command: str, *, cleanup: bool = True) -> str | None:
+        """Dispatch meeting controls and provide a local response to non-voice callers."""
+        action = meeting_command_kind(command)
+        if action is None or not hasattr(self, "meeting_session"):
+            return None
+        was_active = self.meeting_session.active
+        if not await self._dispatch_meeting_command(command, cleanup=cleanup):
+            return None
+
+        if action == "start":
+            return "Meeting mode is already on." if was_active else "Meeting mode is on. Recording now."
+
+        directory = getattr(self.meeting_session, "session_dir", None)
+        if directory is None:
+            return "Meeting mode is off."
+        return f"Meeting mode is off. I saved the recording and transcript in {directory}."
 
     async def _execute_pretrained_wake_command(self, command: str) -> None:
         """Route pretrained-wake transcripts through meeting controls or Brain."""
@@ -1037,16 +1054,37 @@ class AdamDaemon:
         self,
         command_text: str,
         memory_context: str | None = None,
-    ) -> None:
+    ) -> str | None:
         """Executes user commands through the ReAct agent with active real-time interruption monitoring."""
+        action = meeting_command_kind(command_text)
+        meeting_session = getattr(self, "meeting_session", None)
+        if action and meeting_session is not None and (
+            action == "start" or getattr(meeting_session, "active", False)
+        ):
+            try:
+                await self.arbiter.set_state("PROCESSING_REACT")
+                meeting_response = await self._meeting_turn_response(command_text)
+            finally:
+                speculative_router = getattr(self, "speculative_router", None)
+                if speculative_router is not None:
+                    speculative_router.cancel_active()
+            if meeting_response is not None:
+                return meeting_response
+
         current_cmd: str | None = command_text
         current_mem = memory_context
+        first_command = True
 
         await self.arbiter.set_state("PROCESSING_REACT")
         try:
             while current_cmd and self.running:
                 cmd_to_run = current_cmd
                 current_cmd = None
+                if not first_command and meeting_command_kind(cmd_to_run):
+                    meeting_response = await self._meeting_turn_response(cmd_to_run, cleanup=False)
+                    if meeting_response is not None:
+                        return meeting_response
+                first_command = False
                 trace_id = getattr(self, "_active_capture_trace_id", None)
                 trace_token = set_trace_id(trace_id) if trace_id else None
                 try:

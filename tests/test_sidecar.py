@@ -260,6 +260,25 @@ async def test_daemon_bridge_processes_turn_safely():
 
 
 @pytest.mark.asyncio
+async def test_daemon_bridge_returns_local_meeting_reply_without_brain_history():
+    arbiter = MockArbiter(SystemState.IDLE_LISTENING)
+    brain = MockBrain()
+    original_messages = list(brain.messages)
+    daemon = MagicMock(arbiter=arbiter, brain=brain, memory_manager=None)
+    daemon._execute_turn = AsyncMock(return_value="Meeting mode is on. Recording now.")
+
+    result = await DaemonBridge(daemon).handle_user_message("start meeting mode")
+
+    assert result == {
+        "status": "completed",
+        "response": "Meeting mode is on. Recording now.",
+        "tool_calls": [],
+    }
+    assert brain.messages == original_messages
+    daemon._execute_turn.assert_awaited_once_with("start meeting mode", memory_context=None)
+
+
+@pytest.mark.asyncio
 async def test_bridge_captures_reply_after_real_brain_history_compaction():
     from src.llm.brain import AdamBrain
 
