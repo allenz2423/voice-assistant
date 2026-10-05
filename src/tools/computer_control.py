@@ -383,7 +383,7 @@ class ComputerController:
         if self.ocr_only and self._include_ocr:
             try:
                 with timed_stage("controller.ocr"):
-                    self._ocr_regions = self._ocr_reader.read(image) if self._ocr_reader else []
+                    self._ocr_regions = self._read_ocr_regions(image) if self._ocr_reader else []
                 self._ocr_state = ScreenOCR.format(self._ocr_regions)
             except Exception as exc:
                 error_lines = str(exc).strip().splitlines()
@@ -403,7 +403,7 @@ class ComputerController:
                 try:
                     with timed_stage("controller.ocr"):
                         if hasattr(self._ocr_reader, "read"):
-                            self._ocr_regions = self._ocr_reader.read(image)
+                            self._ocr_regions = self._read_ocr_regions(image)
                         elif hasattr(self._ocr_reader, "read_zoomed_band"):
                             header_regions = self._ocr_reader.read_zoomed_band(image, self._active_bounds)
                             panel_regions: list[OCRRegion] = []
@@ -509,6 +509,63 @@ class ComputerController:
             snapshot_id=self._snapshot_id,
             ocr_regions=list(self._ocr_regions),
         )
+
+    def _read_ocr_regions(self, image: bytes) -> list[OCRRegion]:
+        """Read only the focused window when its bounds are known, then restore screen coordinates."""
+        if self._ocr_reader is None:
+            return []
+
+        crop_origin = (0, 0)
+        ocr_image = image
+        if self._scope == "window" and self._active_bounds:
+            try:
+                from io import BytesIO
+                from PIL import Image
+
+                crop_started = time.perf_counter()
+                with Image.open(BytesIO(image)) as source:
+                    left, top, right, bottom = self._active_bounds
+                    left = max(0, min(left, source.width))
+                    top = max(0, min(top, source.height))
+                    right = max(left, min(right, source.width))
+                    bottom = max(top, min(bottom, source.height))
+                    if right > left and bottom > top and (left, top, right, bottom) != (
+                        0, 0, source.width, source.height
+                    ):
+                        encoded = BytesIO()
+                        source.crop((left, top, right, bottom)).save(encoded, format="PNG")
+                        ocr_image = encoded.getvalue()
+                        crop_origin = (left, top)
+                        log_duration(
+                            "controller.ocr_window_crop",
+                            crop_started,
+                            source_width=source.width,
+                            source_height=source.height,
+                            crop_width=right - left,
+                            crop_height=bottom - top,
+                        )
+            except Exception as exc:
+                print(
+                    f"[OCR] Window crop unavailable ({type(exc).__name__}); reading the captured image.",
+                    flush=True,
+                )
+
+        regions = self._ocr_reader.read(ocr_image)
+        dx, dy = crop_origin
+        if not dx and not dy:
+            return regions
+        return [
+            OCRRegion(
+                region.ref,
+                region.text,
+                region.confidence,
+                region.left + dx,
+                region.top + dy,
+                region.right + dx,
+                region.bottom + dy,
+            )
+            for region in regions
+        ]
 
     def _call(self, args: list[str], timeout: float = 5.0, **kwargs) -> subprocess.CompletedProcess:
         result = self._runner(args, capture_output=True, text=True, timeout=timeout, **kwargs)
@@ -1367,7 +1424,7 @@ class ComputerController:
                     ):
                         try:
                             with timed_stage("controller.ocr_target_lookup"):
-                                self._ocr_regions = self._ocr_reader.read(self._last_screenshot)
+                                self._ocr_regions = self._read_ocr_regions(self._last_screenshot)
                             self._ocr_state = ScreenOCR.format(self._ocr_regions)
                         except Exception as exc:
                             selection_message = (

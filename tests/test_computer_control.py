@@ -87,6 +87,60 @@ def test_visual_mode_clicks_unambiguous_ocr_label_without_model_coordinates(monk
     assert "Matched visible OCR label" in clicked.message
 
 
+def test_window_scoped_ocr_crops_and_clicks_using_restored_screen_coordinates(monkeypatch):
+    reads = []
+
+    class Reader:
+        def read(self, image):
+            with Image.open(BytesIO(image)) as captured:
+                reads.append(captured.size)
+            return [computer.OCRRegion("O1", "Target", 0.99, 10, 20, 50, 40)]
+
+    controller = computer.ComputerController(
+        screenshot_fn=lambda: _valid_png(1000, 700),
+        runner=lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (200, 100, 800, 600))
+    monkeypatch.setattr(computer.ComputerController, "available", property(lambda _self: True))
+    clicks = []
+    monkeypatch.setattr(controller, "_click", lambda x, y, button: clicks.append((x, y, button)))
+
+    inspected = controller.run("inspect", scope="window", include_ocr=True)
+    clicked = controller.run(
+        "click", snapshot_id=inspected.snapshot_id, target_text="Target",
+    )
+
+    assert reads == [(600, 500), (600, 500)]
+    assert clicks == [(230, 130, "left")]
+    assert clicked.status == "ok"
+    assert len(inspected.ocr_regions) == 1
+    assert inspected.ocr_regions[0] == computer.OCRRegion("O1", "Target", 0.99, 210, 120, 250, 140)
+
+
+def test_monitor_scoped_ocr_keeps_full_capture():
+    reads = []
+
+    class Reader:
+        def read(self, image):
+            with Image.open(BytesIO(image)) as captured:
+                reads.append(captured.size)
+            return []
+
+    controller = computer.ComputerController(
+        screenshot_fn=lambda: _valid_png(1000, 700),
+        runner=lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (200, 100, 800, 600))
+
+    controller.run("inspect", scope="monitor", include_ocr=True)
+
+    assert reads == [(1000, 700)]
+
+
 def test_visual_mode_refuses_ambiguous_ocr_label_click(monkeypatch):
     regions = [
         computer.OCRRegion("O1", "5:00 PM", 0.99, 100, 200, 200, 240),
