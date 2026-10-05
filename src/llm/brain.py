@@ -1089,6 +1089,8 @@ def _summarize_desktop_readback_if_generic(
         match.group(1)
         for match in re.finditer(r'["“]([^"”\n]{1,200})["”]', user_text)
     ]
+    verified_saved_text: str | None = None
+    explicit_save_failure = False
     for line in str(tool_output or "").splitlines():
         if " text=" not in line or " center=" not in line:
             continue
@@ -1098,6 +1100,14 @@ def _summarize_desktop_readback_if_generic(
         except (SyntaxError, ValueError):
             continue
         if not isinstance(visible_text, str):
+            continue
+        if asks_saved_text and re.search(
+            r"\b(?:not\s+(?:saved|stored)|wasn['’]?t\s+(?:saved|stored)|"
+            r"unsaved|save\s+(?:failed|error)|failed\s+to\s+save)\b",
+            visible_text,
+            re.IGNORECASE,
+        ):
+            explicit_save_failure = True
             continue
         if asks_entered_text:
             normalized_visible = " ".join(visible_text.split()).casefold()
@@ -1111,13 +1121,24 @@ def _summarize_desktop_readback_if_generic(
         if asks_saved_text:
             saved = re.match(r"\s*saved\s*:\s*(.+)\s*$", visible_text, re.IGNORECASE)
             if saved:
-                saved_text = saved.group(1).strip()
-                if saved_text.casefold() in str(model_response or "").casefold():
-                    return None
-                return f"The saved text is: {saved_text}"
+                verified_saved_text = saved.group(1).strip()
             continue
         if re.search(r"\b(?:on|off|enabled|disabled|selected|not placed|saved|unsaved)\b", visible_text, re.IGNORECASE):
             candidates.append(" ".join(visible_text.split()))
+    if asks_saved_text:
+        if explicit_save_failure:
+            return (
+                "The screen indicates the note was not saved; "
+                "I couldn't confirm its saved text."
+            )
+        if verified_saved_text:
+            if verified_saved_text.casefold() in str(model_response or "").casefold():
+                return None
+            return f"The saved text is: {verified_saved_text}"
+        return (
+            "I couldn't verify from the screen that the note was saved, "
+            "so I can't confirm the saved text."
+        )
     if not candidates:
         return None
     return f"The screen shows: {candidates[-1]}."

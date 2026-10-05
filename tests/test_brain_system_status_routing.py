@@ -539,12 +539,137 @@ def test_generic_save_acknowledgment_reads_back_the_exact_saved_text():
     ) is None
     assert _summarize_desktop_readback_if_generic(
         request, "Saved.", "O4 text='Not saved' center=(10,10)"
-    ) is None
+    ) == "The screen indicates the note was not saved; I couldn't confirm its saved text."
+    assert _summarize_desktop_readback_if_generic(
+        request, "Saved.", "No OCR result"
+    ) == "I couldn't verify from the screen that the note was saved, so I can't confirm the saved text."
     punctuated_evidence = "O4 text='Saved: Review the draft.' center=(10,10)"
     punctuated_request = 'In the local scratchpad note field, type "Review the draft." and tell me the saved text.'
     assert _summarize_desktop_readback_if_generic(
         punctuated_request, "Saved.", punctuated_evidence
     ) == "The saved text is: Review the draft."
+
+
+@pytest.mark.parametrize(("tool_evidence", "expected_response"), [
+    (
+        "O3 text='Call the dentist Tuesday at 2 pm' center=(358,314) box=(96,291,620,338)\n"
+        "O4 text='Saved: Call the dentist Tuesday at 2 pm' center=(449,776) box=(91,751,807,802)",
+        "The saved text is: Call the dentist Tuesday at 2 pm",
+    ),
+    (
+        "O4 text='Not saved' center=(449,776) box=(91,751,807,802)",
+        "The screen indicates the note was not saved; I couldn't confirm its saved text.",
+    ),
+    (
+        "O4 text='Saved: Call the dentist Tuesday at 2 pm' center=(449,776) box=(91,751,807,802)\n"
+        "O5 text='Not saved' center=(449,810) box=(91,790,807,835)",
+        "The screen indicates the note was not saved; I couldn't confirm its saved text.",
+    ),
+    (
+        "O3 text='Call the dentist Tuesday at 2 pm' center=(358,314) box=(96,291,620,338)",
+        "I couldn't verify from the screen that the note was saved, so I can't confirm the saved text.",
+    ),
+])
+@pytest.mark.asyncio
+async def test_scratchpad_save_round_trip_uses_compact_tools_and_verified_readback(
+    tool_evidence, expected_response,
+):
+    class SilentTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        def __init__(self):
+            self.spoken = []
+
+        async def speak_async(self, text):
+            self.spoken.append(text)
+
+    class Memory:
+        def retrieve_context(self, _query):
+            return None
+
+    class Model:
+        def __init__(self):
+            self.responses = [
+                {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "save-note",
+                        "function": {
+                            "name": "computer_control",
+                            "arguments": {
+                                "action": "sequence",
+                                "snapshot_id": "synthetic-scratchpad-1",
+                                "actions": [
+                                    {"action": "click", "target_text": "Note text field"},
+                                    {"action": "type", "text": "Call the dentist Tuesday at 2 pm"},
+                                    {"action": "click", "target_text": "Save note"},
+                                ],
+                            },
+                        },
+                    }],
+                },
+                {"content": "Saved.", "tool_calls": []},
+            ]
+            self.requested_tool_names = []
+
+        async def chat(self, _messages, tools=None, **_kwargs):
+            self.requested_tool_names.append([tool.name for tool in (tools or [])])
+            return self.responses.pop(0)
+
+        def format_tool_response(self, tool_call_id, tool_name, result):
+            return {
+                "role": "tool", "tool_call_id": tool_call_id,
+                "name": tool_name, "content": result,
+            }
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+    ))
+    tts = SilentTTS()
+    brain = AdamBrain(config, None, None, None, tts, memory_mgr=Memory())
+    model = Model()
+    brain.llm_client = model
+    brain.skill_manager.get_matched_skill_context = lambda _query: None
+
+    def inspect_fixture(**_kwargs):
+        return SimpleNamespace(
+            status="ok", screenshot=None,
+            message="Synthetic local scratchpad inspection.",
+            snapshot_id="synthetic-scratchpad-1",
+        )
+
+    brain.computer_controller = SimpleNamespace(
+        available=True, coordinate_mode="pixels", drag_active=False,
+        run=inspect_fixture,
+    )
+    calls = []
+
+    async def execute_tool(name, args):
+        calls.append((name, args))
+        return tool_evidence
+
+    brain._execute_tool = execute_tool
+    request = (
+        'In the local scratchpad, enter "Call the dentist Tuesday at 2 pm" in the Note text field, '
+        "click Save note, and tell me the saved text."
+    )
+    with pytest.MonkeyPatch.context() as patcher:
+        patcher.setattr(
+            "src.llm.brain.get_open_windows_prompt_context",
+            lambda: "Synthetic scratchpad fixture.",
+        )
+        await brain.process_user_utterance(request)
+
+    assert model.requested_tool_names == [[
+        "computer_control", "list_windows", "focus_window",
+    ], ["computer_control", "list_windows", "focus_window"]]
+    assert len(calls) == 1
+    assert calls[0][0] == "computer_control"
+    assert calls[0][1]["actions"][1]["text"] == "Call the dentist Tuesday at 2 pm"
+    assert tts.spoken[-1] == expected_response
 
 
 def test_hardware_usage_question_uses_dedicated_status_routing():
