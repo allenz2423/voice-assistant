@@ -83,6 +83,12 @@
 
       <!-- Right Column: Telemetry & Gapped Features -->
       <aside class="sidebar-section">
+        <div class="card">
+          <div class="card-header"><h3>Tool Activity</h3></div>
+          <div id="toolActivity" class="tool-activity-list" aria-live="polite">
+            <p id="toolActivityEmpty" class="tool-activity-empty">Waiting for tool calls.</p>
+          </div>
+        </div>
         <!-- Runtime Telemetry Card -->
         <div class="card">
           <div class="card-header">
@@ -98,7 +104,7 @@
               <span id="telemetryModel" class="telemetry-value">--</span>
             </div>
             <div class="telemetry-item">
-              <span class="telemetry-label">Active Tools</span>
+              <span class="telemetry-label">Available Tools</span>
               <span id="telemetryTools" class="telemetry-value">--</span>
             </div>
             <div class="telemetry-item">

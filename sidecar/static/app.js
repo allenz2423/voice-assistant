@@ -6,6 +6,7 @@
   let isSending = false;
   let historyLoaded = false;
   const liveTools = new Map();
+  const loadedRevision = new URL(document.currentScript.src).searchParams.get("v");
 
   // Token management
   const STORAGE_KEY = "adam_webui_token";
@@ -51,6 +52,8 @@
   const telemetryMode = document.getElementById("telemetryMode");
   const telemetryModel = document.getElementById("telemetryModel");
   const telemetryTools = document.getElementById("telemetryTools");
+  const toolActivity = document.getElementById("toolActivity");
+  const toolActivityEmpty = document.getElementById("toolActivityEmpty");
 
   // Auth Modal Elements
   const authModal = document.getElementById("authModal");
@@ -118,12 +121,19 @@
   function showToolActivity(data) {
     let row = liveTools.get(data.span_id);
     if (!row) {
-      row = appendMessage("assistant", "", []);
+      toolActivityEmpty.hidden = true;
+      row = document.createElement("div");
+      row.className = "tool-activity-item";
       const badge = document.createElement("span");
       badge.className = "tool-badge";
       row.appendChild(badge);
+      toolActivity.appendChild(row);
       liveTools.set(data.span_id, row);
-      if (liveTools.size > 256) liveTools.delete(liveTools.keys().next().value);
+      if (liveTools.size > 40) {
+        const oldest = liveTools.keys().next().value;
+        liveTools.get(oldest).remove();
+        liveTools.delete(oldest);
+      }
     }
     const labels = { returned: "Returned", ok: "Returned", failed: "Failed",
       error: "Failed", invalid_input: "Rejected", timed_out: "Timed out",
@@ -136,7 +146,7 @@
     row.querySelector(".tool-badge").textContent = `⚡ ${data.tool} · ${outcome}${duration}`;
     if (isSending) statusMessage.textContent = running
       ? `Adam is using ${data.tool}…` : "Adam is processing the result…";
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+    toolActivity.scrollTop = toolActivity.scrollHeight;
   }
 
   // Set connection UI state
@@ -189,6 +199,13 @@
 
   // Update telemetry display
   function updateTelemetry(data) {
+    if (loadedRevision && data.ui_revision && loadedRevision !== data.ui_revision) {
+      // Preserve a submitted turn; reload once it finishes to load the new UI.
+      if (!isSending && !chatInput.value.trim()) {
+        window.location.reload();
+        return;
+      }
+    }
     if (data.mode) telemetryMode.textContent = data.mode;
     if (data.model) telemetryModel.textContent = data.model;
     if (data.tools_count !== undefined) telemetryTools.textContent = `${data.tools_count} tools`;

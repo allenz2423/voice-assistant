@@ -588,3 +588,20 @@ async def test_tool_events_stream_before_turn_finishes_with_logging_disabled(tmp
     assert bridge._event_task is None
     assert bridge._unsubscribe_events is None
     assert not (tmp_path / 'events.jsonl').exists()
+
+@pytest.mark.asyncio
+async def test_index_versions_assets_and_disables_stale_browser_cache():
+    from sidecar.server import ui_revision
+    async with TestClient(TestServer(create_app(WebUIConfig(), DisconnectedBridge()))) as client:
+        response = await client.get('/')
+        html = await response.text()
+        revision = ui_revision()
+        assert f'/static/app.js?v={revision}' in html
+        assert f'/static/style.css?v={revision}' in html
+        assert 'id="toolActivity"' in html
+        assert response.headers['Cache-Control'] == 'no-store'
+        response = await client.get(f'/static/app.js?v={revision}')
+        assert response.status == 200
+        assert response.headers['Cache-Control'] == 'no-store'
+        status = await (await client.get('/api/status')).json()
+        assert status['ui_revision'] == revision

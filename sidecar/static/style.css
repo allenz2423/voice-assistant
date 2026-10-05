@@ -268,6 +268,13 @@ body {
   gap: 6px;
 }
 
+.tool-activity-list {
+  padding: 12px;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.tool-activity-item { margin-bottom: 8px; }
+.tool-activity-empty { color: var(--text-muted); font-size: 0.85rem; }
 .tool-badge {
   display: inline-flex;
   align-items: center;

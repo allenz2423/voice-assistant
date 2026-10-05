@@ -9,6 +9,7 @@ import asyncio
 import ipaddress
 import json
 import logging
+import hashlib
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -20,6 +21,11 @@ from sidecar.bridge import RuntimeBridge
 STATIC_DIR = Path(__file__).parent / "static"
 logger = logging.getLogger("adam.sidecar")
 WS_AUTH_COOKIE = "adam_webui_ws_auth"
+
+
+def ui_revision() -> str:
+    return hashlib.sha256(b"".join((STATIC_DIR / name).read_bytes()
+                                  for name in ("app.js", "style.css", "index.html"))).hexdigest()[:12]
 
 
 def _is_loopback(host: str | None) -> bool:
@@ -53,6 +59,7 @@ async def security_headers_middleware(request: web.Request, handler: Any) -> web
     response = await handler(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Cache-Control"] = "no-store"
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
@@ -177,9 +184,12 @@ class SidecarServer:
         self.bridge = bridge
         self.active_websockets: set[web.WebSocketResponse] = set()
 
-    async def handle_index(self, request: web.Request) -> web.FileResponse:
+    async def handle_index(self, request: web.Request) -> web.Response:
         index_path = STATIC_DIR / "index.html"
-        return web.FileResponse(index_path)
+        revision = ui_revision()
+        html = index_path.read_text().replace('/static/app.js', f'/static/app.js?v={revision}')
+        html = html.replace('/static/style.css', f'/static/style.css?v={revision}')
+        return web.Response(text=html, content_type="text/html")
 
     async def handle_status(self, request: web.Request) -> web.Response:
         status_data = await self.bridge.get_status()
@@ -187,6 +197,7 @@ class SidecarServer:
         status_data["port"] = self.config.port
         status_data["is_loopback"] = _is_loopback(self.config.host)
         status_data["auth_required"] = bool(self.config.auth_token)
+        status_data["ui_revision"] = ui_revision()
         return web.json_response(status_data)
 
     async def handle_auth_status(self, request: web.Request) -> web.Response:
@@ -252,6 +263,7 @@ class SidecarServer:
             status_data["port"] = self.config.port
             status_data["is_loopback"] = _is_loopback(self.config.host)
             status_data["auth_required"] = bool(self.config.auth_token)
+            status_data["ui_revision"] = ui_revision()
             await ws.send_json(status_data)
         except Exception as exc:
             logger.warning(f"Error sending initial WS status: {exc}")
