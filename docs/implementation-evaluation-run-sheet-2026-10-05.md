@@ -31,9 +31,10 @@ Use the exact prompts in `expected.json`; replace `<LOCAL_REPORT_URL>` with a UR
 | B1 | Browser: `prompts.browser_template` with loopback report URL inserted | Supplier, both invoice IDs, and total match `oracles.invoices`; answer must use all 56 report rows. |
 | T1 | Terminal: `prompts.terminal` | `answer.txt` equals `3\n`; `source.txt` still has the recorded SHA-256 and byte length. |
 | D1 | Document: `prompts.document` | Reopened file equals `oracles.document.final_text` byte for byte; the owner line and final newline remain unchanged. |
+| W1 | Multi-step desktop work order: open the 56-row report in an isolated browser and `work-order.txt` in a disposable document editor; use `prompts.work_order_template` with the loopback report URL inserted. | Read all 56 rows, calculate the largest overdue supplier and its invoice IDs, edit the four requested work-order fields, save, then reopen. The reopened file equals `oracles.work_order.final_text` byte for byte, and the invoice report retains its recorded SHA-256. A spoken claim or changed editor buffer alone does not pass. |
 | X1 | Mixed: `prompts.mixed` | `task-output.txt` equals `oracles.mixed_output_line`; CPU/memory status matches a contemporaneous system snapshot. Record which browser, filesystem, and system-status tools were available to the model. |
 
-`expected.json` contains the concrete prompt strings, fixture paths, starting states, and computed outputs for the selected run. Keep each task in its own trial directory when the UI or agent can mutate state. Reset the source/document/settings files from the generator before each repetition; never rely on the agent's final prose as the only success signal.
+`expected.json` contains the concrete prompt strings, fixture paths, starting states, and computed outputs for the selected run. Keep each task in its own trial directory when the UI or agent can mutate state. Reset the source/document/work-order/settings files from the generator before each repetition; never rely on the agent's final prose as the only success signal. For W1, start with the report and work order visible in separate fixture-only windows, record both window identities, and require fresh scoped observation after switching windows. Compare the independently recomputed winner from the rendered report with the reopened work-order bytes.
 
 ## GUI capture proof
 

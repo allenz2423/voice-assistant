@@ -19,7 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.memory.temporal import local_timezone_name
 
 
-FIXTURE_VERSION = 2
+FIXTURE_VERSION = 3
 SEED = 20261005
 VENDORS = ("Amber Stationery", "Birch Support", "Cobalt Network", "Maple Office")
 
@@ -190,14 +190,32 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
     invoice_path = fixture / "invoice-report.html"
     source_path = fixture / "source.txt"
     document_path = fixture / "document.txt"
+    work_order_path = fixture / "work-order.txt"
     settings_path = fixture / "settings.html"
     scratchpad_path = fixture / "scratchpad.html"
     _write(invoice_path, _invoice_html(rows))
 
     source_text = "ITEM: olive\nNOTE: keep this line\nITEM: azure\nITEM: amber\nFOOTER: unchanged\n"
     document_text = "STATUS: DRAFT\nOWNER: Adam\n"
+    work_order_initial = (
+        "WORK ORDER: overdue invoice review\n"
+        "SUPPLIER: TBD\n"
+        "INVOICE IDS: TBD\n"
+        "OVERDUE TOTAL: TBD\n"
+        "REVIEW: Pending\n"
+        "OWNER: Adam\n"
+    )
+    work_order_final = (
+        "WORK ORDER: overdue invoice review\n"
+        f"SUPPLIER: {oracle['supplier']}\n"
+        f"INVOICE IDS: {', '.join(oracle['invoice_ids'])}\n"
+        f"OVERDUE TOTAL: {oracle['total_display']}\n"
+        "REVIEW: Complete\n"
+        "OWNER: Adam\n"
+    )
     _write(source_path, source_text)
     _write(document_path, document_text)
+    _write(work_order_path, work_order_initial)
     _write(settings_path, _settings_html())
     _write(scratchpad_path, _scratchpad_html())
 
@@ -223,6 +241,13 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
         f'Write exactly one line to "{fixture / "task-output.txt"}", replacing <supplier> and <$amount> '
         "with the values you found. Then report current CPU core count and memory-use percentage."
     )
+    prompt_work_order = (
+        "In the visible browser report at <LOCAL_REPORT_URL>, find the supplier with the largest "
+        "overdue invoice total and all its invoice IDs. In the open work order document at "
+        f'"{work_order_path.resolve()}", replace the TBD supplier, invoice IDs, and total with those '
+        "values; change REVIEW from Pending to Complete. Leave every other character unchanged, "
+        "save the document, reopen it, and report the saved values."
+    )
     invoice_text_chars = sum(
         len(str(row[key])) for row in rows for key in ("invoice_id", "supplier", "status", "amount_cents")
     )
@@ -239,6 +264,7 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
             "scratchpad_page": str(scratchpad_path.resolve()),
             "source_file": str(source_path.resolve()),
             "document_file": str(document_path.resolve()),
+            "work_order_file": str(work_order_path.resolve()),
         },
         "prompts": {
             "factual": "Compare rigatoni and penne in two short sentences.",
@@ -260,6 +286,7 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
             "terminal": prompt_terminal,
             "document": prompt_document,
             "mixed": prompt_mixed,
+            "work_order_template": prompt_work_order,
         },
         "oracles": {
             "file_status": {"byte_length": len(source_text.encode("utf-8")), "first_line": "ITEM: olive"},
@@ -268,6 +295,11 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
                 "answer_text": "3\n",
             },
             "document": {"initial_text": document_text, "final_text": "STATUS: FINAL\nOWNER: Adam\n"},
+            "work_order": {
+                "initial_text": work_order_initial,
+                "final_text": work_order_final,
+                "invoice_report_sha256": hashlib.sha256(invoice_path.read_bytes()).hexdigest(),
+            },
             "settings": {
                 "initial": {"Compact": "off", "Sync": "on", "Notifications": "on"},
                 "final": {"Compact": "on", "Sync": "off", "Notifications": "off"},

@@ -60,7 +60,7 @@ class _InvoiceTableParser(HTMLParser):
 def test_implementation_fixture_oracles_are_independently_observable(tmp_path):
     fixture = create_fixtures(tmp_path, "fixture-test")
     expected = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
-    assert expected["fixture_version"] == 2
+    assert expected["fixture_version"] == 3
     rows = json.loads((fixture / "invoices.json").read_text(encoding="utf-8"))
     invoice_oracle = expected["oracles"]["invoices"]
 
@@ -92,6 +92,25 @@ def test_implementation_fixture_oracles_are_independently_observable(tmp_path):
     assert rendered_winner == invoice_oracle["supplier"]
     assert rendered_invoice_ids[rendered_winner] == invoice_oracle["invoice_ids"]
     assert rendered_totals[rendered_winner] == invoice_oracle["total_cents"]
+
+    work_order = expected["oracles"]["work_order"]
+    assert expected["paths"]["work_order_file"] == str((fixture / "work-order.txt").resolve())
+    assert (fixture / "work-order.txt").read_text(encoding="utf-8") == work_order["initial_text"]
+    assert work_order["invoice_report_sha256"] == hashlib.sha256(page.encode("utf-8")).hexdigest()
+    rendered_total = rendered_totals[rendered_winner]
+    expected_work_order = (
+        "WORK ORDER: overdue invoice review\n"
+        f"SUPPLIER: {rendered_winner}\n"
+        f"INVOICE IDS: {', '.join(rendered_invoice_ids[rendered_winner])}\n"
+        f"OVERDUE TOTAL: ${rendered_total // 100:,}.{rendered_total % 100:02d}\n"
+        "REVIEW: Complete\n"
+        "OWNER: Adam\n"
+    )
+    assert work_order["final_text"] == expected_work_order
+    work_order_prompt = expected["prompts"]["work_order_template"]
+    assert "<LOCAL_REPORT_URL>" in work_order_prompt
+    assert str((fixture / "work-order.txt").resolve()) in work_order_prompt
+    assert "save the document, reopen it" in work_order_prompt
 
     source = (fixture / "source.txt").read_bytes()
     assert len(source) == expected["oracles"]["file_status"]["byte_length"]
