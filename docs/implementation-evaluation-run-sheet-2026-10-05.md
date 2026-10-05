@@ -53,6 +53,8 @@ Capture request-end, first acknowledgment, first tool start, first meaningful pr
 
 For every run record elapsed milliseconds; tool/model round count; retry count and raw HTTP 429/outage status; provider-reported input/output tokens and cost when available; process-tree RSS/PSS; Adam service cgroup `memory.current`, `memory.peak`, and CPU usage where available; system CPU, available RAM, swap, and power-source/instrument status. Label host-only GPU/battery/RAPL readings as their actual sensor readings; do not call them whole-system watts unless measured with a wall meter. Unknown/unavailable values remain null with a reason.
 
+When telemetry is enabled, record the exact `trace_id` attached to the task's JSONL events. Use `tools/summarize_implementation_run_events.py` to join one private run record to the private event log by that ID and the request-end-to-verified-completion monotonic clock window. Use a trace only when it covers the task's provider events; if an ingress path splits events across IDs, mark the summary unavailable until task correlation is fixed. The summarizer validates matching-event clock order and summarizes provider calls, retry signals, durations, usage, accounting status, and first tool-start time. Provider request starts and completions must pair one-to-one by `span_id`; equal event counts alone do not establish complete accounting. It counts HTTP 429 responses separately from retries triggered by a provider-reported 429 code. Cost is totaled only when every provider request in the window has a completed event with an available cost in the same currency; otherwise the total remains null with reasons and known per-currency subtotals. Keep the original run record and event log as private evidence. The event log contains operational metadata, not the objective task oracle; retain the run's raw outcome separately. A `playback.started` event only establishes playback timing. It does not establish that the speech was a meaningful acknowledgment. If no event has the recorded trace ID within the task window, treat telemetry as unavailable rather than manufacturing a join.
+
 ## Repetition and reporting
 
 Begin with three exploratory repetitions per task to find fixture and routing defects. Reset state between repetitions and retain every raw outcome, including provider failures. Select important conditions for at least ten matched repetitions when route capacity allows. Report raw samples plus sample count, median, and p95 only when the sample size supports them; do not hide retries or classify a tool return as task success. Do not compare current results with historical numbers as if they were matched.
@@ -66,6 +68,7 @@ For Loop 6 resource evidence, preserve the sampler's raw JSON trace as a private
 ```json
 {
   "run_id": "opaque-id",
+  "trace_id": "telemetry-trace-id",
   "scenario": "B1",
   "fixture_id": "fixture-run-id",
   "commit": "git-sha",
@@ -95,9 +98,18 @@ For Loop 6 resource evidence, preserve the sampler's raw JSON trace as a private
     "target_starttime_ticks": null
   },
   "tool_model_rounds": null,
+  "provider_call_count": null,
   "retries": null,
-  "http_429_count": null,
-  "usage": {"input_tokens": null, "output_tokens": null, "reported_cost": null},
+  "http_429_response_count": null,
+  "http_429_retry_trigger_count": null,
+  "usage": {
+    "input_tokens": null,
+    "output_tokens": null,
+    "reported_cost": null,
+    "currency": null,
+    "accounting_status": null,
+    "missing_reasons": []
+  },
   "resources": {
     "process_tree_rss_bytes": null,
     "process_tree_pss_bytes": null,

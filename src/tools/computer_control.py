@@ -359,6 +359,7 @@ class ComputerController:
             self._capture_scale = (1.0, 1.0)
             self._capture_backend = "injected screenshot provider"
             self._capture_target = self._scope
+        raw_screenshot = image
         metadata_started = time.perf_counter()
         self._width, self._height = _png_size(image)
         log_duration(
@@ -460,7 +461,9 @@ class ComputerController:
         if self._include_visual_grounding and self._visual_grounder is not None and not self.ocr_only:
             try:
                 with timed_stage("controller.visual_grounder"):
-                    image, visual_details = self._visual_grounder(image)
+                    annotated_image, visual_details = self._visual_grounder(image)
+                    if annotated_image:
+                        image_for_model = annotated_image
             except Exception as exc:
                 visual_details = (
                     f"OmniParser grounding unavailable ({type(exc).__name__}: {str(exc)[:180]}). "
@@ -494,7 +497,9 @@ class ComputerController:
             if issue_action_token
             else "Call inspect to obtain an action-capable Snapshot ID before input. "
         )
-        self._last_screenshot = image_for_model
+        # Keep the original capture for controller-side OCR and visual-change
+        # checks. The annotated image is the model-facing result only.
+        self._last_screenshot = None if self.ocr_only else raw_screenshot
         self._has_captured_frame = True
         return ComputerControlResult(
             f"{prefix} Capture: scope={self._scope}, target={self._capture_target}, "
@@ -1599,10 +1604,10 @@ class ComputerController:
                 action == "click"
                 and action_succeeded
                 and previous_screenshot
-                and captured.screenshot
+                and self._last_screenshot
                 and _screen_state_unchanged(
                     previous_screenshot,
-                    captured.screenshot,
+                    self._last_screenshot,
                     previous_ocr_text,
                     ScreenOCR.text_signature(captured.ocr_regions),
                 )
