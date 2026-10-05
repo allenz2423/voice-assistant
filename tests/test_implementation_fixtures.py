@@ -60,6 +60,7 @@ class _InvoiceTableParser(HTMLParser):
 def test_implementation_fixture_oracles_are_independently_observable(tmp_path):
     fixture = create_fixtures(tmp_path, "fixture-test")
     expected = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
+    assert expected["fixture_version"] == 2
     rows = json.loads((fixture / "invoices.json").read_text(encoding="utf-8"))
     invoice_oracle = expected["oracles"]["invoices"]
 
@@ -111,6 +112,23 @@ def test_implementation_fixture_oracles_are_independently_observable(tmp_path):
     assert "function resetFixture()" in settings
     assert "window.addEventListener(\"pageshow\", resetFixture)" in settings
     assert expected["prompts"]["settings"] == "Set Compact mode to on, Sync to off, and Notifications to off."
+
+    scratchpad = (fixture / "scratchpad.html").read_text(encoding="utf-8")
+    scratchpad_oracle = expected["oracles"]["scratchpad"]
+    assert 'for="note-text">Note text field' in scratchpad
+    assert 'id="save-note" type="button">Save note' in scratchpad
+    assert 'id="save-result"' in scratchpad
+    assert 'saveResult.textContent = noteField.value.trim() ? "Saved: " + noteField.value : "Not saved"' in scratchpad
+    assert "window.addEventListener(\"pageshow\", resetFixture)" in scratchpad
+    assert scratchpad_oracle == {
+        "initial_state": "Not saved",
+        "saved_text": "Call the dentist Tuesday at 2 pm",
+        "final_state": "Saved: Call the dentist Tuesday at 2 pm",
+    }
+    assert expected["prompts"]["scratchpad"] == (
+        'In the local scratchpad, enter "Call the dentist Tuesday at 2 pm" in the Note text field, '
+        "click Save note, and tell me the saved text."
+    )
 
     memory = expected["oracles"]["memory"]
     assert len(memory["records"]) == 3

@@ -19,7 +19,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.memory.temporal import local_timezone_name
 
 
-FIXTURE_VERSION = 1
+FIXTURE_VERSION = 2
 SEED = 20261005
 VENDORS = ("Amber Stationery", "Birch Support", "Cobalt Network", "Maple Office")
 
@@ -123,6 +123,31 @@ resetFixture();
 """
 
 
+def _scratchpad_html() -> str:
+    return """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Adam Fixture Scratchpad</title>
+<style>body{font:18px sans-serif;margin:3rem;max-width:40rem}label,textarea,button,output{display:block;margin:.75rem 0}textarea{width:100%;height:6rem;font:inherit}button{font:inherit;padding:.5rem 1rem}output{margin-top:2rem;font-weight:bold}</style>
+</head><body><main><h1>Local Scratchpad</h1>
+<label for="note-text">Note text field</label>
+<textarea id="note-text"></textarea>
+<button id="save-note" type="button">Save note</button>
+<output id="save-result" aria-live="polite">Not saved</output>
+<script>
+const noteField = document.getElementById("note-text");
+const saveResult = document.getElementById("save-result");
+document.getElementById("save-note").addEventListener("click", function() {
+  saveResult.textContent = noteField.value.trim() ? "Saved: " + noteField.value : "Not saved";
+});
+function resetFixture() {
+  noteField.value = "";
+  saveResult.textContent = "Not saved";
+}
+window.addEventListener("pageshow", resetFixture);
+resetFixture();
+</script></main></body></html>
+"""
+
+
 def _memory_fixture(run_date: date, timezone_name: str) -> dict[str, object]:
     previous_week_monday = run_date - timedelta(days=run_date.weekday() + 7)
     first_date = previous_week_monday + timedelta(days=1)
@@ -166,6 +191,7 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
     source_path = fixture / "source.txt"
     document_path = fixture / "document.txt"
     settings_path = fixture / "settings.html"
+    scratchpad_path = fixture / "scratchpad.html"
     _write(invoice_path, _invoice_html(rows))
 
     source_text = "ITEM: olive\nNOTE: keep this line\nITEM: azure\nITEM: amber\nFOOTER: unchanged\n"
@@ -173,6 +199,7 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
     _write(source_path, source_text)
     _write(document_path, document_text)
     _write(settings_path, _settings_html())
+    _write(scratchpad_path, _scratchpad_html())
 
     timezone_name = local_timezone_name() or "UTC"
     try:
@@ -209,6 +236,7 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
             "root": str(fixture),
             "invoice_report": str(invoice_path.resolve()),
             "settings_page": str(settings_path.resolve()),
+            "scratchpad_page": str(scratchpad_path.resolve()),
             "source_file": str(source_path.resolve()),
             "document_file": str(document_path.resolve()),
         },
@@ -221,6 +249,10 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
             ),
             "memory": memory["prompts"],
             "settings": "Set Compact mode to on, Sync to off, and Notifications to off.",
+            "scratchpad": (
+                'In the local scratchpad, enter "Call the dentist Tuesday at 2 pm" in the Note text field, '
+                "click Save note, and tell me the saved text."
+            ),
             "browser_template": (
                 "Among overdue invoices at <LOCAL_REPORT_URL>, which supplier has the largest total? "
                 "Give the supplier, invoice IDs, and total."
@@ -239,6 +271,11 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
             "settings": {
                 "initial": {"Compact": "off", "Sync": "on", "Notifications": "on"},
                 "final": {"Compact": "on", "Sync": "off", "Notifications": "off"},
+            },
+            "scratchpad": {
+                "initial_state": "Not saved",
+                "saved_text": "Call the dentist Tuesday at 2 pm",
+                "final_state": "Saved: Call the dentist Tuesday at 2 pm",
             },
             "invoices": {"row_count": len(rows), "body_text_char_estimate": invoice_text_chars, **oracle},
             "memory": memory,
@@ -262,6 +299,7 @@ def main() -> int:
     print(f"Expected state: {fixture / 'expected.json'}")
     print(f"Local report: {fixture / 'invoice-report.html'}")
     print(f"Local settings page: {fixture / 'settings.html'}")
+    print(f"Local scratchpad page: {fixture / 'scratchpad.html'}")
     return 0
 
 
