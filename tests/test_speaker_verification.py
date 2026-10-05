@@ -52,3 +52,22 @@ def test_daemon_speaker_gate_blocks_nonmatching_audio_without_profile_setup():
     daemon = AdamDaemon.__new__(AdamDaemon)
     daemon.speaker_verifier = RejectingVerifier()
     assert asyncio.run(daemon._speaker_allowed(np.ones(16000, dtype=np.float32))) is False
+    assert asyncio.run(
+        daemon._speaker_allowed(np.ones(16000, dtype=np.float32), include_score=True)
+    ) == (False, 0.1)
+
+
+def test_daemon_wake_prefilter_keeps_similarity_for_overlap_fallback():
+    from types import SimpleNamespace
+    from src.main import AdamDaemon
+
+    class SimilarityVerifier:
+        def verify(self, _audio):
+            return False, 0.2
+
+    daemon = AdamDaemon.__new__(AdamDaemon)
+    daemon.stream = SimpleNamespace(sample_rate=16000)
+    daemon.speaker_verifier = SimilarityVerifier()
+    matched, score = daemon._contains_registered_voice(np.ones(16000, dtype=np.float32))
+    assert matched is False
+    assert score == 0.2

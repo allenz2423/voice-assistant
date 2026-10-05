@@ -70,8 +70,13 @@ class WhisperTranscriber:
 
     def transcribe(self, audio_data: np.ndarray) -> str:
         """Transcribes 16kHz float32 mono audio array to text."""
+        text, _confidence = self.transcribe_with_confidence(audio_data)
+        return text
+
+    def transcribe_with_confidence(self, audio_data: np.ndarray) -> tuple[str, float | None]:
+        """Return text and mean decoder log probability for wake overlap checks."""
         if audio_data is None or len(audio_data) < 1600:  # < 100ms
-            return ""
+            return "", None
 
         max_val = np.max(np.abs(audio_data))
         if max_val > 0:
@@ -86,11 +91,17 @@ class WhisperTranscriber:
                 language="en",
                 vad_filter=False
             )
-            text = " ".join([s.text for s in segments]).strip()
-            return text
+            segments = list(segments)
+            text = " ".join(str(s.text).strip() for s in segments if s.text).strip()
+            log_probs = [
+                float(s.avg_logprob) for s in segments
+                if getattr(s, "avg_logprob", None) is not None
+            ]
+            confidence = sum(log_probs) / len(log_probs) if log_probs else None
+            return text, confidence
         except Exception as e:
             print(f"[STT] Transcription error: {e}")
-            return ""
+            return "", None
 
 class Qwen3Transcriber:
     """Hardware-accelerated Speech-to-Text engine using Qwen3-ASR-1.7B via transcribe-cpp."""

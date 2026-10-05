@@ -257,6 +257,26 @@ class WakeWordDetector:
 
         return False, text
 
+    def may_contain_custom_wake_word(self, text: str) -> bool:
+        """Return whether a transcript has a distinctive wake-word token.
+
+        This deliberately accepts a partial phrase (for example, "Adam" for
+        "Hey Adam") so the speaker separator can recover a wake word obscured
+        in mixed audio. Generic speech with no wake-word token should not load
+        the heavyweight separator merely to look for a command that ASR did not
+        hear.
+        """
+        if not self.is_custom_mode or not text:
+            return False
+        heard = set(re.findall(r"[a-z0-9]+", str(text).casefold()))
+        wake_tokens = set()
+        for phrase in (self.raw_wake_word, *self.aliases):
+            wake_tokens.update(
+                token for token in re.findall(r"[a-z0-9]+", str(phrase).casefold())
+                if len(token) >= 4 and token not in self.FILLERS | self.GREETINGS
+            )
+        return bool(heard & wake_tokens)
+
     def match_explicit_wake_word(self, text: str) -> tuple[bool, str]:
         """Match an interruption only when the transcript includes the Hey prefix."""
         if not text:
