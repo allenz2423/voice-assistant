@@ -533,6 +533,9 @@ def _can_answer_without_tools(user_text: str) -> bool:
         r"write\b[^.!?]{0,60}\b(?:file|document)\b|"
         r"write\b[^.!?]{0,60}\b(?:to|in|into|on)\s+(?:my|the)\s+notes?\b|"
         r"read\s+(?:(?:my|the)\s+)?(?:file|document|screen|email)|"
+        r"(?:check|inspect|show|list|find|read|summarize)\b[^.!?\n]{0,100}\b"
+        r"(?:files?|folders?|director(?:y|ies)|downloads?|documents?|paths?)|"
+        r"what(?:'s|\s+is)?\s+in\b[^.!?\n]{0,80}\b(?:folders?|director(?:y|ies)|downloads?|documents?)|"
         r"read\s+(?:(?:my|the|this)\s+)?(?:terminal|scrollback|shell\s+output|pane\s+output)|"
         r"(?:what(?:'s|\s+is)?|show|inspect|check)\b[^.!?\n]{0,60}\b(?:terminal|scrollback|shell\s+output|pane\s+output)\b|"
         r"(?:select|choose|pick)\b[^.!?\n]{0,80}\b(?:scheduler|reservation|booking|time\s+slot|"
@@ -1164,6 +1167,7 @@ class AdamBrain:
                 content = content[:497].rstrip() + "..."
             recent.append({"role": role, "content": content})
         self.messages = [{"role": "system", "content": self.system_prompt}, *recent[-6:]]
+        self._turn_message_start = len(self.messages)
 
     def _compact_stale_desktop_ocr(self, keep_recent: int = 1) -> int:
         """Remove verbose OCR from older tool results after a newer screen arrives."""
@@ -1294,6 +1298,8 @@ class AdamBrain:
 
     async def process_user_utterance(self, user_text: str, memory_context: str | None = None):
         """Processes a transcribed user prompt through the autonomous ReAct cycle."""
+        # The WebUI needs the actual current-turn boundary after history trimming.
+        self._turn_message_start = len(self.messages)
         self._is_interrupted = False
         self._active_react_task = asyncio.current_task()
         previous_skill_authorization = self._skill_creation_authorized
@@ -2761,7 +2767,7 @@ class AdamBrain:
                 matched = [p for p in directory.rglob("*") if p.is_file() and p.suffix.lower() in video_exts]
                 by_dir = Counter([str(p.parent.relative_to(directory)) for p in matched])
                 sample = [p.name for p in matched[:10]]
-                return f"Found {len(matched)} video files across {len(by_dir)} folders (e.g., Wistoria: {by_dir.get('Wistoria', 0)} files). Sample files: {sample}"
+                return f"Found {len(matched)} video files across {len(by_dir)} folders. Sample files: {sample}"
 
             elif pat_lower in ["*", "*.*", "all", ""]:
                 top_files = [p for p in directory.iterdir() if p.is_file()]
@@ -2771,7 +2777,7 @@ class AdamBrain:
                 recent_names = [p.name for p in top_files_sorted[:10]]
                 return (
                     f"Directory '{directory.name}' contains {len(top_files)} top-level files and {len(top_dirs)} subfolders "
-                    f"(including {len(all_videos)} video files in subfolders like 'Wistoria'). "
+                    f"(including {len(all_videos)} video files found recursively). "
                     f"Top subfolders: {[p.name for p in top_dirs[:6]]}. "
                     f"Most recent files: {recent_names}"
                 )

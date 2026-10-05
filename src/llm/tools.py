@@ -451,7 +451,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="find_files",
-        description="Finds files in a directory matching a glob or substring pattern (case-insensitive and recursive).",
+        description="Inspect a folder using pattern='*' for a summary and recent filenames, or find files matching a glob or substring pattern (case-insensitive and recursive).",
         parameters={
             "type": "object",
             "properties": {

@@ -187,9 +187,11 @@ class DaemonBridge(RuntimeBridge):
                 # Use the same daemon execution path as voice requests. This
                 # preserves its microphone interruption monitoring and turn
                 # cleanup instead of leaving WebUI turns uninterruptible.
+                brain._turn_message_start = prev_len
                 await execute_turn(text, memory_context=mem_ctx)
 
-                new_messages = brain.messages[prev_len:]
+                turn_start = getattr(brain, "_turn_message_start", prev_len)
+                new_messages = brain.messages[turn_start:]
                 final_response = ""
                 tool_calls_executed = []
 
@@ -201,6 +203,13 @@ class DaemonBridge(RuntimeBridge):
                             fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", {})
                             name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", "tool")
                             tool_calls_executed.append(name)
+
+                if not str(final_response or "").strip():
+                    return {
+                        "status": "error",
+                        "error": "Adam's turn ended without a text reply. It may have been interrupted or failed; no completion was confirmed.",
+                        "tool_calls": tool_calls_executed,
+                    }
 
                 return {
                     "status": "completed",

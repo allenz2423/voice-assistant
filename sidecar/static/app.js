@@ -90,10 +90,12 @@
     header.appendChild(time);
     row.appendChild(header);
 
-    const body = document.createElement("div");
-    body.className = "message-body";
-    body.textContent = content || "(No text content)";
-    row.appendChild(body);
+    if (content) {
+      const body = document.createElement("div");
+      body.className = "message-body";
+      body.textContent = content;
+      row.appendChild(body);
+    }
 
     if (toolCalls && toolCalls.length > 0) {
       const toolContainer = document.createElement("div");

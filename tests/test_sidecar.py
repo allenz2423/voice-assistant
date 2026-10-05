@@ -259,6 +259,43 @@ async def test_daemon_bridge_processes_turn_safely():
     assert any(e.get("system_state") == "PROCESSING_REACT" for e in broadcast_events)
 
 
+@pytest.mark.asyncio
+async def test_bridge_captures_reply_after_real_brain_history_compaction():
+    from src.llm.brain import AdamBrain
+
+    class CompactingBrain(MockBrain):
+        async def process_user_utterance(self, text, memory_context=None):
+            self.system_prompt = "You are Adam"
+            self._turn_message_start = len(self.messages)
+            AdamBrain._compact_history_for_new_turn(self)
+            await super().process_user_utterance(text, memory_context)
+
+    arbiter = MockArbiter()
+    brain = CompactingBrain()
+    daemon = MagicMock(arbiter=arbiter, brain=brain, memory_manager=None)
+    attach_mock_turn_executor(daemon, arbiter, brain)
+    bridge = DaemonBridge(daemon)
+    for index in range(10):
+        text = f"Request {index}"
+        result = await bridge.handle_user_message(text)
+        assert result["status"] == "completed"
+        assert result["response"] == f"Processed: {text}"
+        assert result["tool_calls"] == ["get_weather"]
+
+
+@pytest.mark.asyncio
+async def test_bridge_does_not_claim_empty_turn_completed():
+    arbiter = MockArbiter()
+    brain = MockBrain()
+    # A previous turn's boundary must not make a no-op return an old reply.
+    brain._turn_message_start = 1
+    daemon = MagicMock(arbiter=arbiter, brain=brain, memory_manager=None)
+    daemon._execute_turn = AsyncMock()
+    result = await DaemonBridge(daemon).handle_user_message("Read a folder")
+    assert result["status"] == "error"
+    assert "without a text reply" in result["error"]
+
+
 # ---------------------------------------------------------------------------
 # HTTP & WebSocket Server Tests (AioHTTP)
 # ---------------------------------------------------------------------------
@@ -477,6 +514,8 @@ async def test_daemon_webui_default_disabled():
     with (
         pytest.MonkeyPatch.context() as mp,
     ):
+        mp.setattr("src.main.load_config", lambda *args, **kwargs: AppConfig())
+        mp.setattr("src.main.WhisperTranscriber", MagicMock())
         mp.setattr("src.main.RobustEarconEngine", MagicMock())
         mp.setattr("src.main.StreamingVoiceSynthesizer", MagicMock())
         mp.setattr("src.main.PriorityAudioArbiter", MagicMock())
