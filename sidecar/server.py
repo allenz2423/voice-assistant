@@ -329,6 +329,16 @@ def create_app(config: WebUIConfig, bridge: RuntimeBridge) -> web.Application:
     app[sidecar_server_key] = sidecar
     app[bridge_key] = bridge
 
+    async def live_events(app):
+        await bridge.start_live_events()
+        try:
+            yield
+        finally:
+            await bridge.stop_live_events()
+            await bridge.unregister_listener(sidecar.broadcast)
+
+    app.cleanup_ctx.append(live_events)
+
     # Static assets
     app.router.add_static("/static", path=str(STATIC_DIR), name="static")
 

@@ -5,6 +5,7 @@
   let reconnectTimer = null;
   let isSending = false;
   let historyLoaded = false;
+  const liveTools = new Map();
 
   // Token management
   const STORAGE_KEY = "adam_webui_token";
@@ -110,6 +111,31 @@
     }
 
     chatMessages.appendChild(row);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return row;
+  }
+
+  function showToolActivity(data) {
+    let row = liveTools.get(data.span_id);
+    if (!row) {
+      row = appendMessage("assistant", "", []);
+      const badge = document.createElement("span");
+      badge.className = "tool-badge";
+      row.appendChild(badge);
+      liveTools.set(data.span_id, row);
+      if (liveTools.size > 256) liveTools.delete(liveTools.keys().next().value);
+    }
+    const labels = { returned: "Returned", ok: "Returned", failed: "Failed",
+      error: "Failed", invalid_input: "Rejected", timed_out: "Timed out",
+      cancelled: "Cancelled", partial: "Partial", uncertain: "Unconfirmed" };
+    const running = data.phase === "started";
+    row.dataset.toolRunning = running ? "true" : "false";
+    row.dataset.toolName = data.tool;
+    const outcome = running ? "Running" : (labels[data.outcome] || data.outcome || "Finished");
+    const duration = !running && data.duration_ms != null ? ` (${data.duration_ms} ms)` : "";
+    row.querySelector(".tool-badge").textContent = `⚡ ${data.tool} · ${outcome}${duration}`;
+    if (isSending) statusMessage.textContent = running
+      ? `Adam is using ${data.tool}…` : "Adam is processing the result…";
     chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 
@@ -315,6 +341,8 @@
           setConnectionStatus(data.connected, data.mode, data.connected ? null : "Disconnected (No Live Daemon)");
         } else if (data.type === "state") {
           setRuntimeState(data.system_state);
+        } else if (data.type === "tool_activity") {
+          showToolActivity(data);
         } else if (data.type === "chat_response") {
           const res = data.result || {};
           if (res.status === "completed") {
@@ -339,6 +367,13 @@
     };
 
     ws.onclose = (event) => {
+      for (const row of liveTools.values()) {
+        if (row.dataset.toolRunning === "true") {
+          row.querySelector(".tool-badge").textContent =
+            `⚡ ${row.dataset.toolName} · Connection lost (outcome unknown)`;
+          row.dataset.toolRunning = "false";
+        }
+      }
       if (event.code === 4001 || event.code === 4401) {
         handleAuthRequired();
         setConnectionStatus(false, "offline", "Auth Required");

@@ -119,6 +119,7 @@ If `webui.auth_token` is configured:
 1. **Serialized Requests:** WebUI messages acquire `self._lock` and verify that the arbiter is `IDLE_LISTENING`. If Adam is actively speaking or handling a voice turn, the WebUI returns a `busy` status. Accepted messages use the daemon's normal turn executor, including microphone interruption monitoring and turn cleanup.
 2. **Verbal Confirmation Priority:** If the arbiter is `AWAITING_CONFIRMATION`, the WebUI refuses commands and instructs the user to answer via the microphone.
 3. **State Broadcasts:** As Adam transitions between reasoning, tool execution, and standby, state changes are broadcast over WebSocket to update UI spinner and badges in real time.
+4. **Live Tool Activity:** Both voice and browser turns stream tool names and execution status over WebSocket as calls start and finish. The UI shows Running, Returned, Failed, Rejected, Timed out, or Cancelled with elapsed time. Returned describes tool execution, not verification of the user's overall goal. Disconnecting marks unfinished calls as outcome unknown. This in-memory feed works with disk telemetry disabled, omits arguments and raw results, and unregisters its bounded event queue when the server shuts down. Live events are not replayed after reconnecting.
 
 ---
 

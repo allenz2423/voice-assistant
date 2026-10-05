@@ -25,6 +25,12 @@ class RuntimeBridge:
     async def get_status(self) -> dict[str, Any]:
         raise NotImplementedError
 
+    async def start_live_events(self) -> None:
+        pass
+
+    async def stop_live_events(self) -> None:
+        pass
+
     async def get_history(self) -> list[dict[str, Any]]:
         raise NotImplementedError
 
@@ -57,6 +63,60 @@ class DaemonBridge(RuntimeBridge):
         super().__init__()
         self.daemon = daemon
         self._lock = asyncio.Lock()
+        self._event_task = None
+        self._unsubscribe_events = None
+
+    async def start_live_events(self) -> None:
+        if self._event_task is not None:
+            return
+        from src.telemetry.events import subscribe_events
+        loop = asyncio.get_running_loop()
+        queue = asyncio.Queue(maxsize=256)
+        starts = {}
+
+        def enqueue(row):
+            if queue.full():
+                queue.get_nowait()
+            queue.put_nowait(row)
+
+        def receive(row):
+            if row.get("event") in {"tool.started", "tool.completed"}:
+                loop.call_soon_threadsafe(enqueue, row)
+
+        async def deliver():
+            while True:
+                row = await queue.get()
+                span = row.get("span_id")
+                attrs = row.get("attributes", {})
+                started = row["event"] == "tool.started"
+                duration = None
+                if started:
+                    if len(starts) >= 256:
+                        starts.pop(next(iter(starts)))
+                    starts[span] = row["clock_ns"]
+                else:
+                    clock = starts.pop(span, None)
+                    if clock is not None:
+                        duration = round((row["clock_ns"] - clock) / 1_000_000)
+                await self.broadcast_state({
+                    "type": "tool_activity", "span_id": span,
+                    "tool": attrs.get("tool_name", "tool"),
+                    "phase": "started" if started else "finished",
+                    "outcome": attrs.get("outcome") or row.get("status"),
+                    "duration_ms": duration,
+                })
+
+        self._unsubscribe_events = subscribe_events(receive)
+        self._event_task = asyncio.create_task(deliver())
+
+    async def stop_live_events(self) -> None:
+        if self._unsubscribe_events is not None:
+            self._unsubscribe_events()
+            self._unsubscribe_events = None
+        if self._event_task is not None:
+            self._event_task.cancel()
+            await asyncio.gather(self._event_task, return_exceptions=True)
+            self._event_task = None
 
     async def get_status(self) -> dict[str, Any]:
         state = "UNKNOWN"

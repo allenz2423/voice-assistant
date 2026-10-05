@@ -538,3 +538,53 @@ async def test_daemon_webui_default_disabled():
         # Explicit override
         daemon_optin = AdamDaemon(enable_webui=True)
         assert daemon_optin.config.webui.enabled is True
+
+@pytest.mark.asyncio
+async def test_tool_events_stream_before_turn_finishes_with_logging_disabled(tmp_path):
+    from types import SimpleNamespace
+    from src.telemetry.events import configure_telemetry, emit_event
+    configure_telemetry(SimpleNamespace(enabled=False, path=str(tmp_path / 'events.jsonl')))
+    gate = asyncio.Event()
+    arbiter = MockArbiter()
+    brain = MockBrain()
+    daemon = MagicMock(arbiter=arbiter, brain=brain, memory_manager=None)
+
+    async def execute(text, memory_context=None):
+        emit_event('tool.started', span_id='live-tool', status='started',
+                   attributes={'tool_name': 'find_files', 'arguments': 'private'})
+        await gate.wait()
+        emit_event('tool.completed', span_id='live-tool', status='ok',
+                   attributes={'tool_name': 'find_files', 'outcome': 'returned', 'result': 'private'})
+        brain.messages.extend([{'role': 'user', 'content': text},
+                               {'role': 'assistant', 'content': 'Folder inspected.'}])
+
+    daemon._execute_turn = AsyncMock(side_effect=execute)
+    bridge = DaemonBridge(daemon)
+    async with TestClient(TestServer(create_app(WebUIConfig(), bridge))) as client:
+        async with client.ws_connect('/api/ws') as ws:
+            await ws.receive_json(timeout=2)  # initial status
+            await ws.send_json({'type': 'chat', 'message': 'Check the folder'})
+            while True:
+                event = await ws.receive_json(timeout=2)
+                if event.get('type') == 'tool_activity':
+                    break
+            assert event['tool'] == 'find_files'
+            assert event['phase'] == 'started'
+            assert not gate.is_set()
+            assert 'private' not in str(event)
+            gate.set()
+            finished = response = None
+            while finished is None or response is None:
+                event = await ws.receive_json(timeout=2)
+                if event.get('type') == 'tool_activity':
+                    finished = event
+                elif event.get('type') == 'chat_response':
+                    response = event
+            assert finished['phase'] == 'finished'
+            assert finished['outcome'] == 'returned'
+            assert finished['duration_ms'] >= 0
+            assert 'private' not in str(finished)
+            assert response['result']['response'] == 'Folder inspected.'
+    assert bridge._event_task is None
+    assert bridge._unsubscribe_events is None
+    assert not (tmp_path / 'events.jsonl').exists()
