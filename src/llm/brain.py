@@ -997,7 +997,8 @@ def _should_acknowledge_desktop_task(text: str) -> bool:
     )
     refers_to_visible_ui = re.search(
         r"\b(?:screen|window|workspace|desktop|display|tab|page|button|menu|dialog|form|"
-        r"chat|inbox|mouse|keyboard|cursor)\b",
+        r"chat|inbox|mouse|keyboard|cursor)\b|"
+        r"\b(?:visible|open|current)\s+browser\s+(?:page|report|tab|window)\b",
         str(text or ""),
         re.IGNORECASE,
     )

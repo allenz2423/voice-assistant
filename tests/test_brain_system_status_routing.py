@@ -1029,6 +1029,73 @@ def test_visible_desktop_work_gets_an_immediate_status_cue():
     assert _should_acknowledge_desktop_task("What is the Discord chat window showing?")
     assert _should_acknowledge_desktop_task("Could you move Spotify to Workspace One?")
     assert not _should_acknowledge_desktop_task("What's on my browser right now?")
+    assert not _should_acknowledge_desktop_task("Explain what a browser report is.")
+
+
+@pytest.mark.asyncio
+async def test_multistep_browser_to_document_task_acknowledges_before_tool_work(tmp_path, monkeypatch):
+    from tools.create_implementation_fixtures import create_fixtures
+
+    fixture = create_fixtures(tmp_path, "w1-acknowledgment")
+    spec = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
+    request = spec["prompts"]["work_order_template"].replace(
+        "<LOCAL_REPORT_URL>", "http://127.0.0.1:8765/invoice-report.html"
+    )
+    events = []
+
+    class DummyTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        async def speak_async(self, text):
+            events.append(("speech", text))
+
+    class DummyClient:
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, _messages, tools=None, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                assert any(tool.name == "list_windows" for tool in tools)
+                return {
+                    "content": "",
+                    "tool_calls": [{
+                        "id": "windows-1",
+                        "function": {"name": "list_windows", "arguments": {}},
+                    }],
+                }
+            return {"content": "The work order still needs editing.", "tool_calls": []}
+
+        def format_tool_response(self, tool_call_id, tool_name, result):
+            return {
+                "role": "tool", "tool_call_id": tool_call_id,
+                "name": tool_name, "content": result,
+            }
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="local", local_model="qwen", cloud_model="", ollama_host="",
+        temperature=0.3, num_ctx=4096, max_tool_rounds=3,
+    ))
+    brain = AdamBrain(
+        config, None, None, None, DummyTTS(),
+        memory_mgr=SimpleNamespace(retrieve_context=lambda _text: None),
+    )
+    brain.llm_client = DummyClient()
+    brain.computer_controller = SimpleNamespace(
+        available=True, coordinate_mode="pixels", drag_active=False,
+    )
+    monkeypatch.setattr("src.llm.brain.get_open_windows_prompt_context", lambda: "Synthetic fixture windows.")
+
+    async def execute_tool(name, _args):
+        events.append(("tool", name))
+        return "Synthetic fixture windows only."
+
+    brain._execute_tool = execute_tool
+    await brain.process_user_utterance(request)
+
+    assert events[0] == ("speech", "I’ve got the request. I’m checking the screen now.")
+    assert events[1] == ("tool", "list_windows")
 
 
 def test_general_question_skips_desktop_context():
