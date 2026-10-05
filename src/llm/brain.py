@@ -303,9 +303,19 @@ def _direct_process_list_args(user_text: str) -> dict[str, int | str]:
     return {"sort_by": sort_by, "limit": limit}
 
 
+def _without_quoted_screen_text(text: str) -> str:
+    """Keep quoted UI labels from being mistaken for separate user intents."""
+    return re.sub(
+        r'"(?:\\.|[^"\\])*"|“[^”]*”|‘[^’]*’|`[^`]*`|(?<!\w)\'[^\'\n]+\'(?!\w)',
+        " ",
+        str(text or ""),
+    )
+
+
 def _is_dedicated_desktop_navigation_request(user_text: str) -> bool:
     """Recognize a self-contained, visible UI interaction without other domains."""
     text = str(user_text or "")
+    intent_text = _without_quoted_screen_text(text)
     if _is_bounded_visible_form_request(text):
         return True
     has_ui_action = re.search(
@@ -338,7 +348,7 @@ def _is_dedicated_desktop_navigation_request(user_text: str) -> bool:
         r"\b(?:weather|forecast|calendar|reminder|timer|email|message|text\s+message|"
         r"file|filesystem|download|upload|terminal|shell|bash|command|script|"
         r"web\s+search|internet|website|webpage|url|stock|quote)\b",
-        text,
+        intent_text,
         re.IGNORECASE,
     )
     # "Start minimized" is a common visible preference label, not a request to
@@ -347,7 +357,7 @@ def _is_dedicated_desktop_navigation_request(user_text: str) -> bool:
     has_non_gui_action = re.search(
         r"\b(?:search|browse|look\s+up|launch|start|restart|kill|run|execute|"
         r"create|write|delete|schedule|remember|forget|send|calculate)\b",
-        action_text,
+        _without_quoted_screen_text(action_text),
         re.IGNORECASE,
     )
     return bool(
@@ -529,7 +539,7 @@ def _filter_tools_for_dedicated_desktop_navigation(available_tools: list, user_t
             r"\b(?:weather|forecast|calendar|reminder|timer|email|message|file|filesystem|"
             r"download|upload|terminal|shell|bash|command|script|web\s+search|internet|"
             r"website|webpage|url|stock|quote)\b",
-            text,
+            _without_quoted_screen_text(text),
             re.IGNORECASE,
         )
         if not _is_self_contained_app_interaction_request(text) or unrelated_domain:
@@ -831,6 +841,7 @@ Computer Control & Grounding:
   - Information Extraction (`include_ocr=true`): Use when finding, reading, verifying, or extracting on-screen text, numbers, dates, receipts, or documents. This adds local OCR; it does not enable OmniParser.
   - Difficult visual controls: Set `include_visual_grounding=true` only if the screenshot and OCR still do not locate the target. OmniParser adds a separate local inference pass.
 - Grounded targeting: Never guess pixel coordinates. When OCR clearly names a text control, use `target_text` to click its unambiguous label from the latest OCR snapshot; this avoids coordinate conversion errors. For icons or unlabeled controls, derive coordinates strictly from the current screenshot. Never reuse stale coordinates.
+- Text entry: If OCR shows a text field's current value, use `target_text` to focus that visible value instead of estimating its coordinates. On Linux single-line fields, do not use Ctrl+A; some widgets only move the caret. For replacement, sequence `click` on the OCR value, `press` with `Home`, `press` with `Shift+End`, then `type` the exact requested value. These selection keys are allowed only after the OCR-targeted click; do not guess coordinates or use an action named `key`.
 - Multi-value GUI requests: Identify every requested value before the first click. If all requested text labels are visible in OCR and the choices are independent, send them as consecutive `target_text` clicks in one short sequence with `include_ocr=true`; the controller rechecks each label against the fresh screen. Do not leave a requested field untouched because other selections succeeded.
 - Goal-matched navigation: Before clicking, compare the visible labels and controls with the requested outcome. Choose a control that directly advances the task; avoid settings or unrelated destinations unless the request calls for them. If the screen does not clearly support a choice, inspect or read its labels before acting.
 - Stay in the requested app: If its current page is not the task, use that app’s own Home, Back, or menu controls to find the relevant page. Do not open a sibling app shortcut unless the user requested that app or the screen clearly identifies it as the requested task.

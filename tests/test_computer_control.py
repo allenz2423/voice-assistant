@@ -187,6 +187,41 @@ def test_sequence_can_re_resolve_multiple_ocr_text_clicks_from_fresh_screens(mon
     assert len(reads) == 4  # Initial OCR plus fresh OCR after each click.
 
 
+def test_sequence_can_retarget_fresh_ocr_after_a_coordinate_click(monkeypatch):
+    regions = [computer.OCRRegion("O1", "100", 0.99, 416, 419, 458, 451)]
+    reads = []
+
+    class Reader:
+        def read(self, image):
+            reads.append(image)
+            return regions
+
+    controller = computer.ComputerController(
+        screenshot_fn=_valid_png,
+        runner=lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (0, 0, 1000, 700))
+    monkeypatch.setattr(computer.ComputerController, "available", property(lambda _self: True))
+    clicks = []
+    monkeypatch.setattr(controller, "_click", lambda x, y, button: clicks.append((x, y, button)))
+    inspected = controller.run("inspect", include_ocr=True)
+
+    result = controller.run_sequence(
+        snapshot_id=inspected.snapshot_id,
+        include_ocr=True,
+        actions=[
+            {"action": "click", "x": 435, "y": 259},
+            {"action": "click", "target_text": "100"},
+        ],
+    )
+
+    assert result.status == "ok"
+    assert clicks == [(435, 259, "left"), (437, 435, "left")]
+    assert len(reads) == 3  # The text target is resolved from OCR after the first click.
+
+
 def test_sequence_can_type_between_fresh_ocr_target_clicks(monkeypatch):
     regions = [
         computer.OCRRegion("O1", "Enter a note", 0.99, 100, 100, 300, 140),
@@ -227,6 +262,105 @@ def test_sequence_can_type_between_fresh_ocr_target_clicks(monkeypatch):
     assert clicks == [(200, 120, "left"), (190, 220, "left")]
     assert typed == ["Call the dentist Tuesday at 2 pm"]
     assert len(reads) == 4  # Initial OCR plus fresh OCR after each dispatched step.
+
+
+def test_sequence_can_replace_text_after_an_ocr_targeted_current_value(monkeypatch):
+    regions = [computer.OCRRegion("O1", "100", 0.99, 416, 419, 458, 451)]
+    reads = []
+
+    class Reader:
+        def read(self, image):
+            reads.append(image)
+            return regions
+
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+    commands = []
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    controller = computer.ComputerController(
+        screenshot_fn=_valid_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (0, 0, 1000, 700))
+    monkeypatch.setattr(computer.ComputerController, "available", property(lambda _self: True))
+    clicks = []
+    monkeypatch.setattr(controller, "_click", lambda x, y, button: clicks.append((x, y, button)))
+    inspected = controller.run("inspect", include_ocr=True)
+
+    result = controller.run_sequence(
+        snapshot_id=inspected.snapshot_id,
+        include_ocr=True,
+        actions=[
+            {"action": "click", "target_text": "100"},
+            {"action": "press", "key": "Home"},
+            {"action": "press", "key": "Shift+End"},
+            {"action": "type", "text": "500"},
+        ],
+    )
+
+    assert result.status == "ok"
+    assert result.dispatched is True
+    assert clicks == [(437, 435, "left")]
+    assert [command for command in commands if command[:2] == ["xdotool", "key"]] == [
+        ["xdotool", "key", "--clearmodifiers", "Home"],
+        ["xdotool", "key", "--clearmodifiers", "shift+End"],
+    ]
+    assert commands[-1] == ["xdotool", "type", "--clearmodifiers", "--delay", "1", "--", "500"]
+    assert len(reads) == 5  # Initial OCR, then OCR lookup plus a fresh capture after each input.
+
+
+def test_sequence_explains_linux_ctrl_a_replacement_failure_after_ocr_click(monkeypatch):
+    class Reader:
+        def read(self, _image):
+            return [computer.OCRRegion("O1", "100", 0.99, 416, 419, 458, 451)]
+
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+    commands = []
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    controller = computer.ComputerController(
+        screenshot_fn=_valid_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (0, 0, 1000, 700))
+    monkeypatch.setattr(computer.ComputerController, "available", property(lambda _self: True))
+    clicks = []
+    monkeypatch.setattr(controller, "_click", lambda x, y, button: clicks.append((x, y, button)))
+    inspected = controller.run("inspect", include_ocr=True)
+
+    result = controller.run_sequence(
+        snapshot_id=inspected.snapshot_id,
+        include_ocr=True,
+        actions=[
+            {"action": "click", "target_text": "100"},
+            {"action": "press", "key": "Ctrl+A"},
+            {"action": "type", "text": "500"},
+        ],
+    )
+
+    assert result.status == "partial"
+    assert "Ctrl+A was not sent" in result.message
+    assert "press Home, press Shift+End" in result.message
+    assert clicks == [(437, 435, "left")]
+    assert not any(command[:2] == ["xdotool", "key"] for command in commands)
 
 
 def test_small_status_text_change_counts_as_visible_progress():

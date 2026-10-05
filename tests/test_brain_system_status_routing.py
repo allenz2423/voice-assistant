@@ -446,6 +446,30 @@ def test_initial_ocr_is_limited_to_desktop_tasks_with_explicit_text_values():
     assert not _should_use_initial_ocr_for_desktop_request("What time is it?")
 
 
+def test_quoted_screen_labels_do_not_disable_compact_ocr_prefetch():
+    request = (
+        "Click Advanced in Archive Preferences. Turn on ‘Show hidden files’, enter 500 "
+        "in the entry labeled ‘Search index item limit’, leave ‘Automatically refresh "
+        "folders’ checked, then click Apply and verify the result."
+    )
+    assert _is_desktop_context_request(request)
+    assert _is_dedicated_desktop_navigation_request(request)
+    assert _should_use_initial_ocr_for_desktop_request(request)
+
+    available = [
+        SimpleNamespace(name=name)
+        for name in (
+            "computer_control", "focus_window", "list_windows", "read_file", "search_web",
+        )
+    ]
+    assert [tool.name for tool in _filter_tools_for_dedicated_desktop_navigation(
+        available, request
+    )] == ["computer_control", "focus_window", "list_windows"]
+    assert not _is_dedicated_desktop_navigation_request(
+        "Click ‘Search’ in preferences and search the web for its documented meaning."
+    )
+
+
 def test_generic_ui_acknowledgment_uses_explicit_requested_readback():
     request = (
         'Click the "Preferences" tab, turn on "Compact mode," leave every other option unchanged, '
