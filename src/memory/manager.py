@@ -550,13 +550,13 @@ class MemoryManager:
 
                 # Acceptance criteria:
                 is_accepted = (
-                    (hybrid_score >= self.min_hybrid_score and (coverage >= 0.4 or dense_score >= 0.4))
+                    (hybrid_score >= self.min_hybrid_score and (coverage >= 0.5 or dense_score >= 0.4))
                     or dense_score >= self.min_dense_score
                     # A single rare shared token can exceed the BM25 score
                     # threshold in a large store. Keep lexical threshold
                     # matches grounded in enough of the query to avoid
                     # injecting loosely related memories into the prompt.
-                    or (raw_bm25 >= self.min_bm25_score and coverage >= 0.4)
+                    or (raw_bm25 >= self.min_bm25_score and coverage >= 0.5)
                     or (has_exact and norm_bm25 >= 0.25)
                     or date_range is not None
                     or event_type is not None
@@ -615,6 +615,28 @@ class MemoryManager:
 
         if date_range is not None:
             matches.sort(key=lambda item: item.event_start_at or item.event_date_start or "")
+        elif re.search(
+            r"\b(?:current(?:ly)?|now|latest|most\s+recent)\b",
+            utterance,
+            re.IGNORECASE,
+        ):
+            def current_correction_order(item: MemorySearchResult) -> tuple[bool, float]:
+                record = self._id_map.get(item.id)
+                is_explicit_correction = bool(re.search(
+                    r"\b(?:correction|corrected|update|updated|actually|no\s+longer|"
+                    r"changed\s+my\s+mind|instead)\b",
+                    item.text,
+                    re.IGNORECASE,
+                ))
+                updated_timestamp = 0.0
+                if record is not None:
+                    try:
+                        updated_timestamp = datetime.fromisoformat(record.updated_at).timestamp()
+                    except (OverflowError, OSError, TypeError, ValueError):
+                        pass
+                return is_explicit_correction, updated_timestamp
+
+            matches.sort(key=current_correction_order, reverse=True)
 
         lines = []
         for memory in matches:

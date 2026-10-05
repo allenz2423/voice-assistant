@@ -371,7 +371,7 @@ async def test_personal_question_keeps_automatic_memory_retrieval():
     assert "Favorite food: rigatoni." in user_message["content"]
     assert brain.llm_client.tools == []
     assert window_reads == []
-    assert "Answer this personal-history question from the retrieved user memory" in (
+    assert "Answer this personal-history or current-state question from the retrieved user memory" in (
         brain.llm_client.messages[0]["content"]
     )
     assert "rigatoni" in tts.last_text

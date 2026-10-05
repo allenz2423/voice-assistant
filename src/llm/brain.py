@@ -856,7 +856,7 @@ def _is_memory_only_recall_request(user_text: str, memory_context: str | None) -
     needs_external_or_action_tool = re.search(
         r"\b(?:calendar|appointment|reminder|timer|alarm|weather|forecast|news|stock|"
         r"email|message|browser|website|internet|screen|desktop|window|file|folder|"
-        r"terminal|shell|command|system|cpu|gpu|ram|disk|current|currently|latest|"
+        r"terminal|shell|command|system|cpu|gpu|ram|disk|"
         r"right\s+now|schedule|create|write|save|send|delete|open|launch|search|"
         r"browse|fetch|run|execute|install|restart|kill|click|press|type|scroll)\b",
         text,
@@ -942,7 +942,7 @@ SCREEN_TEXT_READ_MAX_CHARS = 5000
 LONG_TASK_PROGRESS_INTERVAL_SECONDS = 10.0
 COMPACT_CONVERSATION_SYSTEM_PROMPT = """You are Adam, a general-purpose voice-first assistant. For ordinary conversation, answer accurately and briefly in plain language. Treat the current request as active and use earlier dialogue only when needed to resolve it. When drafting for the user, use only personal facts they supplied or that trusted memory provides; omit unknown details or mark placeholders. Do not add unrequested actions, and never claim an action succeeded without a tool result confirming it. For simple factual questions, answer in one or two short sentences by default. For comparisons, state the main difference first; avoid tables and lists unless requested. When the user asks for detail, examples, or a list, provide them."""
 
-MEMORY_RECALL_SYSTEM_PROMPT = """You are Adam. Answer this personal-history question from the retrieved user memory. Include every matching recorded event in the requested date range and preserve its dates and times. Treat dates and times as recorded facts; do not reinterpret a future-dated event as an appointment or claim it has not happened based on the current clock. Do not invent totals, plans, calendar status, or other details unless asked. If the retrieved memory does not answer the question, say what is missing."""
+MEMORY_RECALL_SYSTEM_PROMPT = """You are Adam. Answer this personal-history or current-state question from the retrieved user memory. Include every matching recorded event in the requested date range and preserve its dates and times. Treat dates and times as recorded facts; do not reinterpret a future-dated event as an appointment or claim it has not happened based on the current clock. When asked what is currently true, prefer a later explicit correction or update over an earlier conflicting statement. Keep earlier statements when the user asks about prior state or how something changed; do not treat unrelated memories as corrections just because they are newer. Do not invent totals, plans, calendar status, or other details unless asked. If the retrieved memory does not answer the question, say what is missing."""
 
 
 def _is_explicit_screen_read_request(text: str) -> bool:

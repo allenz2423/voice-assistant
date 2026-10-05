@@ -550,6 +550,104 @@ def test_invalid_event_date_metadata_is_excluded_from_temporal_index(tmp_path):
     assert mgr.search("worked this week", date_range=("2026-10-01", "2026-10-07"), event_type="work") == []
 
 
+def test_current_memory_query_prefers_explicit_correction_but_history_keeps_both(tmp_path):
+    mgr = MemoryManager(
+        storage_path=tmp_path / "preference-corrections.json",
+        embedder=MemoryEmbedder(disabled=True),
+    )
+    mgr.save("I prefer dark mode in my code editor.", category="preferences")
+    mgr.save("Correction: I now prefer light mode in my code editor.", category="preferences")
+    mgr.save("I prefer sepia mode in my photo editor.", category="preferences")
+
+    current_query = "What theme do I currently prefer in my code editor?"
+    current_context = mgr.retrieve_context(current_query)
+    assert current_context is not None
+    assert current_context.splitlines()[0] == (
+        "- Correction: I now prefer light mode in my code editor."
+    )
+    assert "I prefer dark mode in my code editor." in current_context
+    assert "I prefer sepia mode in my photo editor." not in current_context
+
+    from src.llm.brain import _is_memory_only_recall_request
+
+    assert _is_memory_only_recall_request(current_query, current_context)
+    assert _is_memory_only_recall_request(
+        "What is my latest code editor theme preference?", current_context
+    )
+    assert not _is_memory_only_recall_request(
+        "What is my current CPU usage?", current_context
+    )
+    assert not _is_memory_only_recall_request(
+        "When is my current appointment?", current_context
+    )
+
+    history_context = mgr.retrieve_context(
+        "Did I change my code editor from dark to light mode?"
+    )
+    assert history_context is not None
+    assert history_context.splitlines() == [
+        "- I prefer dark mode in my code editor.",
+        "- Correction: I now prefer light mode in my code editor.",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_brain_current_preference_recall_uses_corrected_memory_without_tools(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain, MEMORY_RECALL_SYSTEM_PROMPT
+
+    memory = MemoryManager(
+        storage_path=tmp_path / "brain-preference-corrections.json",
+        embedder=MemoryEmbedder(disabled=True),
+    )
+    memory.save("I prefer dark mode in my code editor.", category="preferences")
+    memory.save("Correction: I now prefer light mode in my code editor.", category="preferences")
+
+    class RecallClient:
+        provider = "custom"
+
+        async def chat(self, messages, tools=None, **_kwargs):
+            self.messages = messages
+            self.tools = tools
+            return {
+                "content": "You currently prefer light mode in your code editor.",
+                "tool_calls": [],
+            }
+
+    config = SimpleNamespace(
+        computer_control=SimpleNamespace(enabled=False, ocr_only=True),
+        computer_vision=SimpleNamespace(enabled=False),
+        llm=SimpleNamespace(
+            provider="custom", local_model="test-model", cloud_model="test-model",
+            ollama_host="http://localhost:11434", api_base="https://example.test/v1",
+            api_key="test-key", temperature=0, num_ctx=8192, max_tool_rounds=2,
+        ),
+    )
+    tts = SimpleNamespace(speak_async=AsyncMock())
+    brain = AdamBrain(config, None, None, None, tts, memory_mgr=memory)
+    client = RecallClient()
+    brain.llm_client = client
+    brain.skill_manager.get_matched_skill_context = lambda _query: None
+
+    await brain.process_user_utterance("What theme do I currently prefer in my editor?")
+
+    assert client.tools == []
+    assert client.messages[0]["content"] == MEMORY_RECALL_SYSTEM_PROMPT
+    user_message = next(
+        message for message in client.messages
+        if message.get("role") == "user"
+    )
+    correction_position = user_message["content"].index(
+        "Correction: I now prefer light mode"
+    )
+    prior_position = user_message["content"].index(
+        "I prefer dark mode in my code editor."
+    )
+    assert correction_position < prior_position
+    assert "prefer a later explicit correction or update" in client.messages[0]["content"]
+
+
 def test_similar_dated_events_are_not_semantically_merged(tmp_path):
     def same_vector(texts):
         vec = np.zeros(384, dtype=np.float32)
