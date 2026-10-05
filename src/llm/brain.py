@@ -644,6 +644,43 @@ def _available_tools_for_capability_refusal(
     return sorted(relevant_names)
 
 
+def _bind_current_turn_snapshot_id(
+    tool_name: str,
+    arguments,
+    snapshot_id: str | None,
+):
+    """Bind visual actions to this turn's latest controller-issued screenshot token."""
+    if tool_name != "computer_control" or not isinstance(arguments, dict) or not snapshot_id:
+        return arguments
+
+    normalized = dict(arguments)
+    action = normalized.get("action")
+    if action not in {"inspect", "wait"} and not str(normalized.get("snapshot_id", "")).strip():
+        # Some vision models serialize a literal token as a property name, for
+        # example snapshot_id_<token>: true. The controller owns the actual
+        # token and checks that the active window still matches its screenshot.
+        for key in list(normalized):
+            match = re.fullmatch(r"snapshot_id_([A-Za-z0-9_-]+)", str(key))
+            if not match:
+                continue
+            value = normalized[key]
+            if match.group(1) == snapshot_id or value is True or str(value).strip().lower() in {"true", "yes", "1"}:
+                normalized.pop(key)
+        normalized["snapshot_id"] = snapshot_id
+
+    # Accommodate the frequent include_ocr_after spelling while retaining the
+    # tool schema's boolean validation and leaving other unknown fields intact.
+    if "include_ocr" not in normalized and "include_ocr_after" in normalized:
+        value = normalized["include_ocr_after"]
+        if isinstance(value, bool):
+            normalized["include_ocr"] = value
+            normalized.pop("include_ocr_after")
+        elif isinstance(value, str) and value.strip().lower() in {"true", "false"}:
+            normalized["include_ocr"] = value.strip().lower() == "true"
+            normalized.pop("include_ocr_after")
+    return normalized
+
+
 def _should_use_compact_conversation_prompt(
     user_text: str,
     *,
@@ -1574,6 +1611,7 @@ class AdamBrain:
         if memory_only_query:
             self.system_prompt = MEMORY_RECALL_SYSTEM_PROMPT
             self.messages[0]["content"] = self.system_prompt
+        turn_snapshot_id: str | None = None
         initial_desktop_screenshot = None
         initial_desktop_observation = ""
         if (
@@ -1602,6 +1640,7 @@ class AdamBrain:
                 if inspected.status == "ok" and inspected.screenshot:
                     initial_desktop_screenshot = inspected.screenshot
                     initial_desktop_observation = inspected.message
+                    turn_snapshot_id = inspected.snapshot_id
                 elif (
                     inspected.status == "failed"
                     and re.search(
@@ -1930,6 +1969,10 @@ class AdamBrain:
                 tool_def = next((tool for tool in available_tools if tool.name == fn_name), None)
                 if tool_def is not None and isinstance(fn_args, dict):
                     fn_args = normalize_tool_arguments(tool_def, fn_args)
+                if fn_name == "computer_control":
+                    fn_args = _bind_current_turn_snapshot_id(
+                        fn_name, fn_args, turn_snapshot_id
+                    )
                 if fn_name in {"computer_control", "capture_screenshot", "observe_desktop"} and isinstance(fn_args, dict):
                     if "screenshot_delay_seconds" in fn_args:
                         fn_args = {
@@ -2000,6 +2043,9 @@ class AdamBrain:
                 fn = tc.get("function", {}) if hasattr(tc, "get") else getattr(tc, "function", {})
                 name = fn.get("name") if hasattr(fn, "get") else getattr(fn, "name", "")
                 args = normalized_args_by_idx.get(idx, {})
+                if name == "computer_control":
+                    args = _bind_current_turn_snapshot_id(name, args, turn_snapshot_id)
+                    normalized_args_by_idx[idx] = args
                 tool_span = new_span_id()
                 if idx in parallel_spans:
                     tool_span = parallel_spans[idx]
@@ -2076,6 +2122,10 @@ class AdamBrain:
                             tool_output = raw_output.message
                             tool_status = raw_output.status
                             dispatched = raw_output.dispatched
+                            if raw_output.status == "ok" and raw_output.snapshot_id:
+                                turn_snapshot_id = raw_output.snapshot_id
+                            elif name in {"computer_control", "drag", "drop"}:
+                                turn_snapshot_id = None
                             if (
                                 name in {"computer_control", "drag", "drop"}
                                 and tool_status == "ok"

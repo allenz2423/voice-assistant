@@ -610,6 +610,8 @@ async def test_index_versions_assets_and_disables_stale_browser_cache():
         assert 'id="toolActivity"' in html
         served_js = await (await client.get(f'/static/app.js?v={revision}')).text()
         assert 'data.type === "task_progress"' in served_js
+        assert 'fetch("/api/chat"' not in served_js
+        assert "pendingChatMessage" in served_js
         assert response.headers['Cache-Control'] == 'no-store'
         response = await client.get(f'/static/app.js?v={revision}')
         assert response.status == 200

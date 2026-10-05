@@ -141,7 +141,10 @@ async def test_false_filesystem_access_refusal_reprompts_when_read_tool_is_avail
 
     brain = AdamBrain(_config(), None, None, None, _DummyTTS())
     brain.llm_client = _DummyClient("local", [
-        {"content": "I don't have access to your file system.", "tool_calls": []},
+        {
+            "content": "I can't see your files, so I can't tell you directly. But if you're asking, it's probably feeling a bit chaotic!",
+            "tool_calls": [],
+        },
         {"content": "", "tool_calls": [{
             "id": "read-file",
             "function": {"name": "read_file", "arguments": {"path": "/tmp/synthetic-note.txt"}},
@@ -542,7 +545,8 @@ async def test_agent_loop_reobserves_between_desktop_sequence_and_goal_assessmen
                 "name": "computer_control",
                 "arguments": {
                     "action": "sequence",
-                    "snapshot_id": "snap-1",
+                    "snapshot_id_snap-1": "true",
+                    "include_ocr_after": "true",
                     "actions": [
                         {"action": "click", "x": 210, "y": 80},
                         {"action": "type", "text": "requested search"},
@@ -559,6 +563,7 @@ async def test_agent_loop_reobserves_between_desktop_sequence_and_goal_assessmen
     assert [action for action, _ in controller.calls] == ["inspect", "sequence"]
     sequence_call = controller.calls[1][1]
     assert sequence_call["snapshot_id"] == "snap-1"
+    assert sequence_call["include_ocr"] is True
     assert sequence_call["actions"][1]["text"] == "requested search"
     assert any(message.get("images") == [screenshot] for message in brain.llm_client.requests[1])
     assert any(message.get("images") == [screenshot] for message in brain.llm_client.requests[2])

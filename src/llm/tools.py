@@ -338,7 +338,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
             "properties": {
                 "action": {"type": "string", "enum": ["inspect", "click", "drag", "type", "press", "scroll", "sequence", "wait"], "description": "Wait is accepted as a standalone alias for inspect with a delay, or as a sequence action."},
             "scope": {"type": "string", "enum": ["window", "monitor", "desktop"], "description": "For inspect, use the focused application window (default), a single verified monitor, or the full desktop only when explicitly requested. Unsupported monitor scopes fail closed. The chosen scope persists for follow-up actions."},
-                "snapshot_id": {"type": "string", "description": "Copy the exact ID returned with the latest screenshot for input actions. Inspect does not need a snapshot ID."},
+                "snapshot_id": {"type": "string", "description": "Optional after a fresh observation in this turn; Adam binds the latest controller-issued ID automatically. If supplied, it must exactly match the latest screenshot. Inspect does not need an ID."},
                 "x": {"type": "integer", "description": "Horizontal click coordinate, using the units stated in the latest screenshot response."},
                 "y": {"type": "integer", "description": "Vertical click coordinate, using the units stated in the latest screenshot response."},
                 "end_x": {"type": "integer", "description": "Horizontal destination coordinate for drag, using the same units as x."},

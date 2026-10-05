@@ -3,6 +3,10 @@
 (function () {
   let ws = null;
   let reconnectTimer = null;
+  let wsConnecting = false;
+  let wsGeneration = 0;
+  let pendingChatMessage = null;
+  let pendingChatTimeout = null;
   let isSending = false;
   let historyLoaded = false;
   const liveTools = new Map();
@@ -323,7 +327,12 @@
   }
 
   // Initialize WebSocket connection
-  async function connectWebSocket() {
+  async function connectWebSocket(force = false) {
+    if (!force && ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+    if (!force && wsConnecting) return;
+    const generation = ++wsGeneration;
+    wsConnecting = true;
+
     if (ws) {
       try { ws.close(); } catch {}
       ws = null;
@@ -336,12 +345,16 @@
           method: "POST",
           headers: getAuthHeaders(),
         });
+        if (generation !== wsGeneration) return;
         if (!response.ok) {
+          wsConnecting = false;
           handleAuthRequired();
           setConnectionStatus(false, "offline", "Auth Required");
           return;
         }
       } catch {
+        if (generation !== wsGeneration) return;
+        wsConnecting = false;
         setConnectionStatus(false, "offline", "Connection Failed");
         return;
       }
@@ -352,11 +365,16 @@
     try {
       ws = new WebSocket(wsUrl);
     } catch (err) {
+      if (generation !== wsGeneration) return;
+      wsConnecting = false;
       setConnectionStatus(false, "offline", "Connection Failed");
       return;
     }
+    const socket = ws;
 
-    ws.onopen = () => {
+    socket.onopen = () => {
+      if (ws !== socket || generation !== wsGeneration) return;
+      wsConnecting = false;
       if (reconnectTimer) {
         clearInterval(reconnectTimer);
         reconnectTimer = null;
@@ -364,9 +382,20 @@
       fetchStatus();
       loadHistory();
       checkAuthStatus();
+      if (pendingChatMessage !== null) {
+        const message = pendingChatMessage;
+        pendingChatMessage = null;
+        if (pendingChatTimeout) {
+          clearTimeout(pendingChatTimeout);
+          pendingChatTimeout = null;
+        }
+        socket.send(JSON.stringify({ type: "chat", message }));
+        statusMessage.textContent = "Adam is processing request...";
+      }
     };
 
-    ws.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (ws !== socket || generation !== wsGeneration) return;
       try {
         const data = JSON.parse(event.data);
         if (data.type === "status") {
@@ -401,7 +430,9 @@
       }
     };
 
-    ws.onclose = (event) => {
+    socket.onclose = (event) => {
+      if (ws !== socket || generation !== wsGeneration) return;
+      wsConnecting = false;
       for (const row of liveTools.values()) {
         if (row.dataset.toolRunning === "true") {
           row.querySelector(".tool-badge").textContent =
@@ -416,7 +447,7 @@
         setConnectionStatus(false, "offline", "Disconnected (Reconnecting...)");
       }
 
-      if (isSending) {
+      if (isSending && pendingChatMessage === null) {
         isSending = false;
         sendBtn.disabled = false;
         statusBar.classList.add("hidden");
@@ -424,17 +455,20 @@
       }
 
       if (!reconnectTimer) {
-        reconnectTimer = setInterval(connectWebSocket, 3000);
+        reconnectTimer = setInterval(() => connectWebSocket(), 3000);
       }
     };
 
-    ws.onerror = () => {
+    socket.onerror = () => {
+      if (ws !== socket || generation !== wsGeneration) return;
+      wsConnecting = false;
       setConnectionStatus(false, "offline", "Connection Error");
-      if (isSending) {
+      if (isSending && pendingChatMessage === null) {
         isSending = false;
         sendBtn.disabled = false;
         statusBar.classList.add("hidden");
       }
+      try { socket.close(); } catch {}
     };
   }
 
@@ -451,35 +485,25 @@
     statusBar.classList.remove("hidden");
     statusMessage.textContent = "Adam is processing request...";
 
-    // If WebSocket is open, send via WS; otherwise HTTP fallback
+    // Chat must use this socket so tool starts, finishes, and recovery attempts
+    // can reach the page while Adam is working. Queue until reconnect completes.
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ type: "chat", message: text }));
     } else {
-      try {
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: getAuthHeaders(),
-          body: JSON.stringify({ message: text }),
-        });
-        if (res.status === 401) {
-          handleAuthRequired();
-          appendMessage("assistant", "❌ Authentication required: please configure your authentication token.");
-          return;
-        }
-        const data = await res.json();
-        if (data.status === "completed") {
-          appendMessage("assistant", data.response, data.tool_calls);
-        } else if (data.status === "busy") {
-          appendMessage("assistant", `⚠️ ${data.error || "Adam is currently busy."}`);
-        } else {
-          appendMessage("assistant", `❌ Error: ${data.error || "Failed to execute"}`);
-        }
-      } catch (err) {
-        appendMessage("assistant", `❌ Network error: ${err.message}`);
-      } finally {
+      pendingChatMessage = text;
+      statusMessage.textContent = "Connecting to Adam's live activity stream…";
+      if (pendingChatTimeout) clearTimeout(pendingChatTimeout);
+      pendingChatTimeout = setTimeout(() => {
+        if (pendingChatMessage !== text) return;
+        pendingChatMessage = null;
+        pendingChatTimeout = null;
         isSending = false;
         sendBtn.disabled = false;
         statusBar.classList.add("hidden");
+        appendMessage("assistant", "❌ Could not connect to Adam's live activity stream. Your message was not sent; please try again when the connection is restored.");
+      }, 15000);
+      if (!wsConnecting && (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING)) {
+        connectWebSocket();
       }
     }
   }
@@ -542,7 +566,7 @@
 
     closeAuthModal();
     historyLoaded = false;
-    connectWebSocket();
+    connectWebSocket(true);
   });
 
   clearTokenBtn.addEventListener("click", async () => {
@@ -562,7 +586,7 @@
     authModalStatus.classList.remove("hidden");
     checkAuthStatus();
     historyLoaded = false;
-    connectWebSocket();
+    connectWebSocket(true);
   });
 
   // Initial startup
