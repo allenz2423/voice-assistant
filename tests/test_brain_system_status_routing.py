@@ -506,6 +506,24 @@ def test_generic_save_acknowledgment_reads_back_the_exact_saved_text():
         'In the local scratchpad, enter "Call the dentist Tuesday at 2 pm" in the Note text field, '
         "click Save note, and tell me the saved text."
     )
+    assert _is_dedicated_desktop_navigation_request(request)
+    assert not _is_dedicated_desktop_navigation_request(
+        "Click the Notes app and write a note for tomorrow's appointment."
+    )
+    available_tools = [
+        SimpleNamespace(name=name)
+        for name in (
+            "computer_control", "focus_window", "list_windows", "manage_memory",
+            "launch_application", "list_applications",
+        )
+    ]
+    assert [tool.name for tool in _filter_tools_for_dedicated_desktop_navigation(
+        available_tools, request
+    )] == ["computer_control", "focus_window", "list_windows"]
+    assert _filter_tools_for_dedicated_desktop_navigation(
+        available_tools,
+        "Click the Notes app and write a note for tomorrow's appointment.",
+    ) == available_tools
     evidence = (
         "O3 text='Call the dentist Tuesday at 2 pm' center=(358,314) box=(96,291,620,338)\n"
         "O4 text='Saved: Call the dentist Tuesday at 2 pm' center=(449,776) box=(91,751,807,802)"

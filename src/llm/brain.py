@@ -344,12 +344,19 @@ def _is_dedicated_desktop_navigation_request(user_text: str) -> bool:
             re.IGNORECASE,
         )
     )
+    other_tool_intent_text = re.sub(
+        r"\b(?:notes?\s+(?:text\s+)?(?:field|box|input|area)|"
+        r"(?:click|press|tap)\s+(?:the\s+)?(?:save|create|new|edit)\s+notes?)\b",
+        " ",
+        intent_text,
+        flags=re.IGNORECASE,
+    )
     needs_other_tools = re.search(
         r"\b(?:weather|forecast|calendar|reminder|timer|email|message|text\s+message|"
         r"file|filesystem|download|upload|terminal|shell|bash|command|script|"
         r"web\s+search|internet|website|webpage|url|stock|quote|memory|note|skill|"
         r"system\s+status|process(?:es)?|calculator|calculate|organize|sort)\b",
-        intent_text,
+        other_tool_intent_text,
         re.IGNORECASE,
     )
     # "Start minimized" is a common visible preference label, not a request to
