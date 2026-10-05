@@ -17,7 +17,7 @@ First GUI replay candidate: the disposable notification/settings dialog task, wi
 
 ## Deferred gate
 
-The current host is Desky and the implementation timeline says it remains read-only until the user explicitly lifts the post-crash pause. Code edits, benchmarks, and GUI/provider runs therefore wait for the laptop checkout or an explicit change to that host gate. Continue permitted repository/document review meanwhile; do not infer results from historical reports.
+At the time of the first audit, the current host was Desky and the timeline's post-crash pause had not yet been lifted. The user's later direct instruction to carry out the whole implementation plan authorized the continuing code and synthetic-fixture work on this checkout. The live workstation remains separate from disposable Xvfb work; no physical monitor, mic, service configuration, or live Adam service was changed.
 
 ## Checkpoint 2 — static instrumentation and fixture audit
 
@@ -116,13 +116,10 @@ The explicit 2026 dates above describe the October 5 first run; keeping those da
 
 This keeps the same semantic task and oracle while ensuring the relative week/year retrieval windows contain the synthetic events on every later run. On the current laptop evidence, the expected zone is `America/New_York`; assert and record the actual zone before using that expected answer.
 
-## Latest status — 2026-10-05 16:31 UTC
+## Historical checkpoint — 2026-10-05 16:31 UTC (superseded by later work)
 
-- Last measured result: none in this continuation; evidence is static source/document review only. No performance, success-rate, or host-state benchmark was produced.
-- Current blocker: this checkout is on Desky, which remains read-only under the timeline's post-crash gate; no laptop checkout is mounted.
-- Next loop: Loop 0, on the laptop checkout.
-- Exact deciding task: initialize the disposable settings fixture with Compact off, Sync on, Notifications on; prove the focused window ID/title/PID/bounds and crop locally; then ask Adam, `Turn Compact mode on. Leave Sync and Notifications off.` Pass only if fixture readback is Compact=on, Sync=off, Notifications=off. Do not upload any screenshot unless the window/crop proof passes.
-- First code candidate after baseline: evaluate whether synthetic timezone recall fails because `retrieve_context` omits the stored IANA timezone; if confirmed, make one focused context-format change and compare the same dated prompts plus prior passing recall cases.
+- At that point the continuation still had only static source/document review and the live Desky pause was in force. The user subsequently directed uninterrupted end-to-end implementation, superseding this next-step recommendation.
+- The timezone context omission named here was tested and fixed in Loop 5; see the measured result below and the subsequent dated-memory integration replay.
 
 ## Loop 5 baseline — synthetic dated-memory context (2026-10-05)
 
@@ -143,3 +140,47 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - Post-change context retrieval durations: 0.174, 0.066, 0.052 ms (median 0.066 ms, n=3; no baseline duration and no latency claim).
 - Focused regression result: `uv run --no-sync pytest tests/test_memory.py -q` → 24 passed in 0.79 s. This includes the existing dated/timezone retrieval checks. Provider cost, first audible response, whole-brain answer quality, process-tree PSS/RSS, cgroup peak, CPU, and power were not measured.
 - Decision: retain this focused source change for the demonstrated context-grounding gain. Next verify the actual AdamBrain memory-only path on synthetic data, then run the full laptop recall fixture when that checkout is available.
+
+## Checkpoint 9 — materialized Loop 0 artifacts and GUI scope proof
+
+- Started the implementation run on the user's direct instruction to continue the full plan. Host remains Desky; no laptop checkout is mounted, so all host-labelled numbers below are Desky-only. No model/API key, transcript, personal memory, or real screen content was written to this report.
+- Added `docs/implementation-evaluation-run-sheet-2026-10-05.md` with eight task oracles, cold/warm/long-wait/recovery phases, timing/resource fields, repeat guidance, and screenshot-scope proof requirements.
+- Added `tools/create_implementation_fixtures.py` and regression tests. It generates private disposable folders with a seed-fixed 56-row invoice table, independently computed overdue totals, a self-resetting settings page, source/document files, exact prompts, and date-rolling synthetic memory records. Fixture dates use the local IANA timezone and recompute the prior-week and prior-year samples from the run date.
+- Fixture run `gui-series-20261005-02`: 56 invoices; overdue maximum Juniper Labs, INV-0055 and INV-0056, $2,175.00. Source is 75 UTF-8 bytes and starts `ITEM: olive`; terminal oracle is `3\n`; document final oracle is `STATUS: FINAL\nOWNER: Adam\n`.
+- Initial browser capture proof used disposable Xvfb display `:111` and only the loopback settings fixture. Exact window identity was X11 ID `4194326`, title `Adam Fixture Settings — Mozilla Firefox`, PID `150185`; desktop/window bounds and crop were `(0, 0, 1280, 900)`, image `1280x900`. Adam's screenshot capture reported the same identity immediately before and after capture and issued an action-capable token. The captured crop was viewed locally; it showed only the synthetic preferences page inside the Firefox window. The earlier Firefox privacy tab was closed before this proof. No screenshot was sent to any provider.
+- Local GUI sanity replay manually set the three synthetic controls to `Compact=on; Sync=off; Notifications=off`; the page's visible `STATE` readback agreed. A reload exposed a real fixture defect: Firefox restored changed checkbox values, so the documented initial state was not repeatable. The page now assigns the initial values on each `pageshow`; a second local replay showed the initial state, final state, and reset-to-initial state correctly in locally inspected window crops. A regression test guards the reset handler.
+- `uv run --no-sync pytest tests/test_implementation_fixtures.py tests/test_memory.py -q` → **27 passed**. `python -m py_compile tools/create_implementation_fixtures.py` and `git diff --check` passed.
+- This meets the reproducible-state and screenshot-scope portions of Loop 0. The fixture/run sheet can be regenerated from the repository; the screenshots and fixture instances remain under `/tmp` and are not committed.
+
+## Checkpoint 10 — repeated synthetic recall and first live-route attempt
+
+- Memory fixture run `memory-series-20261005-01`, run date `2026-10-05`, zone `America/New_York`; three synthetic records were saved through `MemoryManager.save` into a new temporary store on each repetition. The previous-week records were September 29 and October 2, 2026; the prior-year distractor was January 15, 2025.
+- Raw retrieval outcomes (each returned context also carried `[event timezone: America/New_York]`):
+  - `day`: 3/3 exact single-record matches with `2026-09-29T09:30:00-04:00` through `2026-09-29T10:15:00-04:00`; retrieval ms `0.320, 0.061, 0.060`.
+  - `week`: 3/3 returned exactly the September 29 and October 2 Juniper records in date order and excluded the 2025 distractor; retrieval ms `0.185, 0.067, 0.068`.
+  - `year`: 3/3 returned only the January 15, 2025 record; retrieval ms `0.139, 0.053, 0.052`.
+  - `timezone`: 3/3 returned the September 29 event and IANA zone; retrieval ms `0.058, 0.048, 0.049`.
+- Aggregate fixture result: **12/12** expected context sets, dates/times, and zones. Per-query median retrieval time was 0.061 ms (day), 0.068 ms (week), 0.053 ms (year), and 0.049 ms (timezone). These are in-process context-retrieval timings, not voice, model, or end-to-end answer latency.
+- Added `test_brain_recall_request_receives_synthetic_event_timezone`, which exercises `AdamBrain.process_user_utterance` with a fake model client and isolated synthetic memory. It checks that the date, offset, and IANA zone reach the model's user message. It passed in the 27-test focused run; this verifies prompt wiring without claiming live model answer quality.
+- Current configured route (non-secret fields only): provider `custom`, model `stealth/space-bunny-alpha`, OpenRouter `/api/v1`, provider fallbacks disabled, TTS `silent`. One isolated direct-Brain settings request returned HTTP 404 in 330 ms; no screenshot was attached (`has_image=False`) and no UI action occurred. The response was `I couldn't reach the language model. Please try again shortly.` Usage/cost were unavailable and no HTTP 429 was observed.
+- Follow-up authenticated metadata GET returned HTTP 200 for model ID `stealth/space-bunny-alpha` but zero provider endpoints at that time. This is a provider route outage, not a fixture or application task result. As required by the timeline, preserve this failure and defer provider-dependent trials; do not silently switch models or treat it as a passing baseline. The local and synthetic work continues meanwhile.
+
+## Checkpoint 11 — instrumentation check and continuation
+
+- Read-only Desky Adam process snapshot, separate from the synthetic request: PID 1787 RSS 2,030,644 KiB and PSS 2,006,470 KiB. Its service cgroup sample was 3,350,310,912 bytes current / 3,459,547,136 bytes peak, with 591,096,455 microseconds cumulative CPU at the time of reading. System `MemAvailable` was 24,238,256 KiB and `SwapFree` 32,770,076 KiB; `MemTotal` was 32,773,192 KiB. These are not an Adam request-attributed profile and do not describe the 16 GB laptop.
+- Power sampler probe: 2.0 seconds, four samples. NVIDIA board readings ranged 7.43–7.72 W (GTX 1080 Ti) and 7.95–8.32 W (RTX 3070). No battery was present; Intel RAPL was only partial because `energy_uj` permission was denied. There is no wall-power measurement, so these idle board readings do not establish whole-system power or Adam energy use. Trace is `/tmp/adam-implementation-fixtures/power-probe.json` and contains host hardware metadata; it is not committed.
+- Current gate: Loop 0 task definitions, deterministic state, and local scope proof are materialized. Loop 1 is waiting only on a serving OpenRouter endpoint; the initial current-route request and zero-endpoint metadata are recorded above. Cold live-service restart, provider-backed task repetitions, voice acknowledgement, and actual microphone trials remain unmeasured. No laptop baseline is claimed.
+- Next eligible work: keep using synthetic isolated stores and fixture oracles; continue focused regression/instrumentation work while checking provider availability in later checkpoints. Resume three exploratory Adam runs per task only when the configured route reports at least one serving endpoint. Keep actual microphone, 16 GB concurrent-workload, and Shenzhen I/O work deferred until their physical/authorization gates are met.
+
+## Checkpoint 12 — local tool-path smoke and optional browser dependency
+
+- A single provider-free fixture smoke ran Adam's actual `read_file`, `run_bash_command`, `write_file`, and `get_system_status` handlers against the disposable fixture. File answer was 75 bytes / `ITEM: olive`; terminal output was exactly `3\n` and the source SHA-256 stayed unchanged; the reopened scratch document matched the exact final text; mixed output matched the browser-computed invoice oracle; CPU count was 32 and reported memory use was 26%, matching the same-host snapshot within 1 percentage point.
+- In an isolated Microsoft Edge headless profile, the rendered local invoice page exposed all 56 table rows and 2,458 body-text characters. Independently summing the overdue rows yielded Juniper Labs / INV-0055 and INV-0056 / $2,175.00, matching the fixture oracle. This exercises the browser-rendered fixture and tool handlers, not Adam's model planning.
+- The optional Playwright package is not installed, so the BrowserNavigator-backed replay returned `ModuleNotFoundError`; no package was installed. The existing Edge route completed the local DOM check without provider access. A first check incorrectly expected the aggregate total to appear as a literal page string; the invoice page correctly contains the two contributing amounts only, so the validator now sums those rendered rows.
+- The fixture's first version used a vague “leave off” phrasing while those controls started on. That prompt was made explicit (“Set Compact mode to on, Sync to off, and Notifications to off.”). Manual local interaction and visual readback passed. Firefox's form-state restoration on reload also led to the explicit `pageshow` reset and a manual initial → final → initial replay; the last inspected state is back at the initial values.
+
+## Checkpoint 13 — tighten fixture and status oracles
+
+- Extended `tests/test_implementation_fixtures.py` to parse the generated HTML table and independently recompute its overdue winner from the rendered rows. It now also seeds the generated rolling-date records through `MemoryManager.save` and verifies exact day/week/year/timezone retrieval against fixture expectations.
+- The run sheet's memory-percentage tolerance is now 1 percentage point because `get_system_status` formats this field as an integer. Each live trial still records raw `MemTotal` and `MemAvailable` values for recalculation.
+- Latest focused verification: `uv run --no-sync pytest tests/test_implementation_fixtures.py tests/test_memory.py -q` → **28 passed in 0.79 s**. This remains focused synthetic coverage, not the full-suite integration gate.

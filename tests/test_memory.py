@@ -463,6 +463,61 @@ def test_temporal_memory_context_includes_iana_timezone(monkeypatch, tmp_path):
     assert "[event timezone: America/New_York]" in context
 
 
+@pytest.mark.asyncio
+async def test_brain_recall_request_receives_synthetic_event_timezone(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.llm.brain import AdamBrain
+
+    monkeypatch.setattr("src.memory.manager.local_timezone_name", lambda: "America/New_York")
+    memory = MemoryManager(
+        storage_path=tmp_path / "synthetic-brain-memory.json",
+        embedder=MemoryEmbedder(disabled=True),
+    )
+    memory.save("I worked on the Juniper migration on 2026-09-29 from 9:30 to 10:15am")
+
+    config = SimpleNamespace(
+        computer_control=SimpleNamespace(enabled=False, ocr_only=True),
+        computer_vision=SimpleNamespace(enabled=False),
+        llm=SimpleNamespace(
+            provider="custom",
+            local_model="test-model",
+            cloud_model="test-model",
+            ollama_host="http://localhost:11434",
+            api_base="https://example.test/v1",
+            api_key="test-key",
+            temperature=0,
+            num_ctx=8192,
+            max_tool_rounds=2,
+        ),
+    )
+
+    class RecallClient:
+        provider = "custom"
+
+        def __init__(self):
+            self.requests = []
+
+        async def chat(self, messages, tools=None, max_tokens=None, think=None):
+            self.requests.append(messages)
+            return {"content": "The recorded timezone was America/New_York.", "tool_calls": []}
+
+    client = RecallClient()
+    tts = SimpleNamespace(speak_async=AsyncMock())
+    brain = AdamBrain(config, None, None, None, tts, memory_mgr=memory)
+    brain.llm_client = client
+
+    await brain.process_user_utterance("What timezone did I use for the 2026-09-29 work entry?")
+
+    assert len(client.requests) == 1
+    user_message = next(message for message in client.requests[0] if message.get("role") == "user")
+    assert "I worked on the Juniper migration" in user_message["content"]
+    assert "2026-09-29T09:30:00-04:00" in user_message["content"]
+    assert "[event timezone: America/New_York]" in user_message["content"]
+    assert tts.speak_async.await_args.args[0] == "The recorded timezone was America/New_York."
+
+
 def test_memory_search_rejects_single_token_false_positive_in_large_store(tmp_path):
     mgr = MemoryManager(storage_path=tmp_path / "specific.json", embedder=MemoryEmbedder(disabled=True))
     expected = mgr.save("I worked on project zircon from 3:45 to 8:00pm")
