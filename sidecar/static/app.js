@@ -227,7 +227,11 @@
       }
     }
     if (data.mode) telemetryMode.textContent = data.mode;
-    if (data.model) telemetryModel.textContent = data.model;
+    if (data.model) {
+      telemetryModel.textContent = data.model;
+      telemetryModel.title = data.tool_free_model
+        ? `Short generic chat route: ${data.tool_free_model}` : "";
+    }
     if (data.tools_count !== undefined) telemetryTools.textContent = `${data.tools_count} tools`;
     if (data.host) hostText.textContent = `${data.host}:${data.port || 8765}`;
     if (data.system_state) setRuntimeState(data.system_state);

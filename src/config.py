@@ -210,6 +210,9 @@ class LLMConfig(BaseModel):
     api_key: str = ""
     provider_only: list[str] = Field(default_factory=list)
     allow_provider_fallbacks: bool = True
+    tool_free_model: str = ""
+    tool_free_provider_only: list[str] = Field(default_factory=list)
+    tool_free_allow_provider_fallbacks: bool = True
     num_ctx: int = 65536
     temperature: float = 0.1
     think: Union[bool, str] = False

@@ -1,4 +1,5 @@
 import os
+import copy
 import re
 import glob
 import subprocess
@@ -697,6 +698,33 @@ def _should_use_compact_conversation_prompt(
     )
 
 
+_TOOL_FREE_MODEL_PRIVATE_CONTEXT_RE = re.compile(
+    r"\b(?:i|me|my|mine|we|us|our|ours|you|your|yours|email|e-mail|message|text|letter|"
+    r"draft|rewrite|summari[sz]e|translate|resume|cv|password|secret|private|confidential|"
+    r"address|phone|medical|financial|it|they|them|this|that|these|those|"
+    r"former|latter|above|previous|same)\b|https?://|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
+    re.IGNORECASE,
+)
+
+
+def _can_route_to_tool_free_model(
+    user_text: str,
+    *,
+    compact_conversation: bool,
+    has_image: bool,
+    memory_only_query: bool,
+) -> bool:
+    """Reserve an optional low-cost model for short, non-personal plain chat."""
+    text = str(user_text or "").strip()
+    return bool(
+        compact_conversation
+        and not has_image
+        and not memory_only_query
+        and 0 < len(text) <= 280
+        and not _TOOL_FREE_MODEL_PRIVATE_CONTEXT_RE.search(text)
+    )
+
+
 def _is_memory_only_recall_request(user_text: str, memory_context: str | None) -> bool:
     """Use retrieved memories alone when a personal-history question needs no live tools."""
     text = str(user_text or "").strip()
@@ -1011,6 +1039,21 @@ class AdamBrain:
         self.reminder_mgr = ReminderManager()
         self.noctalia_calendar = NoctaliaCalendar()
         self.llm_client = UniversalLLMClient(config)
+        self.tool_free_llm_client: UniversalLLMClient | None = None
+        tool_free_model = str(getattr(config.llm, "tool_free_model", "") or "").strip()
+        if tool_free_model:
+            tool_free_config = copy.deepcopy(config)
+            if str(getattr(config.llm, "provider", "local")).lower() == "local":
+                tool_free_config.llm.local_model = tool_free_model
+            else:
+                tool_free_config.llm.cloud_model = tool_free_model
+            tool_free_config.llm.provider_only = list(
+                getattr(config.llm, "tool_free_provider_only", []) or []
+            )
+            tool_free_config.llm.allow_provider_fallbacks = bool(
+                getattr(config.llm, "tool_free_allow_provider_fallbacks", True)
+            )
+            self.tool_free_llm_client = UniversalLLMClient(tool_free_config)
         self.skill_manager = SkillManager()
         self.custom_tool_mgr = CustomToolManager(config_path="config.yaml")
         self._skill_creation_authorized = False
@@ -1786,13 +1829,34 @@ class AdamBrain:
                         "tool_calls": direct_calls,
                     }
             else:
+                request_client = self.llm_client
+                request_messages = self.messages
+                if (
+                    hop == 0
+                    and self.tool_free_llm_client is not None
+                    and not available_tools
+                    and _can_route_to_tool_free_model(
+                        user_text,
+                        compact_conversation=compact_conversation,
+                        has_image=has_image,
+                        memory_only_query=memory_only_query,
+                    )
+                ):
+                    request_client = self.tool_free_llm_client
+                    # Only send the standalone current question to this optional
+                    # secondary route. Earlier turns may contain personal context.
+                    request_messages = [
+                        {"role": "system", "content": self.system_prompt},
+                        self.messages[-1],
+                    ]
+                    print("[LLM] Routed a short generic chat turn to the configured tool-free model.", flush=True)
                 with timed_stage(
                     "brain.llm_chat", hop=hop,
                     has_image=has_image,
                     message_count=len(self.messages),
                 ):
                     response = await self._await_with_progress(
-                        self.llm_client.chat(self.messages, tools=available_tools)
+                        request_client.chat(request_messages, tools=available_tools)
                     )
             if self._is_interrupted or getattr(self.tts, "pending_barge_in_text", None):
                 print("[Adam] Interrupted by user after LLM completion. Halting turn.", flush=True)

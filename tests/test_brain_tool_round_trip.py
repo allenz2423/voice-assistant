@@ -163,6 +163,35 @@ async def test_false_filesystem_access_refusal_reprompts_when_read_tool_is_avail
 
 
 @pytest.mark.asyncio
+async def test_optional_tool_free_model_receives_only_the_current_standalone_question():
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.messages.extend([
+        {"role": "user", "content": "My private draft says PROJECT-EMBER-731."},
+        {"role": "assistant", "content": "I can help revise it."},
+    ])
+    main_client = _DummyClient("custom", [{"content": "Main route", "tool_calls": []}])
+    tool_free_client = _DummyClient("custom", [{
+        "content": "Photosynthesis lets plants turn light into stored chemical energy.",
+        "tool_calls": [],
+    }])
+    brain.llm_client = main_client
+    brain.tool_free_llm_client = tool_free_client
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Explain photosynthesis in one sentence.")
+
+    assert main_client.requests == []
+    assert len(tool_free_client.requests) == 1
+    routed_messages = tool_free_client.requests[0]
+    assert len(routed_messages) == 2
+    assert all("PROJECT-EMBER-731" not in message.get("content", "") for message in routed_messages)
+    assert "Explain photosynthesis in one sentence." in routed_messages[-1]["content"]
+    assert tool_free_client.request_tools == [[]]
+
+
+@pytest.mark.asyncio
 async def test_file_management_refusal_reprompts_with_confirmed_organizer_tool():
     from unittest.mock import AsyncMock
     from src.llm.brain import AdamBrain

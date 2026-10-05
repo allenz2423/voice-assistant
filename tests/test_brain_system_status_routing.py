@@ -34,6 +34,7 @@ from src.llm.brain import (
     _is_dedicated_system_status_request,
     _is_browser_app,
     _should_use_compact_conversation_prompt,
+    _can_route_to_tool_free_model,
 )
 
 
@@ -103,6 +104,27 @@ def test_compact_conversation_prompt_defaults_to_short_plain_comparisons():
     assert "state the main difference first" in COMPACT_CONVERSATION_SYSTEM_PROMPT
     assert "avoid tables and lists unless requested" in COMPACT_CONVERSATION_SYSTEM_PROMPT
     assert "When the user asks for detail, examples, or a list, provide them" in COMPACT_CONVERSATION_SYSTEM_PROMPT
+
+
+def test_optional_tool_free_model_route_accepts_only_standalone_generic_chat():
+    assert _can_route_to_tool_free_model(
+        "Explain photosynthesis in one sentence.",
+        compact_conversation=True,
+        has_image=False,
+        memory_only_query=False,
+    )
+    for prompt, has_image, memory_only_query in (
+        ("What did I say about work last week?", False, False),
+        ("Why is it blue?", False, False),
+        ("Explain photosynthesis.", True, False),
+        ("Explain photosynthesis.", False, True),
+    ):
+        assert not _can_route_to_tool_free_model(
+            prompt,
+            compact_conversation=True,
+            has_image=has_image,
+            memory_only_query=memory_only_query,
+        )
 
 
 def test_browser_name_detection_does_not_match_part_of_an_unrelated_app_name():

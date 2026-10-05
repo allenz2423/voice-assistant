@@ -141,6 +141,7 @@ class DaemonBridge(RuntimeBridge):
 
         brain = getattr(self.daemon, "brain", None)
         model_name = "default"
+        tool_free_model_name = None
         tools_count = 0
         if brain is not None:
             llm_client = getattr(brain, "llm_client", None)
@@ -148,6 +149,12 @@ class DaemonBridge(RuntimeBridge):
                 model_field = "local_model" if getattr(llm_client, "provider", None) == "local" else "cloud_model"
                 configured_model = getattr(llm_client, model_field, None)
                 model_name = configured_model if isinstance(configured_model, str) else getattr(llm_client, "model", "default")
+            tool_free_client = getattr(brain, "tool_free_llm_client", None)
+            if tool_free_client is not None:
+                model_field = "local_model" if getattr(tool_free_client, "provider", None) == "local" else "cloud_model"
+                configured_model = getattr(tool_free_client, model_field, None)
+                if isinstance(configured_model, str):
+                    tool_free_model_name = configured_model
             tools = brain.get_tools() if hasattr(brain, "get_tools") else []
             tools_count = len(tools)
 
@@ -163,6 +170,7 @@ class DaemonBridge(RuntimeBridge):
             "system_state": state,
             "voice_default": True,
             "model": model_name,
+            "tool_free_model": tool_free_model_name,
             "tools_count": tools_count,
             "active_tool": active_tool,
             "features": {
