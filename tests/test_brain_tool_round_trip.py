@@ -90,7 +90,10 @@ async def test_confirmation_pause_correlates_every_call_in_the_tool_batch():
 async def test_current_request_is_active_task_and_prior_dialogue_is_context_only():
     from src.llm.brain import AdamBrain
 
-    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain = AdamBrain(
+        _config(), None, None, None, _DummyTTS(),
+        memory_mgr=SimpleNamespace(retrieve_context=lambda _text: None),
+    )
     brain.messages.extend([
         {"role": "user", "content": "Play a video and pause it."},
         {"role": "assistant", "content": "I could not confirm playback."},
@@ -682,6 +685,227 @@ async def test_agent_loop_supports_file_creation_then_readback(tmp_path):
     results = [message for message in brain.messages if message.get("role") == "tool"]
     assert [message["tool_call_id"] for message in results] == ["create-notes", "read-notes"]
     assert "Decisions" in results[1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_multistep_work_order_does_not_claim_save_without_file_readback(tmp_path):
+    from src.llm.brain import AdamBrain
+    from src.tools.computer_control import ComputerControlResult
+    from tools.create_implementation_fixtures import create_fixtures
+
+    fixture = create_fixtures(tmp_path, "w1-unverified-save")
+    spec = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
+    request = spec["prompts"]["work_order_template"].replace(
+        "<LOCAL_REPORT_URL>", "http://127.0.0.1:8765/invoice-report.html"
+    )
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.computer_controller = SimpleNamespace(
+        available=True, coordinate_mode="pixels", drag_active=False,
+    )
+    brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": [{"id": "see-editor", "function": {
+            "name": "computer_control", "arguments": {"action": "inspect", "scope": "window"},
+        }}]},
+        {"content": "", "tool_calls": [{"id": "press-save", "function": {
+            "name": "computer_control", "arguments": {"action": "press", "key": "Ctrl+S"},
+        }}]},
+        {"content": "Saved.", "tool_calls": []},
+    ])
+
+    async def execute_tool(_name, args):
+        if args["action"] == "inspect":
+            return ComputerControlResult(
+                "Observed the work order editor. Snapshot ID: w1-before-save",
+                status="ok", snapshot_id="w1-before-save",
+            )
+        return ComputerControlResult(
+            "Pressed Ctrl+S in the editor. Snapshot ID: w1-after-save",
+            status="ok", dispatched=True, snapshot_id="w1-after-save",
+        )
+
+    brain._execute_tool = execute_tool
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Synthetic windows"):
+        await brain.process_user_utterance(request)
+
+    assert (fixture / "work-order.txt").read_text(encoding="utf-8") == spec["oracles"]["work_order"]["initial_text"]
+    assert brain.tts.spoken[-1] != "Saved."
+    assert "couldn't verify" in brain.tts.spoken[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_work_order_speak_tool_cannot_claim_save_before_readback(tmp_path):
+    from src.llm.brain import AdamBrain
+    from src.tools.computer_control import ComputerControlResult
+    from tools.create_implementation_fixtures import create_fixtures
+
+    fixture = create_fixtures(tmp_path, "w1-unverified-interim-speech")
+    spec = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
+    request = spec["prompts"]["work_order_template"].replace(
+        "<LOCAL_REPORT_URL>", "http://127.0.0.1:8765/invoice-report.html"
+    )
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.computer_controller = SimpleNamespace(
+        available=True, coordinate_mode="pixels", drag_active=False,
+    )
+    brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": [{"id": "see-editor", "function": {
+            "name": "computer_control", "arguments": {"action": "inspect", "scope": "window"},
+        }}]},
+        {"content": "", "tool_calls": [{"id": "press-save", "function": {
+            "name": "computer_control", "arguments": {"action": "press", "key": "Ctrl+S"},
+        }}]},
+        {"content": "", "tool_calls": [{"id": "say-saved", "function": {
+            "name": "speak", "arguments": {"message": "Saved."},
+        }}]},
+        {"content": "The work order is saved.", "tool_calls": []},
+    ])
+
+    async def execute_tool(name, args):
+        if name == "speak":
+            await brain.tts.speak_async(args["message"])
+            return "Message spoken."
+        if args["action"] == "inspect":
+            return ComputerControlResult(
+                "Observed the work order editor. Snapshot ID: w1-before-save",
+                status="ok", snapshot_id="w1-before-save",
+            )
+        return ComputerControlResult(
+            "Pressed Ctrl+S in the editor. Snapshot ID: w1-after-save",
+            status="ok", dispatched=True, snapshot_id="w1-after-save",
+        )
+
+    brain._execute_tool = execute_tool
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Synthetic windows"):
+        await brain.process_user_utterance(request)
+
+    assert brain.tts.spoken[-1] != "Saved."
+    assert "couldn't verify" in brain.tts.spoken[-1].lower()
+
+
+def test_plain_text_save_reopen_guard_requires_post_save_matching_content_readback(tmp_path):
+    from src.llm.brain import _guard_plain_text_save_reopen_answer
+    from tools.create_implementation_fixtures import create_fixtures
+
+    fixture = create_fixtures(tmp_path, "w1-readback-guard")
+    spec = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
+    target = str((fixture / "work-order.txt").resolve())
+    request = spec["prompts"]["work_order_template"].replace(
+        "<LOCAL_REPORT_URL>", "http://127.0.0.1:8765/invoice-report.html"
+    )
+    initial_text = spec["oracles"]["work_order"]["initial_text"]
+    final_text = spec["oracles"]["work_order"]["final_text"]
+    (fixture / "work-order.txt").write_text(final_text, encoding="utf-8")
+    from src.tools.filesystem import read_file
+
+    save = {
+        "name": "computer_control",
+        "args": {"action": "press", "key": "Ctrl+S"},
+        "output": "Pressed Ctrl+S",
+        "status": "ok",
+    }
+    edit = {
+        "name": "computer_control",
+        "args": {"action": "type", "text": "Juniper Labs"},
+        "output": "Typed text",
+        "status": "ok",
+    }
+
+    def read_call(path=target, *, output=None, status="returned"):
+        return {
+            "name": "read_file",
+            "args": {"path": path},
+            "output": json.dumps({
+                "ok": status == "returned",
+                "readback": read_file(path) if output is None else output,
+            }),
+            "status": status,
+        }
+
+    assert _guard_plain_text_save_reopen_answer(request, [save])
+    assert _guard_plain_text_save_reopen_answer(
+        request, [save, read_call(path=str(fixture / "source.txt"))]
+    )
+    assert _guard_plain_text_save_reopen_answer(
+        request, [read_call(), save]
+    )
+    assert _guard_plain_text_save_reopen_answer(
+        request, [save, read_call(output=f"File: {target}\nBytes: 1\nText:\n{initial_text}")]
+    )
+    assert _guard_plain_text_save_reopen_answer(
+        request, [save, read_call(status="failed", output="Tool failed: missing file")]
+    )
+    truncated = f"File: {target}\nBytes: 90000\nText:\n{final_text}\n[truncated]"
+    assert _guard_plain_text_save_reopen_answer(
+        request, [save, read_call(output=truncated)]
+    )
+    browse_navigation = {
+        "name": "computer_control",
+        "args": {"action": "click", "target_text": "Next browser tab"},
+        "output": "Clicked browser tab",
+        "status": "ok",
+    }
+    summary = _guard_plain_text_save_reopen_answer(
+        request, [edit, save, read_call(), browse_navigation]
+    )
+    assert summary == (
+        "The saved values read back are: SUPPLIER: Juniper Labs; "
+        "INVOICE IDS: INV-0055, INV-0056; OVERDUE TOTAL: $2,175.00; REVIEW: Complete."
+    )
+
+
+@pytest.mark.asyncio
+async def test_work_order_final_response_uses_wrapped_read_file_result(tmp_path):
+    from src.llm.brain import AdamBrain
+    from src.tools.computer_control import ComputerControlResult
+    from tools.create_implementation_fixtures import create_fixtures
+
+    fixture = create_fixtures(tmp_path, "w1-wrapped-readback")
+    spec = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
+    request = spec["prompts"]["work_order_template"].replace(
+        "<LOCAL_REPORT_URL>", "http://127.0.0.1:8765/invoice-report.html"
+    )
+    target = fixture / "work-order.txt"
+    target.write_text(spec["oracles"]["work_order"]["final_text"], encoding="utf-8")
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.computer_controller = SimpleNamespace(
+        available=True, coordinate_mode="pixels", drag_active=False,
+    )
+    brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": [{"id": "see-editor", "function": {
+            "name": "computer_control", "arguments": {"action": "inspect", "scope": "window"},
+        }}]},
+        {"content": "", "tool_calls": [{"id": "press-save", "function": {
+            "name": "computer_control", "arguments": {"action": "press", "key": "Ctrl+S"},
+        }}]},
+        {"content": "", "tool_calls": [{"id": "read-work-order", "function": {
+            "name": "read_file", "arguments": {"path": str(target)},
+        }}]},
+        {"content": "The saved supplier is Birch Support.", "tool_calls": []},
+    ])
+
+    original_execute_tool = brain._execute_tool
+
+    async def execute_tool(name, args):
+        if name == "computer_control":
+            if args["action"] == "inspect":
+                return ComputerControlResult(
+                    "Observed the work order editor. Snapshot ID: w1-before-save",
+                    status="ok", snapshot_id="w1-before-save",
+                )
+            return ComputerControlResult(
+                "Pressed Ctrl+S in the editor. Snapshot ID: w1-after-save",
+                status="ok", dispatched=True, snapshot_id="w1-after-save",
+            )
+        return await original_execute_tool(name, args)
+
+    brain._execute_tool = execute_tool
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Synthetic windows"):
+        await brain.process_user_utterance(request)
+
+    assert brain.tts.spoken[-1] == (
+        "The saved values read back are: SUPPLIER: Juniper Labs; "
+        "INVOICE IDS: INV-0055, INV-0056; OVERDUE TOTAL: $2,175.00; REVIEW: Complete."
+    )
 
 
 @pytest.mark.asyncio

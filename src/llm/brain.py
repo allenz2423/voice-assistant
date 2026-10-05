@@ -1157,6 +1157,189 @@ def _desktop_tool_evidence_for_final_answer(
     return "\n".join(evidence)
 
 
+def _canonical_local_file_path(value: object) -> str | None:
+    raw_path = str(value or "").strip()
+    if not raw_path:
+        return None
+    try:
+        path = Path(os.path.expandvars(os.path.expanduser(raw_path)))
+        return os.path.normcase(str(path.resolve(strict=False)))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
+def _plain_text_save_reopen_target(user_text: str) -> str | None:
+    """Find an explicitly named text file in a save-and-reopen request."""
+    text = str(user_text or "")
+    if not re.search(r"\bsave\b", text, re.IGNORECASE) or not re.search(
+        r"\b(?:reopen|re-open)\b", text, re.IGNORECASE
+    ):
+        return None
+    if re.search(
+        r"\b(?:don't|do not|never|avoid)\s+(?:save|reopen|re-open)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return None
+
+    plain_text_suffixes = {
+        ".txt", ".text", ".md", ".rst", ".log", ".csv", ".conf", ".ini",
+        ".yaml", ".yml", ".toml",
+    }
+    for match in re.finditer(r'["“]([^"”\n]{1,512})["”]', text):
+        candidate = match.group(1).strip()
+        if "://" in candidate or Path(candidate).suffix.lower() not in plain_text_suffixes:
+            continue
+        return _canonical_local_file_path(candidate)
+    return None
+
+
+def _computer_control_actions(arguments: object) -> list[dict]:
+    if not isinstance(arguments, dict):
+        return []
+    if str(arguments.get("action", "")).strip().lower() == "sequence":
+        steps = arguments.get("actions")
+        return [step for step in steps if isinstance(step, dict)] if isinstance(steps, list) else []
+    return [arguments]
+
+
+def _is_file_save_action(action: dict) -> bool:
+    action_name = str(action.get("action", "")).strip().lower()
+    if action_name == "press":
+        key = re.sub(r"\s+", "", str(action.get("key", "")).casefold())
+        key = key.replace("control+", "ctrl+")
+        return key == "ctrl+s"
+    if action_name == "click":
+        label = " ".join(str(action.get("target_text", "")).split()).casefold()
+        return bool(re.fullmatch(r"save(?:\s+(?:document|file|changes))?", label))
+    return False
+
+
+def _saved_file_readback_summary(
+    user_text: str,
+    file_text: str,
+) -> str | None:
+    """Report only field values present in the reopened file."""
+    lines: dict[str, tuple[str, str]] = {}
+    for line in str(file_text or "").splitlines():
+        match = re.match(r"\s*([^:]{1,100}):\s*(.*?)\s*$", line)
+        if match:
+            label = re.sub(r"[^a-z0-9]+", "", match.group(1).casefold())
+            lines[label] = (match.group(1).strip(), match.group(2).strip())
+    verified_fields: list[tuple[str, str]] = []
+    verified_labels: set[str] = set()
+
+    tbd_fields = re.search(
+        r"\breplace\s+(?:the\s+)?TBD\s+(.+?)\s+with\b",
+        user_text,
+        re.IGNORECASE,
+    )
+    if tbd_fields:
+        fields = [
+            part.strip(" ,")
+            for part in re.split(r",|\band\b", tbd_fields.group(1), flags=re.IGNORECASE)
+            if part.strip(" ,")
+        ]
+        for field in fields:
+            normalized = re.sub(r"[^a-z0-9]+", "", field.casefold())
+            matched = next(
+                ((label, display, content) for label, (display, content) in lines.items()
+                 if label == normalized or label.endswith(normalized)),
+                None,
+            )
+            if matched is None:
+                return None
+            label, display, value = matched
+            if not value or value.casefold() in {"tbd", "pending", "unknown"}:
+                return None
+            verified_fields.append((display, value))
+            verified_labels.add(label)
+
+    requested_changes = re.finditer(
+        r"\bchange\s+([a-z][a-z0-9 _-]{0,60}?)\s+from\s+(.{1,80}?)\s+to\s+(.{1,80}?)(?=[.;?!,]|$)",
+        user_text,
+        re.IGNORECASE,
+    )
+    for change in requested_changes:
+        field = re.sub(r"[^a-z0-9]+", "", change.group(1).casefold())
+        expected = change.group(3).strip().strip("\"'“”")
+        actual = lines.get(field)
+        if actual is None or actual[1].casefold() != expected.casefold():
+            return None
+        if field not in verified_labels:
+            verified_fields.append((actual[0], actual[1]))
+            verified_labels.add(field)
+
+    if verified_fields:
+        facts = "; ".join(f"{label}: {value}" for label, value in verified_fields)
+        return f"The saved values read back are: {facts}."
+    compact_text = " ".join(str(file_text or "").split())
+    if len(compact_text) <= 400:
+        return f"The saved file reads: {compact_text}" if compact_text else "The saved file is empty."
+    return "I read the saved file successfully, but its contents are too long to report in one response."
+
+
+def _guard_plain_text_save_reopen_answer(
+    user_text: str,
+    tool_calls: list[dict],
+) -> str | None:
+    """Require a later, matching file read before reporting a text-file save."""
+    target = _plain_text_save_reopen_target(user_text)
+    if target is None:
+        return None
+
+    last_save_position: tuple[int, int] | None = None
+    for call_index, call in enumerate(tool_calls):
+        if not isinstance(call, dict):
+            continue
+        name = str(call.get("name", ""))
+        arguments = call.get("args", {})
+        status = str(call.get("status", ""))
+        if name in {"create_file", "write_file"}:
+            if _canonical_local_file_path(arguments.get("path") if isinstance(arguments, dict) else None) == target:
+                if status in {"ok", "returned"}:
+                    last_save_position = (call_index, 0)
+        elif name == "computer_control":
+            for action_index, action in enumerate(_computer_control_actions(arguments)):
+                position = (call_index, action_index)
+                if _is_file_save_action(action) and status in {"ok", "returned"}:
+                    last_save_position = position
+
+    if last_save_position is None:
+        return f"I couldn't verify the saved contents of {Path(target).name} because I didn't confirm a save action."
+
+    for call_index, call in enumerate(tool_calls):
+        if not isinstance(call, dict) or call_index <= last_save_position[0]:
+            continue
+        if call.get("name") != "read_file" or str(call.get("status", "")) not in {"ok", "returned"}:
+            continue
+        arguments = call.get("args", {})
+        if not isinstance(arguments, dict) or _canonical_local_file_path(arguments.get("path")) != target:
+            continue
+        try:
+            envelope = json.loads(str(call.get("output", "")))
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(envelope, dict) or envelope.get("ok") is not True:
+            continue
+        output = envelope.get("readback")
+        if not isinstance(output, str):
+            continue
+        expected_header = f"File: {target}\n"
+        if not output.startswith(expected_header) or output.rstrip().endswith("[truncated]"):
+            continue
+        text_marker = "\nText:\n"
+        marker_index = output.find(text_marker)
+        if marker_index < 0:
+            continue
+        file_text = output[marker_index + len(text_marker):]
+        summary = _saved_file_readback_summary(user_text, file_text)
+        if summary:
+            return summary
+
+    return f"I couldn't verify the saved contents of {Path(target).name} because I didn't successfully read it after saving."
+
+
 class AdamBrain:
     """The central ReAct autonomous agent loop driving tool execution and conversation."""
     def __init__(self, config, supervisor, probe, confirmation_mgr, tts_engine, arbiter=None, speculative_router=None, preload_ocr: bool = False, preload_vision: bool = False, memory_mgr=None):
@@ -2212,6 +2395,11 @@ class AdamBrain:
                 )
                 if readback_summary:
                     content = readback_summary
+                save_readback_guard = _guard_plain_text_save_reopen_answer(
+                    user_text, all_executed_tool_calls,
+                )
+                if save_readback_guard:
+                    content = save_readback_guard
                 print(f"[Adam] Response: {content}")
                 with timed_stage("brain.tts_speak"):
                     await self.tts.speak_async(content)
@@ -2342,6 +2530,16 @@ class AdamBrain:
                 fn = tc.get("function", {}) if hasattr(tc, "get") else getattr(tc, "function", {})
                 name = fn.get("name") if hasattr(fn, "get") else getattr(fn, "name", "")
                 args = normalized_args_by_idx.get(idx, {})
+                if name == "speak" and isinstance(args, dict):
+                    spoken_update = str(args.get("message", ""))
+                    reports_save = bool(re.search(r"\b(?:saved|reopened)\b", spoken_update, re.IGNORECASE))
+                    if reports_save:
+                        save_readback_guard = _guard_plain_text_save_reopen_answer(
+                            user_text, all_executed_tool_calls,
+                        )
+                        if save_readback_guard:
+                            args = {**args, "message": save_readback_guard}
+                            normalized_args_by_idx[idx] = args
                 if name == "computer_control":
                     args = _bind_current_turn_snapshot_id(name, args, turn_snapshot_id)
                     normalized_args_by_idx[idx] = args
@@ -2862,6 +3060,11 @@ class AdamBrain:
             )
             if readback_summary:
                 final_content = readback_summary
+            save_readback_guard = _guard_plain_text_save_reopen_answer(
+                user_text, all_executed_tool_calls,
+            )
+            if save_readback_guard:
+                final_content = save_readback_guard
 
             print(f"[Adam] Response: {final_content}")
             self.messages.append({"role": "assistant", "content": final_content})
