@@ -316,8 +316,7 @@ def _is_dedicated_desktop_navigation_request(user_text: str) -> bool:
     """Recognize a self-contained, visible UI interaction without other domains."""
     text = str(user_text or "")
     intent_text = _without_quoted_screen_text(text)
-    if _is_bounded_visible_form_request(text):
-        return True
+    bounded_visible_form = _is_bounded_visible_form_request(text)
     has_ui_action = re.search(
         r"\b(?:click|press|type|drag|drop|scroll|inspect|read)\b",
         text,
@@ -369,7 +368,7 @@ def _is_dedicated_desktop_navigation_request(user_text: str) -> bool:
         re.IGNORECASE,
     )
     return bool(
-        (has_ui_action or selects_visible_ui or edits_explicit_document_app)
+        (bounded_visible_form or has_ui_action or selects_visible_ui or edits_explicit_document_app)
         and not needs_other_tools
         and (not has_non_gui_action or edits_explicit_document_app)
     )

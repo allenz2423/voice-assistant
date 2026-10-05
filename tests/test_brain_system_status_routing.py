@@ -944,6 +944,40 @@ def test_local_visible_form_that_stops_before_commit_uses_compact_gui_tools():
     ]
 
 
+@pytest.mark.parametrize("additional_request", [
+    "Also check tomorrow's weather.",
+    "Also check my calendar for that time.",
+    "Also search the web for the venue's hours.",
+])
+def test_mixed_bounded_visible_form_keeps_tools_for_every_requested_domain(additional_request):
+    request = (
+        "On the local reservation preview, choose tomorrow at 5:00 PM for two people. "
+        "Fill the form and stop before placing it. Tell me the status. "
+        f"{additional_request}"
+    )
+    assert _is_bounded_visible_form_request(request)
+    available = [
+        SimpleNamespace(name=name)
+        for name in (
+            "computer_control", "focus_window", "list_windows", "get_weather",
+            "calendar", "search_web", "read_file",
+        )
+    ]
+
+    assert not _is_dedicated_desktop_navigation_request(request)
+    assert _filter_tools_for_dedicated_desktop_navigation(available, request) == available
+
+
+def test_mixed_app_launch_and_edit_keeps_general_tools():
+    request = "Open GIMP and edit the current image, then check tomorrow's weather."
+    available = [
+        SimpleNamespace(name=name)
+        for name in ("launch_application", "list_applications", "computer_control", "get_weather")
+    ]
+
+    assert _filter_tools_for_dedicated_desktop_navigation(available, request) == available
+
+
 @pytest.mark.asyncio
 async def test_desktop_task_stops_without_model_retry_when_display_is_dpms_off():
     class DummyClient:
