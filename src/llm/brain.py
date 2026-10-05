@@ -525,6 +525,18 @@ def _can_answer_without_tools(user_text: str) -> bool:
     if not text or len(text) > 500:
         return False
 
+    # Questions about local resources can require inspection even without an
+    # imperative verb (for example, asking whether a folder is disorganized).
+    # Be conservative: irrelevant schemas are cheaper than withholding access.
+    if re.search(
+        r"\b(?:files?|folders?|director(?:y|ies)|downloads?|documents?|paths?|"
+        r"terminals?|scrollback|clipboard|permissions?|services?|processes?|"
+        r"settings?|notifications?|logs?)\b|(?:~/|/home/|/tmp/|/etc/|/var/)",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+
     tool_intent = re.search(
         r"\b(?:search|look\s+up|browse|fetch|open|launch|close|click|drag|drop|press|"
         r"run|execute|install|restart|kill|move|resize|tile|focus|switch|navigate|type|scroll|"
