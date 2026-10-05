@@ -219,6 +219,7 @@ def test_join_isolates_trace_counts_provider_attempts_and_preserves_failure_evid
     ]
     assert summary["first_playback"]["request_end_delta_ms"] == 1.5
     assert summary["first_tool_start"]["request_end_delta_ms"] == 0.05
+    assert summary["event_clock_window"]["request_to_verified_completion_ms"] == 4.0
     assert summary["first_playback"]["meaningful_acknowledgment"] is None
     assert "unrelated private text" not in json.dumps(summary)
     assert "must not be retained" not in json.dumps(summary)
@@ -270,6 +271,7 @@ def test_speech_summary_uses_tagged_roles_and_groups_clause_playback(tmp_path):
     summary = summarize_files(record_path, event_path)
     speech = summary["speech"]
 
+    assert summary["event_clock_window"]["request_to_verified_completion_ms"] == 40_000.0
     assert summary["first_playback"]["clock_ns"] == BASE + 500_000_000
     assert speech["first_acknowledgment"] == {
         "clock_ns": BASE + 1_000_000_000,
@@ -322,6 +324,18 @@ def test_unknown_and_identityless_speech_roles_remain_unavailable(tmp_path):
     )
     assert speech["unclassified_playback_count"] == 1
     assert speech["tagged_playback_missing_utterance_id_count"] == 2
+
+
+def test_request_elapsed_rejects_completion_before_request_end(tmp_path):
+    record_path, event_path = _write_inputs(
+        tmp_path,
+        [_event("turn.started", BASE, span_id="turn-1", status="started")],
+        request_end=BASE + 2,
+        verified_completion=BASE + 1,
+    )
+
+    with pytest.raises(RunEventSummaryError, match="verified completion precedes request end"):
+        summarize_files(record_path, event_path)
 
 
 def test_same_currency_complete_accounting_sums_usage_and_provider_durations(tmp_path):

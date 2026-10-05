@@ -710,6 +710,9 @@ def summarize_run_events(
         "event_clock_window": {
             "request_end_clock_ns": request_end,
             "verified_completion_clock_ns": verified_completion,
+            "request_to_verified_completion_ms": round(
+                (verified_completion - request_end) / 1_000_000, 3,
+            ),
             "first_clock_ns": clocks[0],
             "last_clock_ns": clocks[-1],
         },
