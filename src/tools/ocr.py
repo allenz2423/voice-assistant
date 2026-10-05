@@ -58,6 +58,11 @@ class OCRRegion:
 class ScreenOCR:
     """Extract text and clickable text-region boxes with a bounded PP-OCRv6 model."""
 
+    # The current onnxruntime-gpu wheels use CUDA 13, which dropped support
+    # for pre-Turing NVIDIA devices. In the measured CUDA 12 compatibility
+    # path, PP-OCRv6 was also substantially slower on Pascal than the CPU path.
+    _MIN_CUDA_COMPUTE_CAPABILITY = (7, 5)
+
     def __init__(
         self,
         max_regions: int = 100,
@@ -80,10 +85,12 @@ class ScreenOCR:
         self._engine = engine
         self._engine_instrumented = False
         self._read_metrics = threading.local()
-        self.device = device.casefold()
+        self.requested_device = device.casefold()
+        self.device = self.requested_device
         self.model_size = model_size.casefold()
         self.gpu_uuid = gpu_uuid.strip()
         self._device_id: int | None = None
+        self._device_fallback_reason = ""
         if self.device not in {"cpu", "cuda"}:
             raise ValueError(f"Unsupported OCR device {device!r}; choose cpu or cuda.")
         if self.model_size not in {"small", "medium"}:
@@ -92,6 +99,15 @@ class ScreenOCR:
             if not self.gpu_uuid:
                 raise RuntimeError("GPU OCR needs computer_vision.gpu_uuid to select the allowed GPU.")
             self._device_id = self._resolve_gpu_index(self.gpu_uuid)
+            capability = self._resolve_gpu_compute_capability(self._device_id)
+            if capability < self._MIN_CUDA_COMPUTE_CAPABILITY:
+                self.device = "cpu"
+                self._device_id = None
+                self._device_fallback_reason = (
+                    f"GPU {self.gpu_uuid} has compute capability {capability[0]}.{capability[1]}; "
+                    "using CPU based on benchmark results: this GPU generation failed with the "
+                    "default CUDA 13 build and was slower on the tested compatible CUDA 12 stack."
+                )
         if preload:
             self.load()
 
@@ -126,6 +142,31 @@ class ScreenOCR:
         except (OSError, AttributeError) as exc:
             raise RuntimeError("Could not resolve the configured OCR GPU through the CUDA driver.") from exc
         raise RuntimeError(f"Configured OCR GPU UUID {gpu_uuid!r} was not found in CUDA's device list.")
+
+    @staticmethod
+    def _resolve_gpu_compute_capability(device_index: int) -> tuple[int, int]:
+        """Read the selected CUDA device's compute capability via the driver."""
+        try:
+            cuda = ctypes.CDLL("libcuda.so.1")
+            device_type = ctypes.c_int
+            cuda.cuInit.argtypes = [ctypes.c_uint]
+            cuda.cuDeviceGet.argtypes = [ctypes.POINTER(device_type), ctypes.c_int]
+            cuda.cuDeviceGetAttribute.argtypes = [
+                ctypes.POINTER(ctypes.c_int), ctypes.c_int, device_type
+            ]
+            device = device_type()
+            if cuda.cuInit(0) != 0 or cuda.cuDeviceGet(ctypes.byref(device), device_index) != 0:
+                raise RuntimeError("CUDA driver could not inspect the configured OCR GPU.")
+            major = ctypes.c_int()
+            minor = ctypes.c_int()
+            # CUDA driver API enum values for COMPUTE_CAPABILITY_MAJOR/MINOR.
+            if cuda.cuDeviceGetAttribute(ctypes.byref(major), 75, device) != 0:
+                raise RuntimeError("CUDA driver could not read the GPU's compute capability.")
+            if cuda.cuDeviceGetAttribute(ctypes.byref(minor), 76, device) != 0:
+                raise RuntimeError("CUDA driver could not read the GPU's compute capability.")
+            return major.value, minor.value
+        except (OSError, AttributeError) as exc:
+            raise RuntimeError("Could not inspect the configured OCR GPU through the CUDA driver.") from exc
 
     def _get_engine(self):
         if self._engine is None:
@@ -175,8 +216,9 @@ class ScreenOCR:
                     flush=True,
                 )
             else:
+                fallback = f" {self._device_fallback_reason}" if self._device_fallback_reason else ""
                 print(
-                    f"[OCR] PP-OCRv6 {self.model_size} using CPU (inference threads capped at 2).",
+                    f"[OCR] PP-OCRv6 {self.model_size} using CPU (inference threads capped at 2).{fallback}",
                     flush=True,
                 )
         self._instrument_engine(self._engine)

@@ -48,6 +48,7 @@ from src.tools.jev_decision import JevDecisionClient
 from src.tools.desktop_agent import DesktopComputerAgent
 from src.tools.omniparser import OmniParserScreenshotGrounder
 from src.tools.observe_desktop import observe_desktop
+from src.tools.terminal_text import detect_terminal, read_terminal_text
 from src.tools.timers import TimerManager
 from src.tools.reminders import ReminderManager
 from src.tools.noctalia import open_noctalia_calendar
@@ -76,7 +77,8 @@ TEXT_FALLBACK_READ_ONLY_TOOLS = {
     "list_windows", "get_system_status", "list_processes", "list_audio_devices",
     "get_now_playing", "web_search", "list_timers", "list_reminders",
     "get_financial_quote", "calculate_math", "list_skills", "get_skill_context",
-    "fetch_webpage", "observe_desktop", "read_file", "manage_memory",
+    "fetch_webpage", "observe_desktop", "read_terminal", "detect_terminal",
+    "read_file", "manage_memory",
 }
 
 DESKTOP_MUTATION_TOOLS = {
@@ -91,7 +93,7 @@ DESKTOP_MUTATION_TOOLS = {
 # and desktop observations/actions depend on current UI state.
 PARALLEL_READ_ONLY_TOOLS = {
     "web_search", "fetch_webpage", "get_weather", "get_system_status",
-    "list_processes",
+    "list_processes", "read_terminal", "detect_terminal",
 }
 def _tool_result_message(
     *, call_id: str, origin: str, status: str,
@@ -481,6 +483,17 @@ def _should_block_unverified_application_launch(
 
 def _filter_tools_for_dedicated_desktop_navigation(available_tools: list, user_text: str) -> list:
     text = str(user_text or "")
+    terminal_read = re.search(
+        r"\b(?:read|show|inspect|capture|what(?:'s|\s+is)?|check)\b[^\n]{0,70}"
+        r"\b(?:terminal|scrollback|shell\s+output|pane\s+output)\b",
+        text,
+        re.IGNORECASE,
+    )
+    if terminal_read:
+        allowed_names = {"read_terminal", "detect_terminal"}
+        filtered = [tool for tool in available_tools if tool.name in allowed_names]
+        if filtered:
+            return filtered
     if _is_dedicated_desktop_navigation_request(text):
         allowed_names = {
             "computer_control", "focus_window", "list_windows",
@@ -520,6 +533,8 @@ def _can_answer_without_tools(user_text: str) -> bool:
         r"write\b[^.!?]{0,60}\b(?:file|document)\b|"
         r"write\b[^.!?]{0,60}\b(?:to|in|into|on)\s+(?:my|the)\s+notes?\b|"
         r"read\s+(?:(?:my|the)\s+)?(?:file|document|screen|email)|"
+        r"read\s+(?:(?:my|the|this)\s+)?(?:terminal|scrollback|shell\s+output|pane\s+output)|"
+        r"(?:what(?:'s|\s+is)?|show|inspect|check)\b[^.!?\n]{0,60}\b(?:terminal|scrollback|shell\s+output|pane\s+output)\b|"
         r"(?:select|choose|pick)\b[^.!?\n]{0,80}\b(?:scheduler|reservation|booking|time\s+slot|"
         r"local\s+preview|menu|button|option|form|page|window|screen|desktop|app|application)\b|"
         r"check\s+what\s+(?:you|i)\s+(?:wrote|saved)|send\s+(?:an?\s+)?(?:email|message)|"
@@ -2384,6 +2399,18 @@ class AdamBrain:
                 args.get("content", ""),
                 bool(args.get("overwrite", False)),
             )
+
+        elif name == "detect_terminal":
+            result = await asyncio.to_thread(detect_terminal)
+            return json.dumps(result, ensure_ascii=False)
+
+        elif name == "read_terminal":
+            result = await asyncio.to_thread(
+                read_terminal_text,
+                args.get("scope", "screen"),
+                args.get("max_chars", 12_000),
+            )
+            return json.dumps(result, ensure_ascii=False)
 
         elif name == "manage_memory":
             action = str(args.get("action", "search")).lower()

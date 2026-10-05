@@ -212,6 +212,9 @@ install_system_packages() {
         PKG_MANAGER="emerge"
         PKGS=(
             media-libs/portaudio
+            app-misc/tmux
+            app-accessibility/at-spi2-core
+            dev-python/pygobject
             gui-apps/wtype
             app-misc/ydotool
             x11-misc/xdotool
@@ -235,6 +238,9 @@ install_system_packages() {
         PKGS=(
             portaudio
             portaudio-devel
+            tmux
+            at-spi2-core
+            python-gobject
             wtype
             ydotool
             xdotool
@@ -260,6 +266,10 @@ install_system_packages() {
         PKGS=(
             libportaudio2
             portaudio19-dev
+            tmux
+            at-spi2-core
+            gir1.2-atspi-2.0
+            python3-gi
             wtype
             ydotool
             xdotool
@@ -284,6 +294,9 @@ install_system_packages() {
         PKGS=(
             portaudio
             portaudio-devel
+            tmux
+            at-spi2-core
+            python3-gobject
             wtype
             ydotool
             xdotool
@@ -309,6 +322,9 @@ install_system_packages() {
         PKG_MANAGER="pacman"
         PKGS=(
             portaudio
+            tmux
+            at-spi2-core
+            python-gobject
             wtype
             ydotool
             xdotool
@@ -331,52 +347,52 @@ install_system_packages() {
     elif [[ "$DISTRO_ID" == "alpine" || "$DISTRO_LIKE" == *"alpine"* ]]; then
         PKG_MANAGER="apk"
         PKGS=(
-            portaudio portaudio-dev wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
+            portaudio portaudio-dev tmux at-spi2-core py3-gobject3 wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
             pipewire pipewire-pulse wireplumber alsa-utils pulseaudio-utils
             curl git jq pkgconf build-base linux-headers
         )
     elif [[ "$DISTRO_ID" == "void" || "$DISTRO_LIKE" == *"void"* ]]; then
         PKG_MANAGER="xbps-install"
         PKGS=(
-            portaudio-devel wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
+            portaudio-devel tmux at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
             pipewire wireplumber alsa-utils pulseaudio curl git jq
             pkg-config base-devel
         )
     elif [[ "$DISTRO_ID" == "solus" || "$DISTRO_LIKE" == *"solus"* ]]; then
         PKG_MANAGER="eopkg"
         PKGS=(
-            portaudio-devel wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
+            portaudio-devel tmux at-spi2-core python-gobject wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
             pipewire wireplumber alsa-utils pulseaudio curl git jq
             pkg-config system.devel
         )
     elif [[ "$DISTRO_ID" == "nixos" || "$DISTRO_LIKE" == *"nixos"* ]]; then
-        log_warn "NixOS uses declarative system packages. Add portaudio, pipewire, wireplumber, libnotify, curl, git, jq, wtype, ydotool, xdotool, wmctrl, grim, slurp, and brightnessctl to your system configuration."
+        log_warn "NixOS uses declarative system packages. Add portaudio, pipewire, wireplumber, libnotify, curl, git, jq, tmux, at-spi2-core, python3Packages.pygobject3, wtype, ydotool, xdotool, wmctrl, grim, slurp, and brightnessctl to your system configuration."
         log_warn "Continuing without changing your NixOS configuration."
         return 0
     elif command -v apt-get &>/dev/null; then
         PKG_MANAGER="apt"
-        PKGS=(libportaudio2 portaudio19-dev wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulse wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config build-essential)
+        PKGS=(libportaudio2 portaudio19-dev tmux at-spi2-core gir1.2-atspi-2.0 python3-gi wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulse wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config build-essential)
     elif command -v dnf &>/dev/null; then
         PKG_MANAGER="dnf"
-        PKGS=(portaudio portaudio-devel wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconf-pkg-config gcc gcc-c++ make)
+        PKGS=(portaudio portaudio-devel tmux at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconf-pkg-config gcc gcc-c++ make)
     elif command -v yum &>/dev/null; then
         PKG_MANAGER="yum"
-        PKGS=(portaudio portaudio-devel wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconfig gcc gcc-c++ make)
+        PKGS=(portaudio portaudio-devel tmux at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconfig gcc gcc-c++ make)
     elif command -v zypper &>/dev/null; then
         PKG_MANAGER="zypper"
-        PKGS=(portaudio portaudio-devel wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulseaudio wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config gcc make)
+        PKGS=(portaudio portaudio-devel tmux at-spi2-core python-gobject wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulseaudio wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config gcc make)
     elif command -v pacman &>/dev/null; then
         PKG_MANAGER="pacman"
-        PKGS=(portaudio wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulse wireplumber pulseaudio alsa-utils curl git jq pkgconf base-devel)
+        PKGS=(portaudio tmux at-spi2-core python-gobject wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulse wireplumber pulseaudio alsa-utils curl git jq pkgconf base-devel)
     elif command -v apk &>/dev/null; then
         PKG_MANAGER="apk"
-        PKGS=(portaudio portaudio-dev wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkgconf build-base linux-headers)
+        PKGS=(portaudio portaudio-dev tmux at-spi2-core py3-gobject3 wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkgconf build-base linux-headers)
     elif command -v xbps-install &>/dev/null; then
         PKG_MANAGER="xbps-install"
-        PKGS=(portaudio-devel wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config base-devel)
+        PKGS=(portaudio-devel tmux at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config base-devel)
     elif command -v eopkg &>/dev/null; then
         PKG_MANAGER="eopkg"
-        PKGS=(portaudio-devel wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config system.devel)
+        PKGS=(portaudio-devel tmux at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config system.devel)
     fi
 
     if [[ -z "$PKG_MANAGER" ]]; then

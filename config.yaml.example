@@ -265,3 +265,14 @@ custom_tools:
   #       default: "voice-assistant"
   #   commands:
   #     - "cd ~/workspace/{project} && cargo build --release"
+
+# ---------------------------------------------------------
+# Optional WebUI Sidecar
+# ---------------------------------------------------------
+# The WebUI is disabled by default to preserve voice as the primary
+# interface. It binds strictly to loopback (127.0.0.1) by default.
+webui:
+  enabled: false
+  host: "127.0.0.1"
+  port: 8765
+  auth_token: ""  # Optional Bearer token for authentication

@@ -1,0 +1,355 @@
+"""Aiohttp-based HTTP and WebSocket server for Adam's WebUI sidecar.
+
+Binds to loopback by default and enforces optional token authentication.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import json
+import logging
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlsplit
+from aiohttp import web, WSMsgType
+
+from src.config import WebUIConfig
+from sidecar.bridge import RuntimeBridge
+
+STATIC_DIR = Path(__file__).parent / "static"
+logger = logging.getLogger("adam.sidecar")
+WS_AUTH_COOKIE = "adam_webui_ws_auth"
+
+
+def _is_loopback(host: str | None) -> bool:
+    if not host:
+        return False
+    clean = host.strip().lower()
+    if clean.startswith("::ffff:"):
+        clean = clean[7:]
+    if clean in ("localhost", "testclient"):
+        return True
+    try:
+        return ipaddress.ip_address(clean).is_loopback
+    except ValueError:
+        return False
+
+
+def _normalized_host(host: str | None) -> str | None:
+    if not host:
+        return None
+    clean = host.strip().lower().rstrip(".")
+    if clean == "localhost":
+        return clean
+    try:
+        return ipaddress.ip_address(clean).compressed
+    except ValueError:
+        return None
+
+
+@web.middleware
+async def security_headers_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+    response = await handler(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "connect-src 'self' ws: wss:;"
+    )
+    return response
+
+
+def create_auth_middleware(auth_token: str):
+    @web.middleware
+    async def auth_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+        # If no auth token is configured, loopback access is allowed without auth
+        if not auth_token:
+            return await handler(request)
+
+        # Allow static assets and root page to load login prompt/assets if needed
+        # But protect API and WebSocket routes
+        if not request.path.startswith("/api"):
+            return await handler(request)
+
+        # Allow unauthenticated discovery of auth requirement
+        if request.path == "/api/auth/status":
+            return await handler(request)
+
+        # The WebSocket uses a scoped HttpOnly cookie; HTTP APIs use a bearer header.
+        auth_header = request.headers.get("Authorization", "")
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        else:
+            token = request.cookies.get(WS_AUTH_COOKIE, "")
+
+        if token != auth_token:
+            return web.json_response(
+                {
+                    "error": "Unauthorized: valid authentication token required",
+                    "auth_required": True,
+                },
+                status=401,
+            )
+        return await handler(request)
+
+    return auth_middleware
+
+
+def create_loopback_middleware(bound_host: str):
+    is_bound_loopback = _is_loopback(bound_host)
+
+    @web.middleware
+    async def loopback_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+        # If server is intended for loopback, reject remote origins
+        if is_bound_loopback:
+            remote = getattr(request, "_remote_override", None) or request.remote or ""
+            if not _is_loopback(remote):
+                return web.json_response(
+                    {"error": "Forbidden: Adam WebUI binds strictly to loopback by default"},
+                    status=403,
+                )
+        return await handler(request)
+
+    return loopback_middleware
+
+
+def create_same_origin_middleware():
+    """Reject DNS-rebinding Host headers and cross-origin browser requests."""
+    @web.middleware
+    async def same_origin_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
+        try:
+            target = urlsplit(f"//{request.host}")
+            target_host = _normalized_host(target.hostname)
+            target_port = target.port or (443 if request.scheme == "https" else 80)
+            valid_target = (
+                target.username is None
+                and target.password is None
+                and target_host is not None
+                and (target_host == "localhost" or _is_loopback(target_host))
+            )
+        except ValueError:
+            target_host = None
+            target_port = None
+            valid_target = False
+
+        if not valid_target:
+            return web.json_response({"error": "Forbidden: invalid local Host header"}, status=403)
+
+        origin = request.headers.get("Origin")
+        if origin:
+            try:
+                parsed = urlsplit(origin)
+                origin_host = _normalized_host(parsed.hostname)
+                origin_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+                valid_origin = (
+                    parsed.scheme == request.scheme
+                    and parsed.username is None
+                    and parsed.password is None
+                    and parsed.path in ("", "/")
+                    and not parsed.query
+                    and not parsed.fragment
+                    and origin_host == target_host
+                    and origin_port == target_port
+                )
+            except ValueError:
+                valid_origin = False
+
+            if not valid_origin:
+                return web.json_response(
+                    {"error": "Forbidden: WebUI accepts same-origin browser requests only"},
+                    status=403,
+                )
+        return await handler(request)
+
+    return same_origin_middleware
+
+
+class SidecarServer:
+    """Manages endpoints, websocket connections, and runtime bridge."""
+
+    def __init__(self, config: WebUIConfig, bridge: RuntimeBridge) -> None:
+        self.config = config
+        self.bridge = bridge
+        self.active_websockets: set[web.WebSocketResponse] = set()
+
+    async def handle_index(self, request: web.Request) -> web.FileResponse:
+        index_path = STATIC_DIR / "index.html"
+        return web.FileResponse(index_path)
+
+    async def handle_status(self, request: web.Request) -> web.Response:
+        status_data = await self.bridge.get_status()
+        status_data["host"] = self.config.host
+        status_data["port"] = self.config.port
+        status_data["is_loopback"] = _is_loopback(self.config.host)
+        status_data["auth_required"] = bool(self.config.auth_token)
+        return web.json_response(status_data)
+
+    async def handle_auth_status(self, request: web.Request) -> web.Response:
+        auth_header = request.headers.get("Authorization", "")
+        token = ""
+        if auth_header.startswith("Bearer "):
+            token = auth_header[7:].strip()
+        else:
+            token = request.cookies.get(WS_AUTH_COOKIE, "")
+
+        required = bool(self.config.auth_token)
+        valid = (not required) or (token == self.config.auth_token)
+        return web.json_response({
+            "auth_required": required,
+            "authenticated": valid,
+        })
+
+    async def handle_auth_session(self, request: web.Request) -> web.Response:
+        """Exchange a bearer header for a short-lived WebSocket-only cookie."""
+        response = web.json_response({"ok": True, "auth_required": bool(self.config.auth_token)})
+        if request.method == "POST" and self.config.auth_token:
+            response.set_cookie(
+                WS_AUTH_COOKIE,
+                self.config.auth_token,
+                max_age=3600,
+                httponly=True,
+                secure=request.secure,
+                samesite="Strict",
+                path="/api/ws",
+            )
+        elif request.method == "DELETE":
+            response.del_cookie(WS_AUTH_COOKIE, path="/api/ws")
+        return response
+
+    async def handle_history(self, request: web.Request) -> web.Response:
+        history = await self.bridge.get_history()
+        return web.json_response({"messages": history})
+
+    async def handle_chat(self, request: web.Request) -> web.Response:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON body"}, status=400)
+
+        message = str(body.get("message", "")).strip()
+        if not message:
+            return web.json_response({"error": "Message text is required"}, status=400)
+
+        result = await self.bridge.handle_user_message(message)
+        status_code = 200 if result.get("status") in ("completed", "busy") else 500
+        return web.json_response(result, status=status_code)
+
+    async def handle_websocket(self, request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse(heartbeat=30.0)
+        await ws.prepare(request)
+        self.active_websockets.add(ws)
+
+        # Send initial status snapshot upon connection
+        try:
+            status_data = await self.bridge.get_status()
+            status_data["type"] = "status"
+            status_data["host"] = self.config.host
+            status_data["port"] = self.config.port
+            status_data["is_loopback"] = _is_loopback(self.config.host)
+            status_data["auth_required"] = bool(self.config.auth_token)
+            await ws.send_json(status_data)
+        except Exception as exc:
+            logger.warning(f"Error sending initial WS status: {exc}")
+
+        try:
+            async for msg in ws:
+                if msg.type == WSMsgType.TEXT:
+                    try:
+                        data = json.loads(msg.data)
+                    except Exception:
+                        await ws.send_json({"type": "error", "error": "Invalid JSON"})
+                        continue
+
+                    msg_type = data.get("type")
+                    if msg_type == "ping":
+                        await ws.send_json({"type": "pong"})
+                    elif msg_type == "status":
+                        status_data = await self.bridge.get_status()
+                        status_data["type"] = "status"
+                        await ws.send_json(status_data)
+                    elif msg_type == "chat":
+                        user_text = str(data.get("message", "")).strip()
+                        if not user_text:
+                            await ws.send_json({"type": "error", "error": "Empty message"})
+                            continue
+                        result = await self.bridge.handle_user_message(user_text)
+                        await ws.send_json({
+                            "type": "chat_response",
+                            "user_message": user_text,
+                            "result": result,
+                        })
+                    else:
+                        await ws.send_json({"type": "error", "error": f"Unknown message type '{msg_type}'"})
+                elif msg.type == WSMsgType.ERROR:
+                    logger.warning(f"WebSocket closed with exception {ws.exception()}")
+        finally:
+            self.active_websockets.discard(ws)
+
+        return ws
+
+    async def broadcast(self, payload: dict[str, Any]) -> None:
+        if not self.active_websockets:
+            return
+        coros = []
+        for ws in list(self.active_websockets):
+            if not ws.closed:
+                coros.append(ws.send_json(payload))
+        if coros:
+            await asyncio.gather(*coros, return_exceptions=True)
+
+
+def create_app(config: WebUIConfig, bridge: RuntimeBridge) -> web.Application:
+    """Create and configure the aiohttp WebUI application."""
+    if not _is_loopback(config.host):
+        raise ValueError(
+            f"Insecure host '{config.host}': WebUI server must bind loopback only (127.0.0.1 or ::1) "
+            "unless a future explicit secure remote design exists."
+        )
+
+    sidecar = SidecarServer(config, bridge)
+
+    # Register sidecar broadcast as listener on bridge
+    bridge._listeners.add(sidecar.broadcast)
+
+    middlewares = [
+        security_headers_middleware,
+        create_loopback_middleware(config.host),
+        create_same_origin_middleware(),
+        create_auth_middleware(config.auth_token),
+    ]
+
+    app = web.Application(middlewares=middlewares)
+    sidecar_server_key = web.AppKey("sidecar_server", SidecarServer)
+    bridge_key = web.AppKey("bridge", RuntimeBridge)
+    app[sidecar_server_key] = sidecar
+    app[bridge_key] = bridge
+
+    # Static assets
+    app.router.add_static("/static", path=str(STATIC_DIR), name="static")
+
+    # Routes
+    app.router.add_get("/", sidecar.handle_index)
+    app.router.add_get("/api/auth/status", sidecar.handle_auth_status)
+    app.router.add_post("/api/auth/session", sidecar.handle_auth_session)
+    app.router.add_delete("/api/auth/session", sidecar.handle_auth_session)
+    app.router.add_get("/api/status", sidecar.handle_status)
+    app.router.add_get("/api/history", sidecar.handle_history)
+    app.router.add_post("/api/chat", sidecar.handle_chat)
+    app.router.add_get("/api/ws", sidecar.handle_websocket)
+
+    return app
+
+
+async def start_sidecar(config: WebUIConfig, bridge: RuntimeBridge) -> web.AppRunner:
+    """Start the sidecar web server."""
+    app = create_app(config, bridge)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host=config.host, port=config.port)
+    await site.start()
+    return runner
