@@ -1,5 +1,7 @@
 # Adam memory proposal: evidence, facts, and dates
 
+> **Research update (October 5, 2026):** The deeper review in [agent-memory-research-2026-10-05.md](agent-memory-research-2026-10-05.md) makes the storage decision conditional. Preserve original episodes as answer evidence, add short-lived task state and separately governed procedural lessons, and measure memory-guided actions as well as recall. SQLite should be compared with JSON only after the behavior and resource baselines are fixed.
+
 ## Recommendation
 
 Give Adam a small, local memory system with three layers:
@@ -8,7 +10,7 @@ Give Adam a small, local memory system with three layers:
 2. **Derived facts and events** make dates, preferences, and corrections queryable without changing the original statement.
 3. **Search indexes** find relevant records quickly and can be rebuilt from the first two layers.
 
-SQLite is a good eventual home for these layers, but the data model and recall behavior matter more than the file format. Build and evaluate the model against the current JSON store before switching storage. Keep the system useful with lexical search alone; load the embedding model only when semantic recall needs it.
+SQLite is a possible local home for these layers, but the data model and recall behavior matter more than the file format. Build and evaluate the model against the current JSON store before considering a storage switch. Keep the system useful with lexical search alone; load the embedding model only when semantic recall needs it.
 
 The proposed four fields—Date Created, Memory Title, Memory Content, Relative Date—are a useful display view. They are too small as the underlying record: a relative date needs a capture time, timezone, normalized date or range, and the original phrase. A title should help a person browse memories, not become the evidence Adam relies on when answering.
 
@@ -67,7 +69,7 @@ This keeps the current fast date filtering and optional semantic recall, while a
 
 ## Storage choice
 
-Use **SQLite** for a local prototype after the model is defined. A compact layout is:
+If measured update, concurrency, or resident-memory needs justify a storage change, prototype **SQLite** locally after the model is defined. A compact layout would be:
 
 ```text
 memory_sources(id, content, title, category, captured_at, captured_timezone, origin)
@@ -86,7 +88,7 @@ The main expected benefits are incremental transactions, consistent correction/d
 
 1. **Fix the recall contract.** Create a small, synthetic evaluation set covering ordinary facts, preferences, multiple facts in one save, corrections, negation, a missing answer, date/week/year questions, overnight shifts, and daylight-saving edge cases. Score final answers and cited source IDs, including false memories injected into unrelated questions. Keep private memories out of test artifacts.
 2. **Add the source/fact model behind the existing memory API.** Preserve the JSON store initially. Keep old records as one source plus their existing temporal fact when present; preserve their IDs, original text, timestamps, and stored date interpretation. Do not resolve an old “yesterday” against migration day.
-3. **Prototype SQLite behind the same API.** Import a copy of the JSON file in one transaction, validate counts, IDs, text, date fields, and index consistency, then compare both backends on the same queries. Keep the original JSON file as a rollback copy through cutover. Use restrictive local file permissions and a documented backup procedure.
+3. **Test SQLite behind the same API if storage needs justify it.** Import a copy of the JSON file in one transaction, validate counts, IDs, text, date fields, and index consistency, then compare both backends on the same queries. Keep the original JSON file as a rollback copy through cutover. Use restrictive local file permissions and a documented backup procedure.
 4. **Measure on laptop first.** Compare answer accuracy, p50/p95 recall time, save/update time, startup time, process PSS/RSS, database size, and peak memory with and without embeddings at 100, 1,000, and 10,001 synthetic records. Include a crash or interrupted-write recovery check. Repeat resource checks on Desky only after its experiment pause is lifted; keep its results separate and its memory use low as well.
 5. **Switch only after equivalence and a clear gain.** Require no lost memories, no date/correction regressions, and no increase in irrelevant memory injection. Keep the storage switch reversible until live recall through Adam succeeds. Update the plan and progress report, and commit each verified large checkpoint.
 
