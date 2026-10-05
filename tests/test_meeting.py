@@ -1,7 +1,10 @@
+import asyncio
 import json
 import stat
 import time
 import wave
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import numpy as np
 
@@ -91,6 +94,77 @@ def test_meeting_command_phrases():
     assert meeting_command_kind("meeting over") == "stop"
     assert meeting_command_kind("could you stop meeting mode") == "stop"
     assert meeting_command_kind("what happened in the meeting?") is None
+
+
+def test_pretrained_wake_text_dispatches_meeting_and_falls_back_to_brain():
+    async def scenario():
+        class Arbiter:
+            def __init__(self):
+                self.current_state = "USER_SPEAKING"
+
+            async def set_state(self, state):
+                self.current_state = state
+
+        class Stream:
+            def __init__(self):
+                self.flush_calls = 0
+                self.quench_durations = []
+
+            def flush(self):
+                self.flush_calls += 1
+
+            def quench(self, duration):
+                self.quench_durations.append(duration)
+
+        daemon = AdamDaemon.__new__(AdamDaemon)
+        daemon.meeting_session = SimpleNamespace(active=False)
+        daemon._start_meeting = AsyncMock()
+        daemon._stop_meeting = AsyncMock()
+        daemon.arbiter = Arbiter()
+        daemon.stream = Stream()
+        daemon.memory_manager = SimpleNamespace(
+            retrieve_context=lambda command: f"context for {command}"
+        )
+        daemon._execute_turn = AsyncMock()
+
+        await daemon._execute_pretrained_wake_command("meeting mode")
+
+        daemon._start_meeting.assert_awaited_once_with()
+        daemon._stop_meeting.assert_not_awaited()
+        daemon._execute_turn.assert_not_awaited()
+        assert daemon.arbiter.current_state == "IDLE_LISTENING"
+        assert daemon.stream.flush_calls == 1
+        assert daemon.stream.quench_durations == [0.4]
+
+        daemon.meeting_session.active = True
+        daemon.arbiter.current_state = "USER_SPEAKING"
+        await daemon._execute_pretrained_wake_command("meeting over")
+
+        daemon._stop_meeting.assert_awaited_once_with("voice command")
+        daemon._execute_turn.assert_not_awaited()
+        assert daemon.arbiter.current_state == "IDLE_LISTENING"
+        assert daemon.stream.flush_calls == 2
+        assert daemon.stream.quench_durations == [0.4, 0.4]
+
+        daemon._start_meeting = AsyncMock(side_effect=RuntimeError("recording setup failed"))
+        daemon.arbiter.current_state = "USER_SPEAKING"
+        try:
+            await daemon._execute_pretrained_wake_command("meeting mode")
+        except RuntimeError as exc:
+            assert str(exc) == "recording setup failed"
+        else:
+            raise AssertionError("meeting start error should propagate")
+        assert daemon.arbiter.current_state == "IDLE_LISTENING"
+        assert daemon.stream.flush_calls == 3
+        assert daemon.stream.quench_durations == [0.4, 0.4, 0.4]
+
+        await daemon._execute_pretrained_wake_command("what time is it?")
+
+        daemon._execute_turn.assert_awaited_once_with(
+            "what time is it?", memory_context="context for what time is it?"
+        )
+
+    asyncio.run(scenario())
 
 
 def test_meeting_speaker_registry_reuses_anonymous_labels():

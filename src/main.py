@@ -670,6 +670,31 @@ class AdamDaemon:
             score_text = f" (voice score={score:.3f})" if score is not None else ""
             print(f"[Meeting] {label}{score_text}: {text}", flush=True)
 
+    async def _dispatch_meeting_command(self, command: str) -> bool:
+        """Handle a recognized meeting-mode command before normal LLM routing."""
+        action = meeting_command_kind(command)
+        if action != "start" and not (action == "stop" and self.meeting_session.active):
+            return False
+
+        try:
+            if action == "start":
+                await self._start_meeting()
+            else:
+                await self._stop_meeting("voice command")
+        finally:
+            if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
+                await self.arbiter.set_state("IDLE_LISTENING")
+                self.stream.flush()
+                self.stream.quench(duration=0.4)
+        return True
+
+    async def _execute_pretrained_wake_command(self, command: str) -> None:
+        """Route pretrained-wake transcripts through meeting controls or Brain."""
+        if await self._dispatch_meeting_command(command):
+            return
+        memory_context = self.memory_manager.retrieve_context(command)
+        await self._execute_turn(command, memory_context=memory_context)
+
     async def _start_meeting(self) -> None:
         if self.meeting_session.active:
             await self.tts.speak_async("Meeting mode is already on.")
@@ -1701,12 +1726,7 @@ class AdamDaemon:
                                     if matched_memory_context is not None:
                                         print(f"[Memory] Matched saved memory context for command.", flush=True)
 
-                                meeting_action = meeting_command_kind(target_cmd)
-                                if meeting_action == "start":
-                                    await self._start_meeting()
-                                    continue
-                                if meeting_action == "stop" and self.meeting_session.active:
-                                    await self._stop_meeting("voice command")
+                                if await self._dispatch_meeting_command(target_cmd):
                                     continue
                                 ensure_gui_environment()
                                 self.earcon.play("captured")
@@ -1768,8 +1788,7 @@ class AdamDaemon:
                                     self.wake.reset()
                                     continue
 
-                                mem_ctx = self.memory_manager.retrieve_context(text)
-                                await self._execute_turn(text, memory_context=mem_ctx)
+                                await self._execute_pretrained_wake_command(text)
                             else:
                                 self.speculative_router.cancel_active()
                         else:
