@@ -9,9 +9,7 @@ from src.llm.brain import (
     AdamBrain,
     COMPACT_CONVERSATION_SYSTEM_PROMPT,
     _can_direct_dispatch_system_status,
-    _can_direct_dispatch_system_status_and_processes,
     _can_answer_without_tools,
-    _direct_process_list_args,
     _desktop_no_progress_repeats,
     _desktop_unchanged_screen_count,
     _desktop_screenshot_signature,
@@ -89,6 +87,7 @@ def test_tool_or_live_information_intent_keeps_tools_available(prompt):
 def test_compact_conversation_prompt_requires_no_external_context():
     assert _should_use_compact_conversation_prompt("Explain entropy in plain language.")
     assert not _should_use_compact_conversation_prompt("What time is it?")
+    assert not _should_use_compact_conversation_prompt("My processor is pegged.")
     assert not _should_use_compact_conversation_prompt(
         "Explain entropy in plain language.", memory_context="The user studies physics."
     )
@@ -695,38 +694,108 @@ def test_general_hardware_question_does_not_trigger_status_routing():
     assert not _is_dedicated_system_status_request(
         "Explain how a CPU processes instructions."
     )
-
-
-def test_factual_status_can_dispatch_without_a_model_call():
-    assert _can_direct_dispatch_system_status(
-        "Report current CPU, RAM, and GPU utilization."
-    )
-    assert not _can_direct_dispatch_system_status(
-        "Report RAM usage and explain how I could reduce it."
-    )
-    assert not _can_direct_dispatch_system_status(
-        "Report system status and list running processes."
-    )
-    assert not _can_direct_dispatch_system_status(
-        "Compare current CPU load with yesterday's."
+    assert not _is_dedicated_system_status_request(
+        "What have I told you about my memory?"
     )
 
 
-def test_factual_status_and_process_request_can_dispatch_without_a_model_call():
-    request = "Check current system utilization and list the five highest CPU processes."
-    assert _is_dedicated_system_status_request(request)
-    assert _can_direct_dispatch_system_status_and_processes(request)
-    assert not _can_direct_dispatch_system_status_and_processes(
-        "Check system status and processes, then explain how to reduce the load."
+def test_compound_file_and_status_request_keeps_its_non_status_tools_available():
+    prompt = (
+        'Find the supplier in the local fixture report. Write one line to "task-output.txt". '
+        "Then report current CPU core count and memory-use percentage."
     )
-    assert _direct_process_list_args(request) == {"sort_by": "cpu", "limit": 5}
-    assert _direct_process_list_args(
-        "Report RAM utilization and list the top 10 processes by memory."
-    ) == {"sort_by": "memory", "limit": 10}
+    tools = [
+        SimpleNamespace(name="read_file"),
+        SimpleNamespace(name="create_file"),
+        SimpleNamespace(name="get_system_status"),
+        SimpleNamespace(name="list_processes"),
+    ]
+
+    assert not _is_dedicated_system_status_request(prompt)
+    assert _filter_tools_for_system_status(tools, prompt) == tools
 
 
+def test_only_normalized_explicit_status_phrases_use_the_quickpath():
+    for prompt in (
+        "system status", "SYSTEM STATUS!", "System-status?",
+        "cpu usage", "CPU USAGE!!!", "memory usage?", "disk-usage", "GPU usage.",
+    ):
+        assert _can_direct_dispatch_system_status(prompt), prompt
+
+    for prompt in (
+        "What's my CPU usage?",
+        "Check current CPU usage.",
+        "Report current CPU, RAM, and GPU utilization.",
+        "Why is my CPU usage so high?",
+        "My CPU usage is too high, ugh.",
+        "Check system status and list running processes.",
+    ):
+        assert not _can_direct_dispatch_system_status(prompt), prompt
+
+
+@pytest.mark.parametrize("prompt", [
+    "Why is my CPU usage so high?",
+    "My CPU usage is too high, ugh.",
+    "Why is my CPU working so hard?",
+    "My processor is pegged.",
+    "My RAM is filling up; what's doing that?",
+    "cpu usage eso",
+])
+def test_nonliteral_cpu_diagnostics_do_not_take_factual_status_fast_path(prompt):
+    tools = [
+        SimpleNamespace(name="get_system_status"),
+        SimpleNamespace(name="list_processes"),
+        SimpleNamespace(name="run_bash_command"),
+    ]
+
+    assert _is_dedicated_system_status_request(prompt)
+    assert not _can_direct_dispatch_system_status(prompt)
+    assert [tool.name for tool in _filter_tools_for_system_status(tools, prompt)] == [
+        "get_system_status", "list_processes"
+    ]
+
+
+@pytest.mark.parametrize(("prompt", "expected", "omitted"), [
+    (
+        "CPU usage!!!",
+        "CPU utilization was 19 percent during this status sample.",
+        ("load average", "Memory is", "Root storage", "GPU 0"),
+    ),
+    (
+        "MEMORY usage?",
+        "Memory is 42 percent in use (6.7 gigabytes used out of 16.0 gigabytes).",
+        ("CPU", "Root storage", "GPU 0"),
+    ),
+    (
+        "disk-usage",
+        "Root storage has 78.3 gigabytes free out of 101.5 gigabytes.",
+        ("CPU", "Memory is", "GPU 0"),
+    ),
+    (
+        "GPU usage.",
+        "GPU 0 (NVIDIA RTX) utilization is 12 percent.",
+        ("CPU", "Memory is", "Root storage", "temperature", "VRAM"),
+    ),
+    (
+        "System status?",
+        "CPU utilization was 19 percent during this status sample. "
+        "Memory is 42 percent in use (6.7 gigabytes used out of 16.0 gigabytes). "
+        "Root storage has 78.3 gigabytes free out of 101.5 gigabytes. "
+        "GPU 0 (NVIDIA RTX) utilization is 12 percent.",
+        ("load average", "logical cores", "temperature", "VRAM"),
+    ),
+])
 @pytest.mark.asyncio
-async def test_status_and_process_pair_uses_two_tools_without_model_calls():
+async def test_factual_status_quickpath_speaks_only_requested_metrics(prompt, expected, omitted):
+    status = (
+        "CPU has 8 logical cores with load average 0.29, 0.24, 0.30. "
+        "Memory is 42 percent in use (6.7 gigabytes used out of 16.0 gigabytes). "
+        "Root storage has 78.3 gigabytes free out of 101.5 gigabytes. "
+        "GPU 0 (NVIDIA RTX) utilization is 12 percent, temperature is 43 degrees Celsius, "
+        "and 2.0 of 8.0 gigabytes VRAM is in use. "
+        "CPU utilization was 19 percent during this status sample."
+    )
+
     class SilentTTS:
         engine = "silent"
         pending_barge_in_text = None
@@ -735,17 +804,17 @@ async def test_status_and_process_pair_uses_two_tools_without_model_calls():
             self.last_text = text
 
     class NoModelCalls:
-        provider = "custom"
+        def __init__(self):
+            self.chat_calls = 0
 
         async def chat(self, *_args, **_kwargs):
-            raise AssertionError("direct status-plus-process routing must skip model calls")
+            self.chat_calls += 1
+            raise AssertionError("a factual status quickpath must not call the model")
 
         def format_tool_response(self, tool_call_id, tool_name, result):
             return {
-                "role": "tool",
-                "tool_call_id": tool_call_id,
-                "name": tool_name,
-                "content": result,
+                "role": "tool", "tool_call_id": tool_call_id,
+                "name": tool_name, "content": result,
             }
 
     config = SimpleNamespace(llm=SimpleNamespace(
@@ -758,34 +827,222 @@ async def test_status_and_process_pair_uses_two_tools_without_model_calls():
         config, None, None, None, tts,
         memory_mgr=SimpleNamespace(retrieve_context=lambda _text: None),
     )
-    brain.llm_client = NoModelCalls()
-    called = []
-    active = 0
-    peak_active = 0
+    model = NoModelCalls()
+    brain.llm_client = model
 
-    async def fake_execute(name, args):
-        nonlocal active, peak_active
-        active += 1
-        peak_active = max(peak_active, active)
-        await asyncio.sleep(0.01)
-        active -= 1
-        called.append((name, args))
-        if name == "get_system_status":
-            return "CPU utilization was 12 percent. GPU utilization is 0 percent."
-        if name == "list_processes":
-            return "Top processes by cpu: python (PID 7): 12% CPU, 1% RAM"
-        raise AssertionError(f"Unexpected direct tool: {name}")
+    async def fake_execute(name, _args):
+        assert name == "get_system_status"
+        return status
 
     brain._execute_tool = fake_execute
-    await brain.process_user_utterance(
-        "Check current system utilization and list the five highest CPU processes."
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
+        await brain.process_user_utterance(prompt)
+
+    assert tts.last_text == expected
+    assert all(fragment not in tts.last_text for fragment in omitted)
+    assert model.chat_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_factual_cpu_quickpath_reports_unavailable_utilization_without_substituting_load():
+    class SilentTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        async def speak_async(self, text):
+            self.last_text = text
+
+    class NoModelCalls:
+        def format_tool_response(self, tool_call_id, tool_name, result):
+            return {
+                "role": "tool", "tool_call_id": tool_call_id,
+                "name": tool_name, "content": result,
+            }
+
+        async def chat(self, *_args, **_kwargs):
+            raise AssertionError("a factual status quickpath must not call the model")
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+    ))
+    tts = SilentTTS()
+    brain = AdamBrain(
+        config, None, None, None, tts,
+        memory_mgr=SimpleNamespace(retrieve_context=lambda _text: None),
+    )
+    brain.llm_client = NoModelCalls()
+
+    async def fake_execute(name, _args):
+        assert name == "get_system_status"
+        return (
+            "CPU has 8 logical cores with load average 0.29, 0.24, 0.30. "
+            "Memory is 42 percent in use (6.7 gigabytes used out of 16.0 gigabytes). "
+            "CPU utilization percentage is unavailable; CPU load average is reported above."
+        )
+
+    brain._execute_tool = fake_execute
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
+            await brain.process_user_utterance("CPU usage")
+
+    assert tts.last_text == "CPU utilization is unavailable in the status result."
+    assert "load average" not in tts.last_text
+
+
+@pytest.mark.asyncio
+async def test_natural_cpu_question_uses_model_to_summarize_rich_status_result():
+    class SilentTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        async def speak_async(self, text):
+            self.last_text = text
+
+    class Model:
+        def __init__(self):
+            self.responses = [
+                {"content": "", "tool_calls": [{
+                    "id": "status-1",
+                    "function": {"name": "get_system_status", "arguments": {}},
+                }]},
+                {"content": "CPU utilization was 19 percent during the status sample.", "tool_calls": []},
+            ]
+            self.requested_tools = []
+            self.tool_result_contents = []
+
+        async def chat(self, messages, tools=None, **_kwargs):
+            self.requested_tools.append([tool.name for tool in (tools or [])])
+            self.tool_result_contents.extend(
+                str(message.get("content", ""))
+                for message in messages if message.get("role") == "tool"
+            )
+            return self.responses.pop(0)
+
+        def format_tool_response(self, tool_call_id, tool_name, result):
+            return {
+                "role": "tool", "tool_call_id": tool_call_id,
+                "name": tool_name, "content": result,
+            }
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+    ))
+    tts = SilentTTS()
+    brain = AdamBrain(
+        config, None, None, None, tts,
+        memory_mgr=SimpleNamespace(retrieve_context=lambda _text: None),
+    )
+    model = Model()
+    brain.llm_client = model
+    brain.skill_manager.get_matched_skill_context = lambda _query: None
+    rich_status = (
+        "CPU has 8 logical cores with load average 0.29, 0.24, 0.30. "
+        "Memory is 42 percent in use. Root storage has 78 gigabytes free. "
+        "GPU telemetry is unavailable. CPU utilization was 19 percent during this status sample."
     )
 
+    async def fake_execute(name, _args):
+        assert name == "get_system_status"
+        return rich_status
+
+    brain._execute_tool = fake_execute
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
+        await brain.process_user_utterance("What's my CPU usage?")
+
+    assert _can_direct_dispatch_system_status("What's my CPU usage?") is False
+    assert model.requested_tools[0] == ["get_system_status"]
+    assert "get_system_status" not in model.requested_tools[1]
+    assert len(model.requested_tools) == 2
+    assert any("Memory is 42 percent" in content for content in model.tool_result_contents)
+    assert "CPU utilization was 19 percent" in tts.last_text
+    assert "Memory is" not in tts.last_text
+    assert "GPU telemetry" not in tts.last_text
+
+
+@pytest.mark.parametrize("prompt", [
+    "Why is my CPU usage so high?",
+    "My processor is pegged.",
+])
+@pytest.mark.asyncio
+async def test_causal_cpu_question_uses_process_evidence_then_model_explanation(prompt):
+    class SilentTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        async def speak_async(self, text):
+            self.last_text = text
+
+    class Model:
+        def __init__(self):
+            self.responses = [
+                {"content": "", "tool_calls": [{
+                    "id": "status-1",
+                    "function": {"name": "get_system_status", "arguments": {}},
+                }]},
+                {"content": "", "tool_calls": [{
+                    "id": "processes-1",
+                    "function": {
+                        "name": "list_processes",
+                        "arguments": {"sort_by": "cpu", "limit": 5},
+                    },
+                }]},
+                {"content": "The process sample points to python as a likely contributor, but it does not prove the cause of the full CPU reading.", "tool_calls": []},
+            ]
+            self.requested_tool_names = []
+            self.system_prompts = []
+
+        async def chat(self, messages, tools=None, **_kwargs):
+            self.requested_tool_names.append([tool.name for tool in (tools or [])])
+            self.system_prompts.append(next(
+                message["content"] for message in messages if message["role"] == "system"
+            ))
+            return self.responses.pop(0)
+
+        def format_tool_response(self, tool_call_id, tool_name, result):
+            return {
+                "role": "tool", "tool_call_id": tool_call_id,
+                "name": tool_name, "content": result,
+            }
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+    ))
+    tts = SilentTTS()
+    brain = AdamBrain(
+        config, None, None, None, tts,
+        memory_mgr=SimpleNamespace(retrieve_context=lambda _text: None),
+    )
+    model = Model()
+    brain.llm_client = model
+    brain.skill_manager.get_matched_skill_context = lambda _query: None
+
+    called = []
+
+    async def fake_execute(name, args):
+        called.append((name, args))
+        if name == "get_system_status":
+            return "CPU utilization was 20 percent during this status sample."
+        if name == "list_processes":
+            return "Top processes by cpu: python (PID 7): 80% CPU, 1% RAM"
+        raise AssertionError(f"Unexpected tool call: {name}")
+
+    brain._execute_tool = fake_execute
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
+        await brain.process_user_utterance(prompt)
+
     assert [name for name, _args in called] == ["get_system_status", "list_processes"]
-    assert peak_active == 2
-    assert called[1][1] == {"sort_by": "cpu", "limit": 5}
-    assert "CPU utilization was 12 percent" in tts.last_text
-    assert "Top processes by cpu" in tts.last_text
+    assert model.requested_tool_names[0] == ["get_system_status", "list_processes"]
+    assert "inspect the relevant top processes" in model.system_prompts[0]
+    assert "get_system_status" not in model.requested_tool_names[1]
+    assert "list_processes" in model.requested_tool_names[1]
+    assert len(model.requested_tool_names) == 3
+    assert "20 percent during this status sample" not in tts.last_text
+    assert "likely contributor" in tts.last_text
 
 
 def test_status_turn_only_exposes_the_dedicated_read_only_tool():

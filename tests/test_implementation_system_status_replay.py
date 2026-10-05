@@ -13,8 +13,8 @@ from unittest.mock import patch
 import pytest
 
 
-class _NoCallClient:
-    """Fails if a factual system-status request is sent to a model."""
+class _StatusSummaryClient:
+    """Uses a normal model tool call, then summarizes the returned snapshot."""
 
     provider = "local"
 
@@ -23,7 +23,32 @@ class _NoCallClient:
 
     async def chat(self, messages, tools=None, max_tokens=None, think=None):
         self.requests.append({"messages": messages, "tools": tools})
-        raise AssertionError("The F3 status request should use direct tool dispatch.")
+        if len(self.requests) == 1:
+            assert any(tool.name == "get_system_status" for tool in tools or [])
+            return {
+                "content": "",
+                "tool_calls": [{
+                    "id": "f3-status",
+                    "function": {"name": "get_system_status", "arguments": {}},
+                }],
+            }
+
+        assert len(self.requests) == 2
+        assert all(tool.name != "get_system_status" for tool in tools or [])
+        tool_message = next(message for message in messages if message.get("role") == "tool")
+        status_result = json.loads(tool_message["content"])
+        assert status_result["status"] == "returned"
+        status_text = status_result["data"]
+        cores = re.search(r"CPU has (\d+) logical cores", status_text)
+        memory = re.search(r"Memory is (\d+) percent in use", status_text)
+        assert cores is not None and memory is not None
+        return {
+            "content": (
+                f"The system has {cores.group(1)} logical CPU cores, and "
+                f"memory is {memory.group(1)} percent in use."
+            ),
+            "tool_calls": [],
+        }
 
     def format_tool_response(self, tool_call_id, tool_name, result):
         return {
@@ -112,7 +137,7 @@ async def test_generated_f3_prompt_uses_real_brain_and_status_handler(tmp_path, 
     )
 
     tts = _SilentTTS()
-    client = _NoCallClient()
+    client = _StatusSummaryClient()
     brain = AdamBrain(
         _test_config(), None, None, None, tts,
         memory_mgr=SimpleNamespace(retrieve_context=lambda _text: None),
@@ -131,7 +156,11 @@ async def test_generated_f3_prompt_uses_real_brain_and_status_handler(tmp_path, 
     ):
         await brain.process_user_utterance(request)
 
-    assert client.requests == []
+    assert len(client.requests) == 2
+    assert any(
+        tool.name == "get_system_status"
+        for tool in client.requests[0]["tools"]
+    )
     assert sorted(proc_reads) == sorted(synthetic_proc)
     tool_reply = next(
         message for message in brain.messages if message.get("role") == "tool"
@@ -154,5 +183,6 @@ async def test_generated_f3_prompt_uses_real_brain_and_status_handler(tmp_path, 
     assert abs(int(memory_match.group(1)) - expected_memory_percent) <= 1
     assert int(memory_match.group(1)) == round(expected_memory_percent)
 
-    assert brain.messages[-1] == {"role": "assistant", "content": status_text}
-    assert tts.spoken[-1:] == [status_text]
+    expected_reply = "The system has 8 logical CPU cores, and memory is 64 percent in use."
+    assert brain.messages[-1] == {"role": "assistant", "content": expected_reply}
+    assert tts.spoken[-1:] == [expected_reply]

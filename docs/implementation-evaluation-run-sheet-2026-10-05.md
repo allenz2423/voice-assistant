@@ -61,6 +61,8 @@ Do not run the actual-microphone voice suite with synthetic audio, and do not cl
 
 ## Per-run record template
 
+For Loop 6 resource evidence, preserve the sampler's raw JSON trace as a private local artifact. Bind it to the evaluation record with the sampler schema version, sampler trace ID, SHA-256 of the exact trace bytes, and the sampled process PID plus /proc start-time ticks. Record request end and verified task completion in the same host CLOCK_MONOTONIC nanosecond domain used by the sampler. Do not put the private trace path or raw trace in a committed report. Summarize only after checking that the hash and process identity match. The summarizer reports sampled maxima of cgroup memory.current and complete process-tree RSS/PSS during the request interval, plus samples at completion and approximately 30 and 120 seconds later. It labels cgroup values as whole-cgroup measurements that may include unrelated processes. Its maximum sampled memory.current can miss brief peaks between samples; the sampler's memory.peak counter may predate the request and is not a task-attributed peak. A cgroup CPU delta is unavailable if any consecutive valid in-task counter drops. Recovery tolerance must be smaller than the smallest gap between requested offsets so one sample cannot stand in for multiple recovery points.
+
 ```json
 {
   "run_id": "opaque-id",
@@ -80,6 +82,17 @@ Do not run the actual-microphone voice suite with synthetic audio, and do not cl
     "request_end_to_progress": null,
     "request_end_to_final": null,
     "request_end_to_verified_state": null
+  },
+  "event_clock_ns": {
+    "request_end": null,
+    "verified_completion": null
+  },
+  "resource_trace": {
+    "sampler_schema_version": 1,
+    "sampler_run_id": "",
+    "sha256": "",
+    "target_pid": null,
+    "target_starttime_ticks": null
   },
   "tool_model_rounds": null,
   "retries": null,

@@ -279,6 +279,77 @@ async def test_daemon_bridge_returns_local_meeting_reply_without_brain_history()
 
 
 @pytest.mark.asyncio
+async def test_daemon_bridge_completes_natural_meeting_tool_turn_from_brain_history():
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from src.llm.brain import AdamBrain
+
+    class TTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        def __init__(self):
+            self.spoken = []
+
+        async def speak_async(self, text):
+            self.spoken.append(text)
+
+    class Model:
+        provider = "custom"
+
+        def __init__(self):
+            self.requests = []
+
+        async def chat(self, messages, tools=None, **_kwargs):
+            self.requests.append((messages, tools))
+            return {"content": "", "tool_calls": [{
+                "id": "meeting-start",
+                "function": {"name": "meeting_mode", "arguments": {"action": "start"}},
+            }]}
+
+        def format_tool_response(self, tool_call_id, tool_name, result):
+            return {
+                "role": "tool", "tool_call_id": tool_call_id,
+                "name": tool_name, "content": result,
+            }
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192,
+    ))
+    tts = TTS()
+    brain = AdamBrain(
+        config, None, None, None, tts,
+        memory_mgr=SimpleNamespace(retrieve_context=lambda _text: None),
+    )
+    brain.llm_client = Model()
+
+    async def meeting_handler(action):
+        assert action == "start"
+        await tts.speak_async("Meeting mode is on. Recording now.")
+        return "Meeting mode is on. Recording now."
+
+    brain.meeting_mode_handler = meeting_handler
+    arbiter = MockArbiter()
+    daemon = SimpleNamespace(brain=brain, arbiter=arbiter, memory_manager=None)
+
+    async def execute_turn(text, memory_context=None):
+        await brain.process_user_utterance(text, memory_context=memory_context)
+
+    daemon._execute_turn = execute_turn
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
+        result = await DaemonBridge(daemon).handle_user_message("meeting mode")
+
+    assert result == {
+        "status": "completed",
+        "response": "Meeting mode is on. Recording now.",
+        "tool_calls": ["meeting_mode"],
+    }
+    assert tts.spoken == ["Meeting mode is on. Recording now."]
+
+
+@pytest.mark.asyncio
 async def test_bridge_captures_reply_after_real_brain_history_compaction():
     from src.llm.brain import AdamBrain
 

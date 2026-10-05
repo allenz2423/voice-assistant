@@ -1065,10 +1065,14 @@ async def test_process_status_turn_keeps_the_dedicated_tools_for_model_selection
 
 
 @pytest.mark.asyncio
-async def test_simple_system_status_skips_model_and_speaks_validated_tool_result():
+async def test_simple_system_status_skips_model_and_speaks_requested_metrics():
     from src.llm.brain import AdamBrain
 
-    status = "CPU load average is 0.10. Memory is 40 percent in use. GPU utilization is 2 percent."
+    status = (
+        "CPU has 8 logical cores with load average 0.10, 0.12, 0.09. "
+        "Memory is 40 percent in use. Root storage has 20 gigabytes free out of 100 gigabytes. "
+        "GPU utilization is 2 percent. CPU utilization was 18 percent during this status sample."
+    )
     brain = AdamBrain(_config("custom"), None, None, None, _DummyTTS())
     brain.llm_client = _DummyClient("custom", [])
 
@@ -1077,11 +1081,12 @@ async def test_simple_system_status_skips_model_and_speaks_validated_tool_result
 
     brain._execute_tool = return_status
     with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
-        await brain.process_user_utterance("Report current CPU, RAM, and GPU utilization.")
+        await brain.process_user_utterance("CPU usage")
 
     assert len(brain.llm_client.requests) == 0
-    assert brain.tts.spoken == [status]
-    assert brain.messages[-1] == {"role": "assistant", "content": status}
+    response = "CPU utilization was 18 percent during this status sample."
+    assert brain.tts.spoken == [response]
+    assert brain.messages[-1] == {"role": "assistant", "content": response}
 
 @pytest.mark.asyncio
 async def test_failed_tool_reprompts_model_to_correct_path_without_replaying_success():

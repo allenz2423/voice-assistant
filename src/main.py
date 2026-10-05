@@ -89,15 +89,11 @@ def merge_overlapping_transcripts(p: str, s: str) -> str:
 
 
 def meeting_command_kind(command: str) -> str | None:
-    """Match concise voice controls without sending them to the agent LLM."""
-    normalized = re.sub(r"[^a-z0-9']+", " ", (command or "").lower()).strip()
-    normalized = re.sub(r"^(please|could you|can you|let's|lets)\s+", "", normalized)
-    if re.fullmatch(r"(meeting mode|start meeting|start meeting mode|begin meeting|begin meeting mode)", normalized):
+    """Match only the two exact meeting controls reserved for direct dispatch."""
+    normalized = re.sub(r"[^a-z0-9]+", " ", (command or "").casefold()).strip()
+    if normalized == "meeting mode on":
         return "start"
-    if re.fullmatch(
-        r"(meeting over|meeting is over|meeting ended|meeting has ended|end meeting|end meeting mode|stop meeting|stop meeting mode|finish meeting|finish meeting mode|that's all for the meeting|that is all for the meeting)",
-        normalized,
-    ):
+    if normalized == "meeting mode off":
         return "stop"
     return None
 
@@ -333,6 +329,9 @@ class AdamDaemon:
             )),
             memory_mgr=self.memory_manager,
         )
+        # MeetingSession belongs to AdamDaemon; expose its structured control
+        # action to the brain without coupling the brain back to this daemon.
+        self.brain.meeting_mode_handler = self._execute_meeting_mode_tool
         self.idea_router = None
         idea_cfg = getattr(self.config, "idea_routing", None)
         if idea_cfg is not None and idea_cfg.enabled:
@@ -673,14 +672,16 @@ class AdamDaemon:
     async def _dispatch_meeting_command(self, command: str, *, cleanup: bool = True) -> bool:
         """Handle a recognized meeting-mode command before normal LLM routing."""
         action = meeting_command_kind(command)
-        if action != "start" and not (action == "stop" and self.meeting_session.active):
+        if action is None:
             return False
 
         try:
             if action == "start":
                 await self._start_meeting()
-            else:
+            elif self.meeting_session.active:
                 await self._stop_meeting("voice command")
+            else:
+                await self.tts.speak_async("Meeting mode is already off.")
         finally:
             if cleanup and self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
                 await self.arbiter.set_state("IDLE_LISTENING")
@@ -700,10 +701,31 @@ class AdamDaemon:
         if action == "start":
             return "Meeting mode is already on." if was_active else "Meeting mode is on. Recording now."
 
+        if not was_active:
+            return "Meeting mode is already off."
         directory = getattr(self.meeting_session, "session_dir", None)
         if directory is None:
             return "Meeting mode is off."
         return f"Meeting mode is off. I saved the recording and transcript in {directory}."
+
+    async def _execute_meeting_mode_tool(self, action: str) -> str:
+        """Run the structured meeting-mode tool through the daemon lifecycle."""
+        action = str(action or "").strip().casefold()
+        if action == "start":
+            was_active = self.meeting_session.active
+            await self._start_meeting()
+            return "Meeting mode is already on." if was_active else "Meeting mode is on. Recording now."
+        if action == "stop":
+            was_active = self.meeting_session.active
+            directory = self.meeting_session.session_dir
+            if was_active:
+                await self._stop_meeting("voice command")
+                if directory is not None:
+                    return f"Meeting mode is off. I saved the recording and transcript in {directory}."
+                return "Meeting mode is off. Recording stopped."
+            await self.tts.speak_async("Meeting mode is already off.")
+            return "Meeting mode is already off."
+        return "Meeting mode action must be 'start' or 'stop'."
 
     async def _execute_pretrained_wake_command(self, command: str) -> None:
         """Route pretrained-wake transcripts through meeting controls or Brain."""
@@ -1058,9 +1080,7 @@ class AdamDaemon:
         """Executes user commands through the ReAct agent with active real-time interruption monitoring."""
         action = meeting_command_kind(command_text)
         meeting_session = getattr(self, "meeting_session", None)
-        if action and meeting_session is not None and (
-            action == "start" or getattr(meeting_session, "active", False)
-        ):
+        if action and meeting_session is not None:
             try:
                 await self.arbiter.set_state("PROCESSING_REACT")
                 meeting_response = await self._meeting_turn_response(command_text)

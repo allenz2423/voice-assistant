@@ -213,13 +213,25 @@ def _is_dedicated_system_status_request(user_text: str) -> bool:
         r"(?:status|health|usage|utilization|load|free|available|temperature|capacity|consumption)\b|"
         r"\b(?:usage|utilization|load|temperature|capacity)\s+(?:of\s+)?"
         r"(?:cpu|processor|ram|memory|gpu|graphics|disk|storage)\b|"
+        r"\b(?:disk|storage)\s+space\b|"
         r"\bhow\s+much\s+(?:ram|memory|disk|storage)\s+(?:is\s+)?(?:free|available|used)\b",
         text,
         re.IGNORECASE,
     )
+    asks_about_personal_resource = re.search(
+        r"\b(?:my|this|current|currently)\s+(?:system|computer|machine|pc|laptop|desktop)?\s*"
+        r"(?:cpu|processor|ram|gpu|graphics|disk|storage)\b|"
+        r"\b(?:my|this|current|currently)\s+(?:(?:system|computer|machine|pc|laptop|desktop)\s+)?"
+        r"memory\b.{0,32}\b(?:usage|utilization|load|free|available|capacity|used|in\s+use|"
+        r"filling(?:\s+up)?|full|high|low|exhausted)\b|"
+        r"\b(?:system|computer|machine|pc|laptop|desktop)\s+(?:is|feels|seems|looks)\b.{0,48}"
+        r"\b(?:slow|hot|busy|high|low|full|near|running)\b",
+        text,
+        re.IGNORECASE,
+    )
     explicitly_requests_shell = re.search(
-        r"\b(?:shell|bash|terminal|command\s+line|cli|nvidia-smi|top|htop|vmstat|free)\b|"
-        r"\b(?:run|execute)\s+(?:the\s+)?(?:command|script|shell|terminal)\b",
+        r"\b(?:shell|bash|terminal|command\s+line|cli|nvidia-smi|htop|vmstat)\b|"
+        r"\b(?:run|execute)\s+(?:the\s+)?(?:command|script|shell|terminal|free|top)\b",
         text,
         re.IGNORECASE,
     )
@@ -227,6 +239,12 @@ def _is_dedicated_system_status_request(user_text: str) -> bool:
         r"\band\s+(?:then\s+)?(?:please\s+)?"
         r"(?:open|launch|start|stop|restart|kill|run|execute|create|write|delete|search|"
         r"look\s+up|read|set|change|enable|disable|remind|schedule|play|type|click)\b",
+        text,
+        re.IGNORECASE,
+    )
+    asks_for_file_action = re.search(
+        r"\b(?:read|write|create|edit|modify|delete|save|update)\b"
+        r"[^.!?\n]{0,100}\b(?:files?|folders?|documents?|fixtures?|reports?|lines?|paths?)\b",
         text,
         re.IGNORECASE,
     )
@@ -239,68 +257,204 @@ def _is_dedicated_system_status_request(user_text: str) -> bool:
         re.IGNORECASE,
     )
     return bool(
-        asks_about_status
+        (asks_about_status or asks_about_personal_resource)
         and not explicitly_requests_shell
         and not asks_for_another_action
+        and not asks_for_file_action
         and not asks_for_other_capability
     )
 
 
+_STATUS_LOOKUP_WORDS = frozenset({
+    "what", "what's", "is", "are", "how", "much", "many", "report", "show",
+    "check", "tell", "me", "give", "get", "please", "my", "your", "the",
+    "current", "currently", "right", "now", "system", "status", "health",
+    "cpu", "processor", "ram", "memory", "gpu", "graphics", "disk", "storage",
+    "usage", "utilization", "load", "free", "available", "temperature", "capacity",
+    "consumption", "used", "use", "in", "of", "and", "or", "percent", "percentage", "space",
+    "core", "cores", "logical", "has", "have",
+})
+_PROCESS_LOOKUP_WORDS = _STATUS_LOOKUP_WORDS | frozenset({
+    "process", "processes", "list", "top", "highest", "lowest", "running", "by",
+    "most", "least", "one", "two", "three", "five", "ten",
+})
+_STATUS_LOOKUP_START = re.compile(
+    r"^\s*(?:hey\s+adam[,;:]?\s*)?(?:please\s+)?"
+    r"(?:what(?:'s|\s+is)\b|how\s+(?:much|many)\b|report\b|show\b|check\b|"
+    r"tell\s+me\b|give\s+me\b|get\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_simple_status_lookup(user_text: str, *, include_processes: bool = False) -> bool:
+    """Accept only short, structurally factual lookup requests for fast dispatch."""
+    text = str(user_text or "").strip()
+    if not _is_dedicated_system_status_request(text) or not _STATUS_LOOKUP_START.search(text):
+        return False
+    words = _PROCESS_LOOKUP_WORDS if include_processes else _STATUS_LOOKUP_WORDS
+    tokens = re.findall(r"\d+|[a-z]+(?:'[a-z]+)?", text.casefold())
+    return bool(tokens) and all(token in words or token.isdigit() for token in tokens)
+
+
 def _filter_tools_for_system_status(available_tools: list, user_text: str) -> list:
-    if not _is_dedicated_system_status_request(user_text):
+    if not _is_dedicated_system_status_request(user_text) and not _can_direct_dispatch_system_status(user_text):
         return available_tools
     allowed_names = {"get_system_status"}
-    if re.search(r"\b(?:process|processes)\b", user_text, re.IGNORECASE):
+    explicitly_requests_processes = bool(
+        re.search(r"\b(?:process|processes)\b", user_text, re.IGNORECASE)
+    )
+    asks_only_for_facts = _is_simple_status_lookup(
+        user_text, include_processes=explicitly_requests_processes
+    )
+    asks_about_cpu_or_memory = bool(
+        re.search(r"\b(?:cpu|processor|ram|memory)\b", user_text, re.IGNORECASE)
+    )
+    if explicitly_requests_processes or (asks_about_cpu_or_memory and not asks_only_for_facts):
         allowed_names.add("list_processes")
     return [tool for tool in available_tools if tool.name in allowed_names]
 
 
 def _can_direct_dispatch_system_status(user_text: str) -> bool:
-    """Limit model-free dispatch to factual status requests without analysis."""
-    if not _is_dedicated_system_status_request(user_text):
-        return False
-    if re.search(r"\b(?:process|processes)\b", user_text, re.IGNORECASE):
-        return False
-    return not re.search(
-        r"\b(?:why|explain|analy[sz]e|compare|interpret|recommend|suggest|advice|advise|"
-        r"should|mean|implication|improve|reduce|lower|optimize|fix|troubleshoot)\b",
-        user_text,
-        re.IGNORECASE,
-    )
+    """Fast-path only the explicitly documented, short status command phrases."""
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(user_text or "").casefold()).strip()
+    return normalized in {
+        "system status",
+        "cpu usage",
+        "memory usage",
+        "disk usage",
+        "gpu usage",
+    }
 
 
-def _can_direct_dispatch_system_status_and_processes(user_text: str) -> bool:
-    """Directly serve a factual status request that also asks for process data."""
+def _format_direct_system_status_response(user_text: str, status_text: str) -> str:
+    """Keep a factual status quickpath focused on the metrics the user asked for."""
     text = str(user_text or "")
-    if (
-        not _is_dedicated_system_status_request(text)
-        or not re.search(r"\b(?:process|processes)\b", text, re.IGNORECASE)
-    ):
-        return False
-    return not re.search(
-        r"\b(?:why|explain|analy[sz]e|compare|interpret|recommend|suggest|advice|advise|"
-        r"should|mean|implication|improve|reduce|lower|optimize|fix|troubleshoot)\b",
-        text,
-        re.IGNORECASE,
+    status = str(status_text or "").strip()
+    if not status:
+        return status
+
+    # Telemetry sentences start with uppercase labels. Split only at sentence
+    # boundaries, not decimal points inside values such as 1.2 gigabytes.
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=\.)\s+(?=[A-Z])", status)
+        if sentence.strip()
+    ]
+
+    def first_sentence(pattern: str) -> str | None:
+        return next((sentence for sentence in sentences if re.search(pattern, sentence, re.IGNORECASE)), None)
+
+    def gpu_fields(field: str) -> list[str]:
+        results: list[str] = []
+        for sentence in sentences:
+            if not re.search(r"\bGPU\s+\d+\s+\(", sentence, re.IGNORECASE):
+                continue
+            blocks = re.split(r"(?=\bGPU\s+\d+\s+\()", sentence)
+            for block in blocks:
+                label = re.match(r"(GPU\s+\d+\s+\([^)]+\))", block.strip(), re.IGNORECASE)
+                if not label:
+                    continue
+                if field == "utilization":
+                    value = re.search(r"\butilization is\s+([^,.;]+)", block, re.IGNORECASE)
+                    phrase = f"{label.group(1)} utilization is {value.group(1)}." if value else None
+                elif field == "temperature":
+                    value = re.search(r"\btemperature is\s+([^,.;]+)", block, re.IGNORECASE)
+                    phrase = f"{label.group(1)} temperature is {value.group(1)}." if value else None
+                elif field == "memory":
+                    value = re.search(
+                        r"(\d+(?:\.\d+)?)\s+of\s+(\d+(?:\.\d+)?)\s+gigabytes VRAM is in use",
+                        block,
+                        re.IGNORECASE,
+                    )
+                    phrase = (
+                        f"{label.group(1)} has {value.group(1)} of {value.group(2)} gigabytes VRAM in use."
+                        if value else None
+                    )
+                else:
+                    phrase = block.strip()
+                if phrase:
+                    results.append(phrase)
+        if field == "utilization" and not results:
+            generic = first_sentence(r"\bGPU utilization is\b")
+            if generic:
+                results.append(generic)
+        return results
+
+    def requested_metric(metric: str) -> str:
+        if metric == "cpu":
+            if re.search(r"\b(?:usage|utilization|consumption)\b", text, re.IGNORECASE):
+                utilization = first_sentence(r"\bCPU utilization\b")
+                if utilization and re.search(
+                    r"\bCPU utilization(?: percentage)?\s+(?:is\s+)?unavailable\b",
+                    utilization,
+                    re.IGNORECASE,
+                ):
+                    return "CPU utilization is unavailable in the status result."
+                return utilization or "CPU utilization is unavailable in the status result."
+            if re.search(r"\bload\b", text, re.IGNORECASE):
+                return first_sentence(r"\bCPU has\b.*\bload average\b") or "CPU load average is unavailable in the status result."
+            if re.search(r"\bcores?\b", text, re.IGNORECASE):
+                cpu = first_sentence(r"\bCPU has\b.*\blogical cores?\b")
+                if cpu:
+                    return re.sub(r"\s+with load average\b.*", ".", cpu)
+                return "CPU core count is unavailable in the status result."
+            parts = [
+                sentence for sentence in sentences
+                if re.search(r"\bCPU (?:has\b|utilization\b)", sentence, re.IGNORECASE)
+            ]
+            return " ".join(parts) or "CPU status is unavailable in the status result."
+        if metric == "memory":
+            return first_sentence(r"\bMemory is\b") or "Memory usage is unavailable in the status result."
+        if metric == "disk":
+            return first_sentence(r"\bRoot storage has\b") or "Disk space details are unavailable in the status result."
+        if metric == "gpu":
+            if re.search(r"\b(?:temperature|temp|hot)\b", text, re.IGNORECASE):
+                phrases = gpu_fields("temperature")
+                fallback = first_sentence(r"\bGPU telemetry is unavailable\b")
+                return " ".join(phrases) or fallback or "GPU temperature is unavailable in the status result."
+            if re.search(r"\b(?:vram|memory)\b", text, re.IGNORECASE):
+                phrases = gpu_fields("memory")
+                fallback = first_sentence(r"\bGPU telemetry is unavailable\b")
+                return " ".join(phrases) or fallback or "GPU memory details are unavailable in the status result."
+            if re.search(r"\b(?:usage|utilization|load)\b", text, re.IGNORECASE):
+                phrases = gpu_fields("utilization")
+                fallback = first_sentence(r"\bGPU telemetry is unavailable\b")
+                return " ".join(phrases) or fallback or "GPU utilization is unavailable in the status result."
+            phrases = gpu_fields("all")
+            return " ".join(phrases) or first_sentence(r"\bGPU telemetry\b") or "GPU status is unavailable in the status result."
+        raise ValueError(f"Unsupported system-status metric: {metric}")
+
+    metric_patterns = (
+        ("cpu", re.compile(r"\b(?:cpu|processor)\b", re.IGNORECASE)),
+        ("memory", re.compile(r"\b(?:ram|memory)\b", re.IGNORECASE)),
+        ("disk", re.compile(r"\b(?:disk|storage)\b", re.IGNORECASE)),
+        ("gpu", re.compile(r"\b(?:gpu|graphics)\b", re.IGNORECASE)),
     )
+    requested = sorted(
+        (match.start(), metric)
+        for metric, pattern in metric_patterns
+        for match in pattern.finditer(text)
+    )
+    metrics = list(dict.fromkeys(metric for _, metric in requested))
+    if metrics:
+        return " ".join(requested_metric(metric) for metric in metrics)
 
-
-def _direct_process_list_args(user_text: str) -> dict[str, int | str]:
-    text = str(user_text or "")
-    sort_by = (
-        "memory"
-        if re.search(
-            r"\bprocess(?:es)?\b.{0,32}\b(?:memory|ram)\b|\b(?:memory|ram)\b.{0,32}\bprocess(?:es)?\b",
-            text,
-            re.IGNORECASE,
+    # A generic system-status request gets a compact overview instead of the
+    # full inventory of cores, load averages, and unrelated hardware details.
+    overview = [
+        first_sentence(r"\bCPU utilization\b") or "CPU utilization is unavailable in the status result.",
+        first_sentence(r"\bMemory is\b") or "Memory usage is unavailable in the status result.",
+        first_sentence(r"\bRoot storage has\b") or "Disk space details are unavailable in the status result.",
+    ]
+    gpu = gpu_fields("utilization")
+    if gpu:
+        overview.extend(gpu)
+    else:
+        overview.append(
+            first_sentence(r"\bGPU telemetry\b")
+            or "GPU utilization is unavailable in the status result."
         )
-        else "cpu"
-    )
-    limit = 5
-    count_match = re.search(r"\b(?:top|first)\s+(\d{1,2})\b", text, re.IGNORECASE)
-    if count_match:
-        limit = max(1, min(int(count_match.group(1)), 20))
-    return {"sort_by": sort_by, "limit": limit}
+    return " ".join(overview)
 
 
 def _without_quoted_screen_text(text: str) -> str:
@@ -633,6 +787,42 @@ def _is_read_only_adam_browser_request(text: str) -> bool:
     return requested_action is None and read_intent is not None
 
 
+def _is_meeting_mode_control_request(user_text: str) -> bool:
+    """Keep conversational meeting controls on the tool-capable model path."""
+    text = str(user_text or "").strip()
+    if not text:
+        return False
+    if re.search(
+        r"\b(?:how\s+do\s+i|how\s+can\s+i|what\s+happens\s+if|what\s+if|"
+        r"suppose|imagine|should\s+i)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    if re.fullmatch(r"(?:please\s+)?meeting\s+mode[.!?]*", text, re.IGNORECASE):
+        return True
+    context = r"(?:meeting(?:\s+(?:mode|recording|transcription))?|recording|transcription)"
+    action = (
+        r"(?:start(?:ing)?|begin(?:ning)?|stop(?:ping)?|end(?:ing)?|finish(?:ing)?|"
+        r"enable|activate|disable|deactivate|turn|switch|put|set|record|over)"
+    )
+    if re.search(
+        rf"\b(?:don't|do\s+not|not|never|shouldn't|should\s+not)\b[^.!?\n]{{0,50}}\b{action}\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    return bool(
+        re.search(rf"\b{action}\b[^.!?\n]{{0,60}}\b{context}\b", text, re.IGNORECASE)
+        or re.search(
+            rf"\b{context}\b[^.!?\n]{{0,40}}\b(?:on|off|start|starting|begin|beginning|"
+            r"stop|stopping|end|ending|finish|finishing|over|done)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
 def _can_answer_without_tools(user_text: str) -> bool:
     """Use a tool-free model turn only for clearly ordinary conversation."""
     text = str(user_text or "").strip()
@@ -697,7 +887,7 @@ def _can_answer_without_tools(user_text: str) -> bool:
         text,
         re.IGNORECASE,
     )
-    if tool_intent or personal_context_request:
+    if tool_intent or personal_context_request or _is_meeting_mode_control_request(text):
         return False
 
     ordinary_conversation = re.search(
@@ -805,6 +995,8 @@ def _should_use_compact_conversation_prompt(
     """Use the short prompt only when no stored or specialized context is needed."""
     return bool(
         _can_answer_without_tools(user_text)
+        and not _is_dedicated_system_status_request(user_text)
+        and not _can_direct_dispatch_system_status(user_text)
         and not memory_context
         and not needs_desktop_context
         and not skill_context
@@ -905,7 +1097,8 @@ Voice & Execution:
 
 Tool Routing:
 - Dedicated tools first: Use built-in tools for time, weather, reminders, timers, calendar (Noctalia / Remind), notes, files, math, and system status.
-- For CPU, RAM, disk, or GPU status questions, call `get_system_status` once and answer from its result. Do not repeat the same checks with `run_bash_command`; if the result lacks a requested detail, say it is unavailable. A separately and explicitly requested shell inspection remains available.
+- For factual hardware requests, use `get_system_status` and report only the metric or metrics the user asked for. Keep a single-metric answer to one short sentence; give a brief overview for `system status`, without listing every telemetry field. For a question or concern about why CPU or memory is high, slow, hot, or otherwise abnormal, get the status once and inspect the relevant top processes with `list_processes`, even when the user did not say "process". Explain what the evidence suggests without claiming that a short process sample proves the cause; if it does not identify a cause, say so. Do not repeat status checks with `run_bash_command` or call `get_system_status` again in the same turn. A separately and explicitly requested shell inspection remains available.
+- For a positive request to start or stop meeting recording that is not one of the exact direct voice controls, call `meeting_mode` with `action="start"` or `action="stop"`, including polite requests phrased as questions. A bare command saying “meeting mode” means start meeting mode. Do not call it for informational questions, hypotheticals, or instructions not to change the current state. The meeting tool owns the spoken confirmation; do not repeat the action or add a second confirmation.
 - Web: Always use `open_in_browser` for URLs and web searches; never manually type URLs into browser address bars via GUI. Use `fetch_webpage` to read specific page content.
 - Shell: Use for CLI tasks, system inspection, or direct script/app APIs. Never run shell `sleep` during GUI tasks (use `capture_screenshot` with delay instead).
 - Desktop GUI: Use a direct tool or CLI when available. Use `drag` with ordered waypoints and then `drop` for an item drag, especially when tracing a maze or other multi-turn path. Always release with `drop`. Use `computer_control` with `modifier='window'` to move a window itself.
@@ -2240,6 +2433,16 @@ class AdamBrain:
                 break
             has_image = any(bool(message.get("images")) for message in self.messages)
             available_tools = _filter_tools_for_system_status(self.get_tools(), user_text)
+            if (
+                _is_dedicated_system_status_request(user_text)
+                and any(call["name"] == "get_system_status" for call in all_executed_tool_calls)
+            ):
+                # A status sample is enough for this turn. Keep the relevant
+                # follow-up evidence tool available, but don't let the model
+                # repeat the same metric check on later hops.
+                available_tools = [
+                    tool for tool in available_tools if tool.name != "get_system_status"
+                ]
             available_tools = _filter_tools_for_dedicated_desktop_navigation(
                 available_tools, user_text
             )
@@ -2251,46 +2454,32 @@ class AdamBrain:
                 # Sending a navigation schema here often causes a low-cost model
                 # to spend a second round trip asking for the same snapshot.
                 available_tools = []
-            if not has_image and (
+            if (
+                not has_image
+                and not _is_dedicated_system_status_request(user_text)
+                and not _can_direct_dispatch_system_status(user_text)
+                and (
                 _can_answer_without_tools(user_text) or memory_only_query
+                )
             ):
                 available_tools = []
-            direct_status_with_processes = (
-                hop == 0
-                and not has_image
-                and _can_direct_dispatch_system_status_and_processes(user_text)
-                and any(tool.name == "get_system_status" for tool in available_tools)
-                and any(tool.name == "list_processes" for tool in available_tools)
-            )
             direct_status = (
                 hop == 0
                 and not has_image
                 and _can_direct_dispatch_system_status(user_text)
                 and any(tool.name == "get_system_status" for tool in available_tools)
             )
-            if direct_status or direct_status_with_processes:
-                # A pure status request has one unambiguous, read-only handler.
-                # A status-plus-process request adds a second read-only handler.
-                # Both use the regular tool validation/execution path and avoid
-                # a model round trip to select or summarize them.
+            if direct_status:
+                # These documented command phrases have one read-only handler
+                # and use the regular tool validation/execution path.
                 with timed_stage("brain.status_direct_dispatch", hop=hop):
-                    direct_calls = [{
-                        "id": f"status_{new_span_id()}",
-                        "type": "function",
-                        "function": {"name": "get_system_status", "arguments": {}},
-                    }]
-                    if direct_status_with_processes:
-                        direct_calls.append({
-                            "id": f"processes_{new_span_id()}",
-                            "type": "function",
-                            "function": {
-                                "name": "list_processes",
-                                "arguments": _direct_process_list_args(user_text),
-                            },
-                        })
                     response = {
                         "content": "",
-                        "tool_calls": direct_calls,
+                        "tool_calls": [{
+                            "id": f"status_{new_span_id()}",
+                            "type": "function",
+                            "function": {"name": "get_system_status", "arguments": {}},
+                        }],
                     }
             else:
                 request_client = self.llm_client
@@ -2519,6 +2708,7 @@ class AdamBrain:
             # 4. Execute all tool calls
             executed_hop_results = []
             stop_after_dispatch: str | None = None
+            meeting_mode_response: str | None = None
             parallel_results = {}
             parallel_spans = {}
             parallel_batch = len(tool_calls) > 1 and all(
@@ -2880,6 +3070,16 @@ class AdamBrain:
                     stop_after_dispatch = "confirmation"
                 if self.custom_tool_mgr.has_tool(name) and self.custom_tool_mgr.tools[name].background:
                     stop_after_dispatch = "background handoff"
+                if (
+                    name == "meeting_mode"
+                    and tool_status == "returned"
+                    and callable(getattr(self, "meeting_mode_handler", None))
+                ):
+                    # The daemon handler speaks before recording starts or
+                    # after it stops; retain its result for chat/history without
+                    # asking the model or TTS to repeat the confirmation.
+                    stop_after_dispatch = "meeting mode control"
+                    meeting_mode_response = str(tool_output)
 
                 executed_hop_results.append((name, args, str(tool_output), tool_status))
                 all_executed_tool_calls.append({
@@ -2965,6 +3165,8 @@ class AdamBrain:
             if stop_after_dispatch:
                 # Confirmation and background tools hand control back to the
                 # voice/runtime layer after their correlated results are saved.
+                if meeting_mode_response is not None:
+                    self.messages.append({"role": "assistant", "content": meeting_mode_response})
                 return
 
             if resource_limit_reached and desktop_no_progress_reason:
@@ -2999,36 +3201,18 @@ class AdamBrain:
                     ),
                 })
 
-            if direct_status_with_processes:
-                direct_results = {
-                    name: (output, status)
-                    for name, _args, output, status in executed_hop_results
-                }
-                status_result = direct_results.get("get_system_status")
-                process_result = direct_results.get("list_processes")
-                if (
-                    status_result
-                    and process_result
-                    and status_result[1] == "returned"
-                    and process_result[1] == "returned"
-                ):
-                    response_text = f"{status_result[0]}\n\n{process_result[0]}"
-                    self.messages.append({"role": "assistant", "content": response_text})
-                    print(f"[Adam] Response: {response_text}", flush=True)
-                    with timed_stage("brain.tts_speak"):
-                        await self.tts.speak_async(response_text)
-                    return
-
-            # The dedicated status tool already returns concise, user-readable
-            # facts. A second model call adds latency and can invent details.
+            # Speak a formatted result only when this iteration dispatched the
+            # explicit quickpath phrase above. Model-mediated calls always get
+            # a final answer so diagnostics and natural questions are interpreted.
             if (
-                _is_dedicated_system_status_request(user_text)
-                and not re.search(r"\b(?:process|processes)\b", user_text, re.IGNORECASE)
+                direct_status
                 and len(executed_hop_results) == 1
                 and executed_hop_results[0][0] == "get_system_status"
                 and executed_hop_results[0][3] == "returned"
             ):
-                response_text = executed_hop_results[0][2]
+                response_text = _format_direct_system_status_response(
+                    user_text, executed_hop_results[0][2]
+                )
                 self.messages.append({"role": "assistant", "content": response_text})
                 print(f"[Adam] Response: {response_text}", flush=True)
                 with timed_stage("brain.tts_speak"):
@@ -3610,6 +3794,16 @@ class AdamBrain:
 
         elif name == "get_system_status":
             return await asyncio.to_thread(get_system_status)
+
+        elif name == "meeting_mode":
+            handler = getattr(self, "meeting_mode_handler", None)
+            if not callable(handler):
+                return "Meeting mode control is unavailable in this runtime."
+            action = str(args.get("action", "")).strip().casefold()
+            if action not in {"start", "stop"}:
+                return "Meeting mode action must be 'start' or 'stop'."
+            result = await handler(action)
+            return str(result or "Meeting mode action completed.")
 
         elif name == "list_processes":
             return await asyncio.to_thread(

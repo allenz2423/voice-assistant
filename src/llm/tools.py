@@ -711,6 +711,24 @@ ADAM_TOOLS: list[CanonicalTool] = [
         }
     ),
     CanonicalTool(
+        name="meeting_mode",
+        description=(
+            "Starts or stops meeting recording and transcription. Use for user requests to turn meeting mode "
+            "on or off, including conversational wording; choose start or stop from the requested state."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["start", "stop"],
+                    "description": "Use 'start' to begin recording and transcription, or 'stop' to end the meeting session.",
+                }
+            },
+            "required": ["action"],
+        },
+    ),
+    CanonicalTool(
         name="get_system_status",
         description="Queries CPU load, RAM, root disk, and available GPU utilization, temperature, and VRAM telemetry.",
         parameters={
