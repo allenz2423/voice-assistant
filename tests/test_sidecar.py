@@ -550,6 +550,8 @@ async def test_tool_events_stream_before_turn_finishes_with_logging_disabled(tmp
     daemon = MagicMock(arbiter=arbiter, brain=brain, memory_manager=None)
 
     async def execute(text, memory_context=None):
+        emit_event('llm.retrying', status='retrying',
+                   attributes={'reason': '429', 'attempt': 1, 'max_attempts': 3})
         emit_event('tool.started', span_id='live-tool', status='started',
                    attributes={'tool_name': 'find_files', 'arguments': 'private'})
         await gate.wait()
@@ -564,14 +566,21 @@ async def test_tool_events_stream_before_turn_finishes_with_logging_disabled(tmp
         async with client.ws_connect('/api/ws') as ws:
             await ws.receive_json(timeout=2)  # initial status
             await ws.send_json({'type': 'chat', 'message': 'Check the folder'})
-            while True:
+            progress = activity = None
+            while progress is None or activity is None:
                 event = await ws.receive_json(timeout=2)
-                if event.get('type') == 'tool_activity':
-                    break
-            assert event['tool'] == 'find_files'
-            assert event['phase'] == 'started'
+                if event.get('type') == 'task_progress':
+                    progress = event
+                elif event.get('type') == 'tool_activity':
+                    activity = event
+            assert progress == {
+                'type': 'task_progress', 'event': 'llm.retrying',
+                'attempt': 1, 'max_attempts': 3, 'reason': '429',
+            }
+            assert activity['tool'] == 'find_files'
+            assert activity['phase'] == 'started'
             assert not gate.is_set()
-            assert 'private' not in str(event)
+            assert 'private' not in str(activity)
             gate.set()
             finished = response = None
             while finished is None or response is None:
@@ -599,6 +608,8 @@ async def test_index_versions_assets_and_disables_stale_browser_cache():
         assert f'/static/app.js?v={revision}' in html
         assert f'/static/style.css?v={revision}' in html
         assert 'id="toolActivity"' in html
+        served_js = await (await client.get(f'/static/app.js?v={revision}')).text()
+        assert 'data.type === "task_progress"' in served_js
         assert response.headers['Cache-Control'] == 'no-store'
         response = await client.get(f'/static/app.js?v={revision}')
         assert response.status == 200

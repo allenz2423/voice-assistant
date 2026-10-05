@@ -595,6 +595,40 @@ def _can_answer_without_tools(user_text: str) -> bool:
     return bool(ordinary_conversation)
 
 
+def _available_tools_for_capability_refusal(
+    user_text: str, response_text: str, available_tools: list,
+) -> list[str]:
+    """Find relevant available tools when the model falsely claims it lacks access."""
+    refusal = re.search(
+        r"\b(?:i|we)\s+(?:(?:do\s+not|don't|cannot|can't|can\s+not)\s+"
+        r"(?:directly\s+)?(?:access|browse|inspect|read|view|see|open|control|interact\s+with)|"
+        r"(?:do\s+not|don't)\s+have\s+access(?:\s+to)?|"
+        r"(?:am|are)\s+unable\s+to\s+(?:access|browse|inspect|read|view|see|open|control))\b",
+        str(response_text or ""),
+        re.IGNORECASE,
+    )
+    if not refusal:
+        return []
+
+    request = str(user_text or "")
+    tool_names = {str(getattr(tool, "name", "")) for tool in available_tools}
+    relevant_names: set[str] = set()
+    if re.search(r"\b(?:files?|folders?|directories|downloads?|documents?|filesystem|file\s+system|paths?)\b", request, re.I):
+        relevant_names |= tool_names & {"find_files", "read_file"}
+        if re.search(r"\b(?:create|write|edit|update|organize|move|delete|remove|rename)\b", request, re.I):
+            relevant_names |= tool_names & {"create_file", "write_file"}
+    if re.search(r"\b(?:desktop|screen|display|window|computer|mouse|keyboard|click|app|application)\b", request, re.I):
+        relevant_names |= tool_names & {
+            "computer_control", "capture_screenshot", "observe_desktop",
+            "list_windows", "focus_window",
+        }
+    if re.search(r"\b(?:website|webpage|browser|internet|url|online)\b", request, re.I):
+        relevant_names |= tool_names & {
+            "web_search", "fetch_webpage", "open_in_browser", "browser_navigation",
+        }
+    return sorted(relevant_names)
+
+
 def _should_use_compact_conversation_prompt(
     user_text: str,
     *,
@@ -711,7 +745,7 @@ Safety & Confirmation:
 
 SCREEN_TEXT_READ_MAX_CHARS = 5000
 LONG_TASK_PROGRESS_INTERVAL_SECONDS = 10.0
-COMPACT_CONVERSATION_SYSTEM_PROMPT = """You are Adam, a general-purpose voice-first assistant. For ordinary conversation, answer accurately and briefly in plain language. Treat the current request as active and use earlier dialogue only when needed to resolve it. When drafting for the user, use only personal facts they supplied or that trusted memory provides; omit unknown details or mark placeholders. Do not add unrequested actions, and never claim an action succeeded without a tool result confirming it."""
+COMPACT_CONVERSATION_SYSTEM_PROMPT = """You are Adam, a general-purpose voice-first assistant. For ordinary conversation, answer accurately and briefly in plain language. Treat the current request as active and use earlier dialogue only when needed to resolve it. When drafting for the user, use only personal facts they supplied or that trusted memory provides; omit unknown details or mark placeholders. Do not add unrequested actions, and never claim an action succeeded without a tool result confirming it. For simple factual questions, answer in one or two short sentences by default. For comparisons, state the main difference first; avoid tables and lists unless requested. When the user asks for detail, examples, or a list, provide them."""
 
 MEMORY_RECALL_SYSTEM_PROMPT = """You are Adam. Answer this personal-history question from the retrieved user memory. Include every matching recorded event in the requested date range and preserve its dates and times. Treat dates and times as recorded facts; do not reinterpret a future-dated event as an appointment or claim it has not happened based on the current clock. Do not invent totals, plans, calendar status, or other details unless asked. If the retrieved memory does not answer the question, say what is missing."""
 
@@ -1641,6 +1675,7 @@ class AdamBrain:
         hop = 0
         resource_limit_reached = False
         empty_completion_retries = 0
+        capability_refusal_retries = 0
         tool_recovery_attempts = 0
         tool_recovery_exhausted_reason = None
         while True:
@@ -1718,6 +1753,45 @@ class AdamBrain:
                 self.messages.append({"role": "assistant", "content": response_text})
                 await self.tts.speak_async(response_text)
                 return
+            capability_tools = (
+                _available_tools_for_capability_refusal(user_text, content, available_tools)
+                if not tool_calls else []
+            )
+            if capability_tools:
+                if capability_refusal_retries < 3:
+                    capability_refusal_retries += 1
+                    print(
+                        "[LLM] Model claimed it lacked access despite relevant tools; "
+                        f"reprompting ({capability_refusal_retries}/3).",
+                        flush=True,
+                    )
+                    emit_event(
+                        "brain.capability_recovery",
+                        span_id=new_span_id(), component="brain", status="recovering",
+                        attributes={"attempt": capability_refusal_retries, "max_attempts": 3},
+                    )
+                    self.messages.append({"role": "assistant", "content": str(content or "")})
+                    self.messages.append({
+                        "role": "user",
+                        "content": (
+                            "Your previous reply claimed a capability was unavailable, but a relevant "
+                            f"tool is available: {', '.join(capability_tools)}. If that tool can safely "
+                            "satisfy the original request, use it and assess its result. Otherwise state "
+                            "the actual limitation. Do not invent an observation, expand the requested "
+                            "scope, or claim success without tool evidence."
+                        ),
+                    })
+                    continue
+
+                response_text = (
+                    "I couldn't confirm this request because the model did not use an available tool "
+                    "after three recovery attempts. I haven't inspected or changed anything; please "
+                    "try rephrasing the request."
+                )
+                self.messages.append({"role": "assistant", "content": response_text})
+                print(f"[Adam] Response: {response_text}", flush=True)
+                await self.tts.speak_async(response_text)
+                return
             if not str(content or "").strip() and not tool_calls:
                 if empty_completion_retries < 3:
                     empty_completion_retries += 1
@@ -1725,6 +1799,11 @@ class AdamBrain:
                         "[LLM] Model returned neither an answer nor a tool call; "
                         f"reprompting with the current task state ({empty_completion_retries}/3).",
                         flush=True,
+                    )
+                    emit_event(
+                        "brain.empty_completion_recovery",
+                        span_id=new_span_id(), component="brain", status="recovering",
+                        attributes={"attempt": empty_completion_retries, "max_attempts": 3},
                     )
                     self.messages.append({"role": "assistant", "content": ""})
                     self.messages.append({
@@ -2292,6 +2371,11 @@ class AdamBrain:
                     break
                 tool_recovery_attempts += 1
                 print(f"[Adam] Tool recovery prompt {tool_recovery_attempts}/3.", flush=True)
+                emit_event(
+                    "brain.tool_recovery",
+                    span_id=new_span_id(), component="brain", status="recovering",
+                    attributes={"attempt": tool_recovery_attempts, "max_attempts": 3},
+                )
                 self.messages.append({
                     "role": "user",
                     "content": (
@@ -2765,7 +2849,29 @@ class AdamBrain:
                 if getattr(self, "_is_interrupted", False):
                     raise asyncio.CancelledError("Command execution was interrupted.")
                 if proc.returncode:
-                    return json.dumps({"ok": False, "exit_code": proc.returncode, "output": out_text})
+                    result = {"ok": False, "exit_code": proc.returncode, "output": out_text}
+                    encoded_result = json.dumps(result, ensure_ascii=False)
+                    # JSON escaping can expand newline-heavy shell output beyond
+                    # the nominal 12 KB text bound. Keep the complete tool reply
+                    # bounded too, so it cannot flood model context or the UI.
+                    serialized_limit = 12500
+                    if len(encoded_result) > serialized_limit:
+                        marker = "\n[... output truncated ...]"
+                        source = out_text[:-len(marker)] if out_text.endswith(marker) else out_text
+                        low, high = 0, len(source)
+                        while low < high:
+                            middle = (low + high + 1) // 2
+                            candidate = {
+                                **result,
+                                "output": source[:middle].rstrip("\n") + marker,
+                            }
+                            if len(json.dumps(candidate, ensure_ascii=False)) <= serialized_limit:
+                                low = middle
+                            else:
+                                high = middle - 1
+                        result["output"] = source[:low].rstrip("\n") + marker
+                        encoded_result = json.dumps(result, ensure_ascii=False)
+                    return encoded_result
                 return out_text
             except asyncio.CancelledError:
                 try:

@@ -135,6 +135,50 @@ async def test_empty_model_turn_gets_three_recoveries_without_dispatching_action
 
 
 @pytest.mark.asyncio
+async def test_false_filesystem_access_refusal_reprompts_when_read_tool_is_available():
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {"content": "I don't have access to your file system.", "tool_calls": []},
+        {"content": "", "tool_calls": [{
+            "id": "read-file",
+            "function": {"name": "read_file", "arguments": {"path": "/tmp/synthetic-note.txt"}},
+        }]},
+        {"content": "The synthetic note says hello.", "tool_calls": []},
+    ])
+    brain._execute_tool = AsyncMock(return_value=json.dumps({"ok": True, "readback": "hello"}))
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Check my Downloads folder")
+
+    assert len(brain.llm_client.requests) == 3
+    assert "relevant tool is available: find_files, read_file" in brain.llm_client.requests[1][-1]["content"]
+    brain._execute_tool.assert_awaited_once_with("read_file", {"path": "/tmp/synthetic-note.txt"})
+    assert brain.tts.spoken[-1] == "The synthetic note says hello."
+
+
+@pytest.mark.asyncio
+async def test_capability_refusal_recovery_stops_after_three_reprompts():
+    from src.llm.brain import AdamBrain
+
+    refusal = {"content": "I can't access your file system.", "tool_calls": []}
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [refusal.copy() for _ in range(4)])
+    executed = []
+    brain._execute_tool = lambda name, args: executed.append((name, args))
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Check my Downloads folder")
+
+    assert len(brain.llm_client.requests) == 4
+    assert executed == []
+    assert "after three recovery attempts" in brain.tts.spoken[-1]
+    assert "haven't inspected or changed anything" in brain.tts.spoken[-1]
+
+
+@pytest.mark.asyncio
 async def test_independent_native_web_reads_run_concurrently_and_keep_call_order():
     import asyncio
     from src.llm.brain import AdamBrain

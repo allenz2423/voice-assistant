@@ -80,7 +80,11 @@ class DaemonBridge(RuntimeBridge):
             queue.put_nowait(row)
 
         def receive(row):
-            if row.get("event") in {"tool.started", "tool.completed"}:
+            if row.get("event") in {
+                "tool.started", "tool.completed", "llm.retrying",
+                "brain.tool_recovery", "brain.empty_completion_recovery",
+                "brain.capability_recovery",
+            }:
                 loop.call_soon_threadsafe(enqueue, row)
 
         async def deliver():
@@ -88,22 +92,32 @@ class DaemonBridge(RuntimeBridge):
                 row = await queue.get()
                 span = row.get("span_id")
                 attrs = row.get("attributes", {})
-                started = row["event"] == "tool.started"
-                duration = None
-                if started:
-                    if len(starts) >= 256:
-                        starts.pop(next(iter(starts)))
-                    starts[span] = row["clock_ns"]
-                else:
-                    clock = starts.pop(span, None)
-                    if clock is not None:
-                        duration = round((row["clock_ns"] - clock) / 1_000_000)
+                if row["event"].startswith("tool."):
+                    started = row["event"] == "tool.started"
+                    duration = None
+                    if started:
+                        if len(starts) >= 256:
+                            starts.pop(next(iter(starts)))
+                        starts[span] = row["clock_ns"]
+                    else:
+                        clock = starts.pop(span, None)
+                        if clock is not None:
+                            duration = round((row["clock_ns"] - clock) / 1_000_000)
+                    await self.broadcast_state({
+                        "type": "tool_activity", "span_id": span,
+                        "tool": attrs.get("tool_name", "tool"),
+                        "phase": "started" if started else "finished",
+                        "outcome": attrs.get("outcome") or row.get("status"),
+                        "duration_ms": duration,
+                    })
+                    continue
+
                 await self.broadcast_state({
-                    "type": "tool_activity", "span_id": span,
-                    "tool": attrs.get("tool_name", "tool"),
-                    "phase": "started" if started else "finished",
-                    "outcome": attrs.get("outcome") or row.get("status"),
-                    "duration_ms": duration,
+                    "type": "task_progress",
+                    "event": row["event"],
+                    "attempt": attrs.get("attempt"),
+                    "max_attempts": attrs.get("max_attempts", 3),
+                    "reason": attrs.get("reason"),
                 })
 
         self._unsubscribe_events = subscribe_events(receive)

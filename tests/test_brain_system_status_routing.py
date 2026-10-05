@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from src.llm.brain import (
     AdamBrain,
+    COMPACT_CONVERSATION_SYSTEM_PROMPT,
     _can_direct_dispatch_system_status,
     _can_direct_dispatch_system_status_and_processes,
     _can_answer_without_tools,
@@ -95,6 +96,13 @@ def test_compact_conversation_prompt_requires_no_external_context():
     assert not _should_use_compact_conversation_prompt(
         "Explain entropy in plain language.", skill_context="Specialized guidance"
     )
+
+
+def test_compact_conversation_prompt_defaults_to_short_plain_comparisons():
+    assert "one or two short sentences by default" in COMPACT_CONVERSATION_SYSTEM_PROMPT
+    assert "state the main difference first" in COMPACT_CONVERSATION_SYSTEM_PROMPT
+    assert "avoid tables and lists unless requested" in COMPACT_CONVERSATION_SYSTEM_PROMPT
+    assert "When the user asks for detail, examples, or a list, provide them" in COMPACT_CONVERSATION_SYSTEM_PROMPT
 
 
 def test_browser_name_detection_does_not_match_part_of_an_unrelated_app_name():

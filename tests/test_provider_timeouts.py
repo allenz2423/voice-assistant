@@ -139,12 +139,21 @@ async def test_provider_failure_recovers_with_three_retries_and_preserves_progre
 async def test_provider_retries_stop_at_three_and_do_not_retry_permanent_errors(monkeypatch):
     from unittest.mock import AsyncMock
     from src.llm.provider import UniversalLLMClient
+    from src.telemetry.events import subscribe_events
     client = UniversalLLMClient(SimpleNamespace(llm=LLMConfig()))
     monkeypatch.setattr('src.llm.provider.asyncio.sleep', AsyncMock())
     request = AsyncMock(side_effect=lambda *args: {'provider_error':True, '_retry_status':429})
-    result = await client._chat_with_retries(request, [], [], None, None)
+    events = []
+    unsubscribe = subscribe_events(events.append)
+    try:
+        result = await client._chat_with_retries(request, [], [], None, None)
+    finally:
+        unsubscribe()
     assert result['provider_error'] is True
     assert request.await_count == 4
+    retries = [event for event in events if event['event'] == 'llm.retrying']
+    assert [event['attributes']['attempt'] for event in retries] == [1, 2, 3]
+    assert all(event['attributes']['max_attempts'] == 3 for event in retries)
     permanent = AsyncMock(return_value={'provider_error':True})
     await client._chat_with_retries(permanent, [], [], None, None)
     assert permanent.await_count == 1

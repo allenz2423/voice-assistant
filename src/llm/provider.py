@@ -247,6 +247,18 @@ class UniversalLLMClient:
                 f"retrying in {delay:.1f}s (recovery {attempt + 1}/3).",
                 flush=True,
             )
+            _emit_llm_event(
+                "llm.retrying",
+                status="retrying",
+                provider=self.provider,
+                model=(self.local_model if self.provider == "local" else self.cloud_model),
+                trace_id=None,
+                attributes={
+                    "reason": str(retry_status)[:40],
+                    "attempt": attempt + 1,
+                    "max_attempts": 3,
+                },
+            )
             await asyncio.sleep(delay)
         return response
 

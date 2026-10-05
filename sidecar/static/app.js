@@ -149,6 +149,22 @@
     toolActivity.scrollTop = toolActivity.scrollHeight;
   }
 
+  function showTaskProgress(data) {
+    if (!isSending) return;
+    const count = Number.isInteger(data.attempt) && Number.isInteger(data.max_attempts)
+      ? ` (${data.attempt}/${data.max_attempts})` : "";
+    if (data.event === "llm.retrying") {
+      const reason = data.reason === "429" ? "rate limited the request" : "request failed";
+      statusMessage.textContent = `Model ${reason}; retrying${count}…`;
+    } else if (data.event === "brain.tool_recovery") {
+      statusMessage.textContent = `A tool failed; asking Adam to recover safely${count}…`;
+    } else if (data.event === "brain.empty_completion_recovery") {
+      statusMessage.textContent = `Adam received no usable model response; retrying${count}…`;
+    } else if (data.event === "brain.capability_recovery") {
+      statusMessage.textContent = `Adam is re-checking available tools${count}…`;
+    }
+  }
+
   // Set connection UI state
   function setConnectionStatus(connected, mode, extra) {
     if (connected && mode === "daemon") {
@@ -360,6 +376,8 @@
           setRuntimeState(data.system_state);
         } else if (data.type === "tool_activity") {
           showToolActivity(data);
+        } else if (data.type === "task_progress") {
+          showTaskProgress(data);
         } else if (data.type === "chat_response") {
           const res = data.result || {};
           if (res.status === "completed") {
