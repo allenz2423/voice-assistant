@@ -62,6 +62,7 @@ browser_navigation:
   browser: "default" # "default" follows desktop.default_browser; or choose "chromium" / "firefox"
   profile_path: "~/.local/share/adam/browser-navigation"
   timeout_seconds: 15.0
+  headless: false # Set true to keep it invisible and release it after read-only turns
 
 computer_control:
   enabled: true # Screenshot-guided mouse and keyboard control; chooses X11 or Wayland automatically
@@ -117,6 +118,9 @@ llm:
   api_key: ""               # Optional API key for cloud/custom providers
   provider_only: []          # OpenRouter only: pin to a provider slug, e.g. ["relace"]
   allow_provider_fallbacks: true
+  tool_free_model: ""        # Optional model for short, generic, tool-free requests
+  tool_free_provider_only: []
+  tool_free_allow_provider_fallbacks: true
   num_ctx: 65536             # 64k context window
   temperature: 0.3
   think: false                # Disable model thinking

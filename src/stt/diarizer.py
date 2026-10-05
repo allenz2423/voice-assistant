@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import importlib
+import importlib.util
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -40,11 +41,15 @@ class NemotronDiarizer:
 
     @property
     def available(self) -> bool:
+        # Availability is checked during daemon startup. Inspect package specs
+        # here so the optional Transformers/PyTorch stack stays unloaded until
+        # diarization is actually requested.
         try:
-            importlib.import_module("transformers")
-            importlib.import_module("torch")
-            return True
-        except ImportError:
+            return all(
+                package in sys.modules or importlib.util.find_spec(package) is not None
+                for package in ("transformers", "torch")
+            )
+        except (ImportError, ValueError):
             return False
 
     def supports_model(self) -> bool:

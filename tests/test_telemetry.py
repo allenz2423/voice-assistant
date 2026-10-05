@@ -278,14 +278,14 @@ def test_openrouter_uses_configured_effort_only_for_tool_free_calls(monkeypatch)
         ollama_host="http://localhost:11434", api_base="https://openrouter.ai/api/v1",
         api_key="fake-key", temperature=0.0, num_ctx=4096, think=True,
         disable_reasoning_for_tool_free=False,
-        tool_free_reasoning_effort="low",
+        tool_free_reasoning_effort="none",
         provider_only=[], allow_provider_fallbacks=False,
     ))
 
     asyncio.run(provider_module.UniversalLLMClient(config).chat(
         [{"role": "user", "content": "Explain entropy."}], tools=[]
     ))
-    assert payloads[0]["reasoning"] == {"effort": "low"}
+    assert payloads[0]["reasoning"] == {"effort": "none"}
     assert payloads[0]["provider"]["require_parameters"] is True
 
 

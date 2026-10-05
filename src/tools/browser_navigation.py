@@ -40,6 +40,7 @@ class BrowserNavigator:
         self._playwright = None
         self._context = None
         self._page = None
+        self._restore_url = ""
         self._refs: dict[str, dict[str, Any]] = {}
         self._snapshot_url = ""
         self._closed = False
@@ -69,7 +70,7 @@ class BrowserNavigator:
         call = functools.partial(self._perform, action, target, text, direction)
         return await loop.run_in_executor(self._executor, call)
 
-    def _ensure_browser(self) -> None:
+    def _ensure_browser(self, *, restore_last_page: bool = True) -> None:
         if self._context is not None and not self._context.pages:
             self._page = self._context.new_page()
         elif self._context is not None and self._page is not None and not self._page.is_closed():
@@ -117,6 +118,12 @@ class BrowserNavigator:
             self._context = browser_type.launch_persistent_context(**options)
             self._page = self._context.pages[-1] if self._context.pages else self._context.new_page()
             self._page.set_default_timeout(self.timeout_ms)
+            if restore_last_page and self._restore_url:
+                restore_url = self._restore_url
+                self._page.goto(
+                    restore_url, wait_until="domcontentloaded", timeout=self.timeout_ms
+                )
+                self._restore_url = ""
 
     @staticmethod
     def _clean_url(url: str) -> str:
@@ -269,8 +276,8 @@ class BrowserNavigator:
 
     def _perform(self, action: str, target: str, text: str, direction: str) -> str:
         try:
-            self._ensure_browser()
             action = (action or "inspect").strip().lower()
+            self._ensure_browser(restore_last_page=action != "navigate")
             if action == "inspect":
                 return self._snapshot()
             if action == "navigate":
@@ -302,7 +309,15 @@ class BrowserNavigator:
         except Exception as exc:
             return f"Browser action failed ({type(exc).__name__}): {str(exc)[:400]}"
 
-    def _close_sync(self) -> None:
+    def _close_sync(self, *, preserve_last_page: bool = False) -> None:
+        if preserve_last_page and self._page is not None:
+            try:
+                current_url = self._page.url
+                parts = urllib.parse.urlsplit(current_url)
+                if parts.scheme in {"http", "https"} and parts.hostname and not parts.username and not parts.password:
+                    self._restore_url = current_url
+            except Exception:
+                pass
         try:
             if self._context is not None:
                 self._context.close()
@@ -314,6 +329,16 @@ class BrowserNavigator:
         except Exception:
             pass
         self._context = self._page = self._playwright = None
+        self._refs = {}
+        self._snapshot_url = ""
+
+    async def release_browser(self) -> None:
+        """Release browser processes while keeping the profile and last page URL for later use."""
+        if self._closed:
+            return
+        loop = asyncio.get_running_loop()
+        release = functools.partial(self._close_sync, preserve_last_page=True)
+        await loop.run_in_executor(self._executor, release)
 
     def close(self) -> None:
         with self._close_lock:

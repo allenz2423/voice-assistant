@@ -217,14 +217,24 @@ class UniversalLLMClient:
             return await self._chat_ollama(messages, tools, max_tokens, think)
 
     async def _chat_with_retries(self, request, *args) -> dict:
-        """Retry transient cloud throttling and transport failures, at most twice."""
+        """Retry transient failures at most three times without replaying tools."""
         response = {}
-        for attempt in range(3):
-            response = await request(*args)
+        retry_args = args
+        for attempt in range(4):
+            response = await request(*retry_args)
             retry_status = response.pop("_retry_status", None)
             retry_after = response.pop("_retry_after", None)
-            if retry_status is None or attempt == 2:
+            if retry_status is None or attempt == 3:
                 return response
+            if retry_status == "invalid response":
+                retry_args = ([*args[0], {
+                    "role": "user",
+                    "content": (
+                        "The previous model response was unusable. Continue the current request "
+                        "from the existing tool results; do not repeat completed actions. "
+                        "Return a valid assistant answer or structured tool call."
+                    ),
+                }], *args[1:])
             try:
                 delay = float(retry_after)
                 if not math.isfinite(delay) or delay < 0:
@@ -234,8 +244,20 @@ class UniversalLLMClient:
             delay = min(delay, 8.0)
             print(
                 f"[LLM] Provider request failed transiently ({retry_status}); "
-                f"retrying in {delay:.1f}s (attempt {attempt + 2}/3).",
+                f"retrying in {delay:.1f}s (recovery {attempt + 1}/3).",
                 flush=True,
+            )
+            _emit_llm_event(
+                "llm.retrying",
+                status="retrying",
+                provider=self.provider,
+                model=(self.local_model if self.provider == "local" else self.cloud_model),
+                trace_id=None,
+                attributes={
+                    "reason": str(retry_status)[:40],
+                    "attempt": attempt + 1,
+                    "max_attempts": 3,
+                },
             )
             await asyncio.sleep(delay)
         return response
@@ -508,7 +530,7 @@ class UniversalLLMClient:
                         # Do not log provider response bodies: gateways can echo request data.
                         complete_event("http_error", response_status=resp.status)
                         print(f"[LLM] OpenAI-compatible call failed (HTTP {resp.status}).")
-                        fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        fallback = self._emergency_rule_fallback("")
                         if resp.status == 429 or 500 <= resp.status <= 599:
                             fallback["_retry_status"] = resp.status
                             fallback["_retry_after"] = getattr(resp, "headers", {}).get("Retry-After")
@@ -516,29 +538,46 @@ class UniversalLLMClient:
                     try:
                         data = await resp.json()
                         response_body_done_at = asyncio.get_running_loop().time()
-                    except Exception:
+                    except (ValueError, aiohttp.ContentTypeError):
                         complete_event("invalid_response", response_status=resp.status)
                         print("[LLM] OpenAI-compatible call returned invalid JSON.", flush=True)
-                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        fallback = self._emergency_rule_fallback("")
+                        fallback["_retry_status"] = "invalid response"
+                        return fallback
                     if not isinstance(data, dict):
                         complete_event("invalid_response", response_status=resp.status)
                         print("[LLM] OpenAI-compatible call returned an invalid response shape.", flush=True)
-                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        fallback = self._emergency_rule_fallback("")
+                        fallback["_retry_status"] = "invalid response"
+                        return fallback
                     if "error" in data:
                         complete_event("provider_error", response=data, response_status=resp.status)
                         print("[LLM] OpenAI-compatible call returned a provider error.", flush=True)
-                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        fallback = self._emergency_rule_fallback("")
+                        error = data["error"]
+                        code = error.get("code") if isinstance(error, dict) else None
+                        try:
+                            code = int(code)
+                        except (TypeError, ValueError):
+                            code = None
+                        if code == 429 or (code is not None and 500 <= code <= 599):
+                            fallback["_retry_status"] = code
+                        return fallback
                     choices = data.get("choices")
                     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
                         complete_event("invalid_response", response=data, response_status=resp.status)
                         print("[LLM] OpenAI-compatible call returned no valid choice.", flush=True)
-                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        fallback = self._emergency_rule_fallback("")
+                        fallback["_retry_status"] = "invalid response"
+                        return fallback
                     first_choice = choices[0]
                     choice = first_choice.get("message", {})
                     if not isinstance(choice, dict):
                         complete_event("invalid_response", response=data, response_status=resp.status)
                         print("[LLM] OpenAI-compatible call returned an invalid message shape.", flush=True)
-                        return self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        fallback = self._emergency_rule_fallback("")
+                        fallback["_retry_status"] = "invalid response"
+                        return fallback
                     content = choice.get("content") or ""
                     tool_calls = choice.get("tool_calls") or []
                     reasoning_details = choice.get("reasoning_details")
@@ -585,7 +624,7 @@ class UniversalLLMClient:
             if "started_at" in locals():
                 complete_event("transport_error")
             print(f"[LLM] OpenAI-compatible request failed ({type(e).__name__}).")
-            fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+            fallback = self._emergency_rule_fallback("")
             try:
                 import aiohttp
                 retryable_transport = isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError, OSError))
@@ -604,7 +643,7 @@ class UniversalLLMClient:
         key = self.api_key or os.environ.get("ANTHROPIC_API_KEY", "")
         if not key:
             print("[LLM] Error: ANTHROPIC_API_KEY not configured.")
-            return self._emergency_rule_fallback(messages[-1].get("content", ""))
+            return self._emergency_rule_fallback("")
 
         headers = {
             "x-api-key": key,
@@ -633,7 +672,7 @@ class UniversalLLMClient:
                     if resp.status != 200:
                         err = await resp.text()
                         print(f"[LLM] Anthropic API error ({resp.status}): {err}")
-                        fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        fallback = self._emergency_rule_fallback("")
                         if resp.status == 429 or 500 <= resp.status <= 599:
                             fallback["_retry_status"] = resp.status
                             fallback["_retry_after"] = getattr(resp, "headers", {}).get("Retry-After")
@@ -648,7 +687,7 @@ class UniversalLLMClient:
                     }
         except Exception as e:
             print(f"[LLM] Anthropic request failed: {e}")
-            fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+            fallback = self._emergency_rule_fallback("")
             if isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError, OSError)):
                 fallback["_retry_status"] = "transport error"
             return fallback
@@ -662,7 +701,7 @@ class UniversalLLMClient:
         key = self.api_key or os.environ.get("GEMINI_API_KEY", "")
         if not key:
             print("[LLM] Error: GEMINI_API_KEY not configured.")
-            return self._emergency_rule_fallback(messages[-1].get("content", ""))
+            return self._emergency_rule_fallback("")
 
         model = self.cloud_model or "gemini-2.5-flash"
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
@@ -683,7 +722,7 @@ class UniversalLLMClient:
                     if resp.status != 200:
                         err = await resp.text()
                         print(f"[LLM] Gemini API error ({resp.status}): {err}")
-                        fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+                        fallback = self._emergency_rule_fallback("")
                         if resp.status == 429 or 500 <= resp.status <= 599:
                             fallback["_retry_status"] = resp.status
                             fallback["_retry_after"] = getattr(resp, "headers", {}).get("Retry-After")
@@ -699,7 +738,7 @@ class UniversalLLMClient:
                     }
         except Exception as e:
             print(f"[LLM] Gemini request failed: {e}")
-            fallback = self._emergency_rule_fallback(messages[-1].get("content", ""))
+            fallback = self._emergency_rule_fallback("")
             if isinstance(e, (aiohttp.ClientError, asyncio.TimeoutError, OSError)):
                 fallback["_retry_status"] = "transport error"
             return fallback

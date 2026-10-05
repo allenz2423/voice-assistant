@@ -97,3 +97,69 @@ def test_wake_reset_restores_model_warmup_and_clears_silence(monkeypatch):
     assert model.reset_calls == 1
     assert len(model.prediction_calls) == 10
     assert detector._quiet_context_samples == 0
+
+
+def test_custom_wake_recovery_hint_uses_distinctive_tokens(monkeypatch):
+    def load_custom(detector):
+        detector.is_custom_mode = True
+        detector.custom_regex = detector._build_wake_regex(
+            detector.raw_wake_word, detector.aliases
+        )
+
+    monkeypatch.setattr(WakeWordDetector, "_load_model", load_custom)
+    detector = WakeWordDetector("Hey Adam", aliases=["Yo Adam"])
+
+    assert detector.may_contain_custom_wake_word("Adam, check the weather")
+    assert detector.may_contain_custom_wake_word("Yo Adam, check the weather")
+    assert not detector.may_contain_custom_wake_word("Hey, I had a busy day")
+    assert not detector.may_contain_custom_wake_word("I use a computer every day")
+
+
+def test_speaker_isolation_requires_a_wake_hint_or_pretrained_detection(monkeypatch):
+    from src.main import _should_attempt_speaker_isolation
+
+    def load_custom(detector):
+        detector.is_custom_mode = True
+        detector.custom_regex = detector._build_wake_regex(
+            detector.raw_wake_word, detector.aliases
+        )
+
+    monkeypatch.setattr(WakeWordDetector, "_load_model", load_custom)
+    detector = WakeWordDetector("Hey Adam")
+
+    assert not _should_attempt_speaker_isolation("Can you schedule a meeting?", detector)
+    assert _should_attempt_speaker_isolation("Adam can you schedule a meeting?", detector)
+    assert _should_attempt_speaker_isolation(
+        "Can you schedule a meeting?", detector, pretrained_wake_triggered=True
+    )
+    assert _should_attempt_speaker_isolation(
+        "I need to finish writing the quarterly report.", detector,
+        transcript_confidence=-0.8, speaker_similarity=0.18, speaker_threshold=0.25,
+    )
+    assert not _should_attempt_speaker_isolation(
+        "I need to finish writing the quarterly report.", detector,
+        transcript_confidence=-0.4, speaker_similarity=0.8, speaker_threshold=0.25,
+    )
+    assert not _should_attempt_speaker_isolation(
+        "I need to finish writing the quarterly report.", detector,
+        transcript_confidence=-0.8, speaker_similarity=0.14, speaker_threshold=0.25,
+    )
+
+
+def test_whisper_confidence_transcription_preserves_plain_text_api():
+    from types import SimpleNamespace
+    from src.stt.transcriber import WhisperTranscriber
+
+    class FakeModel:
+        def transcribe(self, _audio, **_kwargs):
+            return iter([
+                SimpleNamespace(text=" Hey Adam", avg_logprob=-0.7),
+                SimpleNamespace(text=" check the weather", avg_logprob=-0.5),
+            ]), None
+
+    transcriber = WhisperTranscriber.__new__(WhisperTranscriber)
+    transcriber.model = FakeModel()
+    audio = np.ones(1600, dtype=np.float32)
+
+    assert transcriber.transcribe_with_confidence(audio) == ("Hey Adam check the weather", -0.6)
+    assert transcriber.transcribe(audio) == "Hey Adam check the weather"

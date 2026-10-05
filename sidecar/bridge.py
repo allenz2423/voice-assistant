@@ -80,7 +80,11 @@ class DaemonBridge(RuntimeBridge):
             queue.put_nowait(row)
 
         def receive(row):
-            if row.get("event") in {"tool.started", "tool.completed"}:
+            if row.get("event") in {
+                "tool.started", "tool.completed", "llm.retrying",
+                "brain.tool_recovery", "brain.empty_completion_recovery",
+                "brain.capability_recovery",
+            }:
                 loop.call_soon_threadsafe(enqueue, row)
 
         async def deliver():
@@ -88,22 +92,32 @@ class DaemonBridge(RuntimeBridge):
                 row = await queue.get()
                 span = row.get("span_id")
                 attrs = row.get("attributes", {})
-                started = row["event"] == "tool.started"
-                duration = None
-                if started:
-                    if len(starts) >= 256:
-                        starts.pop(next(iter(starts)))
-                    starts[span] = row["clock_ns"]
-                else:
-                    clock = starts.pop(span, None)
-                    if clock is not None:
-                        duration = round((row["clock_ns"] - clock) / 1_000_000)
+                if row["event"].startswith("tool."):
+                    started = row["event"] == "tool.started"
+                    duration = None
+                    if started:
+                        if len(starts) >= 256:
+                            starts.pop(next(iter(starts)))
+                        starts[span] = row["clock_ns"]
+                    else:
+                        clock = starts.pop(span, None)
+                        if clock is not None:
+                            duration = round((row["clock_ns"] - clock) / 1_000_000)
+                    await self.broadcast_state({
+                        "type": "tool_activity", "span_id": span,
+                        "tool": attrs.get("tool_name", "tool"),
+                        "phase": "started" if started else "finished",
+                        "outcome": attrs.get("outcome") or row.get("status"),
+                        "duration_ms": duration,
+                    })
+                    continue
+
                 await self.broadcast_state({
-                    "type": "tool_activity", "span_id": span,
-                    "tool": attrs.get("tool_name", "tool"),
-                    "phase": "started" if started else "finished",
-                    "outcome": attrs.get("outcome") or row.get("status"),
-                    "duration_ms": duration,
+                    "type": "task_progress",
+                    "event": row["event"],
+                    "attempt": attrs.get("attempt"),
+                    "max_attempts": attrs.get("max_attempts", 3),
+                    "reason": attrs.get("reason"),
                 })
 
         self._unsubscribe_events = subscribe_events(receive)
@@ -127,11 +141,20 @@ class DaemonBridge(RuntimeBridge):
 
         brain = getattr(self.daemon, "brain", None)
         model_name = "default"
+        tool_free_model_name = None
         tools_count = 0
         if brain is not None:
             llm_client = getattr(brain, "llm_client", None)
             if llm_client is not None:
-                model_name = getattr(llm_client, "model", "default")
+                model_field = "local_model" if getattr(llm_client, "provider", None) == "local" else "cloud_model"
+                configured_model = getattr(llm_client, model_field, None)
+                model_name = configured_model if isinstance(configured_model, str) else getattr(llm_client, "model", "default")
+            tool_free_client = getattr(brain, "tool_free_llm_client", None)
+            if tool_free_client is not None:
+                model_field = "local_model" if getattr(tool_free_client, "provider", None) == "local" else "cloud_model"
+                configured_model = getattr(tool_free_client, model_field, None)
+                if isinstance(configured_model, str):
+                    tool_free_model_name = configured_model
             tools = brain.get_tools() if hasattr(brain, "get_tools") else []
             tools_count = len(tools)
 
@@ -147,6 +170,7 @@ class DaemonBridge(RuntimeBridge):
             "system_state": state,
             "voice_default": True,
             "model": model_name,
+            "tool_free_model": tool_free_model_name,
             "tools_count": tools_count,
             "active_tool": active_tool,
             "features": {

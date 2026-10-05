@@ -183,6 +183,29 @@ class SidecarServer:
         self.config = config
         self.bridge = bridge
         self.active_websockets: set[web.WebSocketResponse] = set()
+        self.chat_tasks: set[asyncio.Task] = set()
+
+    async def _deliver_chat(self, ws, user_text):
+        # Keep receiving heartbeats while the daemon owns the running turn.
+        # A browser disconnect must not replay or cancel desktop actions.
+        try:
+            result = await self.bridge.handle_user_message(user_text)
+        except Exception:
+            logger.exception("WebUI chat failed")
+            result = {"status": "error", "error": "The assistant turn failed."}
+        if not ws.closed:
+            try:
+                await ws.send_json({"type": "chat_response", "user_message": user_text, "result": result})
+            except (ConnectionError, RuntimeError):
+                logger.debug("Chat finished after browser disconnected")
+
+    async def shutdown(self, app):
+        for ws in list(self.active_websockets):
+            await ws.close()
+        tasks = list(self.chat_tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
     async def handle_index(self, request: web.Request) -> web.Response:
         index_path = STATIC_DIR / "index.html"
@@ -254,6 +277,7 @@ class SidecarServer:
         ws = web.WebSocketResponse(heartbeat=30.0)
         await ws.prepare(request)
         self.active_websockets.add(ws)
+        chat_task = None
 
         # Send initial status snapshot upon connection
         try:
@@ -289,12 +313,13 @@ class SidecarServer:
                         if not user_text:
                             await ws.send_json({"type": "error", "error": "Empty message"})
                             continue
-                        result = await self.bridge.handle_user_message(user_text)
-                        await ws.send_json({
-                            "type": "chat_response",
-                            "user_message": user_text,
-                            "result": result,
-                        })
+                        if self.chat_tasks:
+                            await ws.send_json({"type": "chat_response", "user_message": user_text,
+                                                "result": {"status": "busy", "error": "Adam is already working on a request."}})
+                            continue
+                        chat_task = asyncio.create_task(self._deliver_chat(ws, user_text))
+                        self.chat_tasks.add(chat_task)
+                        chat_task.add_done_callback(self.chat_tasks.discard)
                     else:
                         await ws.send_json({"type": "error", "error": f"Unknown message type '{msg_type}'"})
                 elif msg.type == WSMsgType.ERROR:
@@ -350,6 +375,7 @@ def create_app(config: WebUIConfig, bridge: RuntimeBridge) -> web.Application:
             await bridge.unregister_listener(sidecar.broadcast)
 
     app.cleanup_ctx.append(live_events)
+    app.on_shutdown.append(sidecar.shutdown)
 
     # Static assets
     app.router.add_static("/static", path=str(STATIC_DIR), name="static")

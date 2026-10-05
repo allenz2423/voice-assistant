@@ -102,6 +102,28 @@ def meeting_command_kind(command: str) -> str | None:
     return None
 
 
+def _should_attempt_speaker_isolation(
+    transcript: str,
+    wake_detector: WakeWordDetector,
+    *,
+    pretrained_wake_triggered: bool = False,
+    transcript_confidence: float | None = None,
+    speaker_similarity: float | None = None,
+    speaker_threshold: float = 0.25,
+) -> bool:
+    """Use SepFormer for wake hints or low-confidence, speaker-like overlap."""
+    if pretrained_wake_triggered or wake_detector.may_contain_custom_wake_word(transcript):
+        return True
+    if transcript_confidence is None or speaker_similarity is None:
+        return False
+    if not math.isfinite(transcript_confidence) or not math.isfinite(speaker_similarity):
+        return False
+    # The enrolled-speaker threshold is calibrated for one speaker; allow some
+    # score loss when the local transcript suggests overlapping voices.
+    similarity_floor = max(0.15, speaker_threshold * 0.6)
+    return transcript_confidence <= -0.6 and speaker_similarity >= similarity_floor
+
+
 class _LockedTranscriber:
     """Share the STT backend safely between meeting and barge-in workers."""
 
@@ -429,10 +451,12 @@ class AdamDaemon:
         except Exception as exc:
             print(f"[HeardCapture] Could not save transcript ({exc}).", flush=True)
 
-    async def _speaker_allowed(self, audio_data) -> bool:
+    async def _speaker_allowed(
+        self, audio_data, *, include_score: bool = False
+    ) -> bool | tuple[bool, float | None]:
         """Fail closed on a failed or non-matching speaker check when enrolled."""
         if self.speaker_verifier is None:
-            return True
+            return (True, None) if include_score else True
         try:
             matched, score = await asyncio.to_thread(self.speaker_verifier.verify, audio_data)
         except Exception as exc:
@@ -441,7 +465,7 @@ class AdamDaemon:
             if capture_id:
                 transcript = await asyncio.to_thread(self._transcribe_wake_candidate, audio_data)
                 self._log_heard_transcript(capture_id, transcript, "speaker-check-error")
-            return False
+            return (False, None) if include_score else False
         if not matched:
             print(f"[Speaker] Utterance did not match enrolled voice (score={score:.3f}); ignoring.", flush=True)
             capture_id = getattr(self, "_active_heard_capture_id", None)
@@ -450,7 +474,7 @@ class AdamDaemon:
                 self._log_heard_transcript(capture_id, transcript, "speaker-rejected")
         else:
             print(f"[Speaker] Enrolled voice matched (score={score:.3f}).", flush=True)
-        return matched
+        return (matched, float(score)) if include_score else matched
 
     def _save_wake_capture(self, audio_data: np.ndarray) -> None:
         """Save a confirmed wake utterance as private, mono 16-bit PCM WAV."""
@@ -474,11 +498,14 @@ class AdamDaemon:
         except Exception as exc:
             print(f"[WakeCapture] Could not save wake audio ({exc}).", flush=True)
 
-    def _transcribe_wake_candidate(self, audio_data: np.ndarray) -> str:
+    def _transcribe_wake_candidate(
+        self, audio_data: np.ndarray, *, with_confidence: bool = False
+    ) -> str | tuple[str, float | None]:
         """Use local ASR for custom wake spotting; reserve cloud ASR for wake candidates."""
         provider = str(getattr(self.config.stt, "provider", "local")).lower()
         if provider not in CLOUD_STT_PROVIDERS:
-            return self._transcribe_stt(audio_data, kind="wake")
+            text = self._transcribe_stt(audio_data, kind="wake")
+            return (text, None) if with_confidence else text
 
         with self._stt_lock:
             if self.wake_spotter is None:
@@ -495,7 +522,10 @@ class AdamDaemon:
                 )
                 if isinstance(self.stt, OpenAITranscriber):
                     self.stt.attach_local_fallback(self.wake_spotter)
-            return self.wake_spotter.transcribe(audio_data)
+            if with_confidence and hasattr(self.wake_spotter, "transcribe_with_confidence"):
+                return self.wake_spotter.transcribe_with_confidence(audio_data)
+            text = self.wake_spotter.transcribe(audio_data)
+            return (text, None) if with_confidence else text
 
     def _transcribe_stt(self, audio_data: np.ndarray, *, kind: str = "final") -> str:
         """Serialize local/cloud STT calls shared by commands and meeting worker."""
@@ -667,15 +697,15 @@ class AdamDaemon:
         print(f"[Meeting] Recording stopped ({reason}). Files saved in {directory}", flush=True)
         await self.tts.speak_async(f"Meeting mode is off. I saved the recording and transcript in {directory}.")
 
-    def _contains_registered_voice(self, audio_data: np.ndarray) -> bool:
+    def _contains_registered_voice(self, audio_data: np.ndarray) -> tuple[bool, float]:
         """Check short windows so background-only utterances never reach ASR."""
         if self.speaker_verifier is None:
-            return True
+            return True, 1.0
         audio = np.asarray(audio_data, dtype=np.float32).reshape(-1)
         sample_rate = self.stream.sample_rate
         window_size = min(len(audio), int(1.2 * sample_rate))
         if window_size < int(0.5 * sample_rate):
-            return False
+            return False, -1.0
 
         step = int(0.6 * sample_rate)
         last_start = len(audio) - window_size
@@ -696,13 +726,13 @@ class AdamDaemon:
                     f"(score={score:.3f}); allowing wake-word ASR.",
                     flush=True,
                 )
-                return True
+                return True, float(score)
 
         print(
             f"[Speaker] No enrolled voice matched the mixed audio (best score={best_score:.3f}); trying wake-word fallback.",
             flush=True,
         )
-        return False
+        return False, float(best_score)
 
     def _registered_speaker_audio(
         self, audio_data: np.ndarray, context_audio: np.ndarray | None = None
@@ -1245,93 +1275,98 @@ class AdamDaemon:
                         if len(audio_data) > 0:
                             full_utterance_audio = audio_data
                             already_isolated = False
+                            speaker_similarity = None
+                            wake_transcript_confidence = None
                             # First use ASR to look for the wake phrase in the mixed
                             # microphone signal. Nemotron is more expensive and should
                             # only run after there is a wake-word candidate.
                             wake_candidate_audio = audio_data
                             duration_s = len(audio_data) / self.stream.sample_rate
                             if self.speaker_diarizer is not None:
-                                has_registered_voice = await asyncio.to_thread(
+                                has_registered_voice, speaker_similarity = await asyncio.to_thread(
                                     self._contains_registered_voice, audio_data
                                 )
                                 if not has_registered_voice:
-                                    transcript = await asyncio.to_thread(
-                                        self._transcribe_wake_candidate, audio_data
+                                    transcript, wake_transcript_confidence = await asyncio.to_thread(
+                                        self._transcribe_wake_candidate,
+                                        audio_data,
+                                        with_confidence=True,
                                     )
                                     self._log_heard_transcript(
                                         self._active_heard_capture_id, transcript, "speaker-prefilter-mixed-wake-check"
                                     )
-                                    mixed_match, _ = self.wake.match_custom_wake_word(transcript or "")
-                                    if mixed_match:
-                                        isolated = await asyncio.to_thread(
-                                            self._separate_enrolled_speaker, audio_data
-                                        )
-                                        if isolated is not None:
-                                            audio_data = full_utterance_audio = isolated
-                                            already_isolated = True
-                                        else:
-                                            self.speculative_router.cancel_active()
-                                            continue
-                                    else:
-                                        isolated = None
-                                        if self.meeting_session.active or self.speaker_verifier is not None or (
-                                            self.stream.ref_monitor and self.stream.ref_monitor.is_active
-                                        ):
-                                            isolated = await asyncio.to_thread(
-                                                self._separate_enrolled_speaker, audio_data
-                                            )
-                                        isolated_text = (
-                                            await asyncio.to_thread(self._transcribe_wake_candidate, isolated)
-                                            if isolated is not None else ""
-                                        )
-                                        isolated_match, _ = self.wake.match_custom_wake_word(isolated_text or "")
-                                        if isolated_match:
-                                            audio_data = full_utterance_audio = isolated
-                                            already_isolated = True
-                                        else:
-                                            self.speculative_router.cancel_active()
-                                            continue
-                            else:
-                                if not await self._speaker_allowed(audio_data):
-                                    transcript = await asyncio.to_thread(
-                                        self._transcribe_wake_candidate, audio_data
+                                    if not _should_attempt_speaker_isolation(
+                                        transcript or "",
+                                        self.wake,
+                                        pretrained_wake_triggered=pretrained_wake_triggered,
+                                        transcript_confidence=wake_transcript_confidence,
+                                        speaker_similarity=speaker_similarity,
+                                        speaker_threshold=float(getattr(self.speaker_verifier, "threshold", 0.25)),
+                                    ):
+                                        self.speculative_router.cancel_active()
+                                        continue
+                                    isolated = await asyncio.to_thread(
+                                        self._separate_enrolled_speaker, audio_data
                                     )
-                                    mixed_match, _ = self.wake.match_custom_wake_word(transcript or "")
-                                    if mixed_match:
-                                        isolated = await asyncio.to_thread(
-                                            self._separate_enrolled_speaker, audio_data
-                                        )
-                                        if isolated is not None:
-                                            audio_data = full_utterance_audio = isolated
-                                            already_isolated = True
-                                        else:
-                                            self.speculative_router.cancel_active()
-                                            continue
+                                    isolated_text = (
+                                        await asyncio.to_thread(self._transcribe_wake_candidate, isolated)
+                                        if isolated is not None else ""
+                                    )
+                                    isolated_match, _ = self.wake.match_custom_wake_word(
+                                        isolated_text or ""
+                                    )
+                                    if isolated_match:
+                                        audio_data = full_utterance_audio = isolated
+                                        already_isolated = True
                                     else:
-                                        isolated = None
-                                        if self.meeting_session.active or self.speaker_verifier is not None or (
-                                            self.stream.ref_monitor and self.stream.ref_monitor.is_active
-                                        ):
-                                            isolated = await asyncio.to_thread(
-                                                self._separate_enrolled_speaker, audio_data
-                                            )
-                                        isolated_text = (
-                                            await asyncio.to_thread(self._transcribe_wake_candidate, isolated)
-                                            if isolated is not None else ""
-                                        )
-                                        isolated_match, _ = self.wake.match_custom_wake_word(isolated_text or "")
-                                        if isolated_match:
-                                            audio_data = full_utterance_audio = isolated
-                                            already_isolated = True
-                                        else:
-                                            self.speculative_router.cancel_active()
-                                            continue
+                                        self.speculative_router.cancel_active()
+                                        continue
+                            else:
+                                speaker_allowed, speaker_similarity = await self._speaker_allowed(
+                                    audio_data, include_score=True
+                                )
+                                if not speaker_allowed:
+                                    transcript, wake_transcript_confidence = await asyncio.to_thread(
+                                        self._transcribe_wake_candidate,
+                                        audio_data,
+                                        with_confidence=True,
+                                    )
+                                    if not _should_attempt_speaker_isolation(
+                                        transcript or "",
+                                        self.wake,
+                                        pretrained_wake_triggered=pretrained_wake_triggered,
+                                        transcript_confidence=wake_transcript_confidence,
+                                        speaker_similarity=speaker_similarity,
+                                        speaker_threshold=float(getattr(self.speaker_verifier, "threshold", 0.25)),
+                                    ):
+                                        self.speculative_router.cancel_active()
+                                        continue
+                                    isolated = await asyncio.to_thread(
+                                        self._separate_enrolled_speaker, audio_data
+                                    )
+                                    isolated_text = (
+                                        await asyncio.to_thread(self._transcribe_wake_candidate, isolated)
+                                        if isolated is not None else ""
+                                    )
+                                    isolated_match, _ = self.wake.match_custom_wake_word(
+                                        isolated_text or ""
+                                    )
+                                    if isolated_match:
+                                        audio_data = full_utterance_audio = isolated
+                                        already_isolated = True
+                                    else:
+                                        self.speculative_router.cancel_active()
+                                        continue
 
                             if (
                                 not is_in_followup
                                 and (self.wake.is_custom_mode or idea_listening)
                             ):
-                                text = await asyncio.to_thread(self._transcribe_wake_candidate, audio_data)
+                                text, wake_transcript_confidence = await asyncio.to_thread(
+                                    self._transcribe_wake_candidate,
+                                    audio_data,
+                                    with_confidence=True,
+                                )
                             else:
                                 text = await asyncio.to_thread(self._transcribe_stt, audio_data)
                             self._log_heard_transcript(
@@ -1373,6 +1408,14 @@ class AdamDaemon:
                                 not matched
                                 and not already_isolated
                                 and not is_in_followup
+                                and _should_attempt_speaker_isolation(
+                                    text or "",
+                                    self.wake,
+                                    pretrained_wake_triggered=pretrained_wake_triggered,
+                                    transcript_confidence=wake_transcript_confidence,
+                                    speaker_similarity=speaker_similarity,
+                                    speaker_threshold=float(getattr(self.speaker_verifier, "threshold", 0.25)),
+                                )
                                 and (
                                     self.meeting_session.active
                                     or self.speaker_verifier is not None

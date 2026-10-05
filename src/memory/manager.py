@@ -23,7 +23,12 @@ import numpy as np
 
 from src.memory.bm25 import BM25Index, tokenize
 from src.memory.embedder import MemoryEmbedder
-from src.memory.temporal import event_type_for_query, parse_event_time, parse_temporal_query_range
+from src.memory.temporal import (
+    event_type_for_query,
+    local_timezone_name,
+    parse_event_time,
+    parse_temporal_query_range,
+)
 
 DEFAULT_MEMORY_PATH = (
     Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state"))
@@ -52,8 +57,12 @@ MEMORY_TRIGGERS = [
 ]
 
 
-def _event_time_fields(text: str, recorded_at: str) -> dict[str, str | None]:
-    event = parse_event_time(text, recorded_at)
+def _event_time_fields(
+    text: str,
+    recorded_at: str,
+    timezone_name: str | None = None,
+) -> dict[str, str | None]:
+    event = parse_event_time(text, recorded_at, timezone_name=timezone_name)
     return {
         "event_type": event.event_type if event else None,
         "event_date_start": event.date_start if event else None,
@@ -339,7 +348,7 @@ class MemoryManager:
 
         with self._lock:
             now_iso = datetime.now().astimezone().isoformat()
-            temporal_fields = _event_time_fields(clean_text, now_iso)
+            temporal_fields = _event_time_fields(clean_text, now_iso, local_timezone_name())
             has_event_date = temporal_fields["event_date_start"] is not None
 
             # Deduplication / Update Check:
@@ -655,7 +664,12 @@ class MemoryManager:
                 and re.search(re.escape(old_relative_phrase), clean_text, re.IGNORECASE)
             )
             event_anchor = rec.created_at if keep_original_time_anchor else rec.updated_at
-            for field_name, value in _event_time_fields(clean_text, event_anchor).items():
+            event_timezone = (
+                rec.event_timezone if keep_original_time_anchor else local_timezone_name()
+            )
+            for field_name, value in _event_time_fields(
+                clean_text, event_anchor, event_timezone
+            ).items():
                 setattr(rec, field_name, value)
 
             if self.embedder.is_available:

@@ -51,7 +51,7 @@ _MODIFIER_CODES = {"ctrl": 29, "alt": 56, "shift": 42, "super": 125}
 _ALLOWED_COMBOS = {
     "ctrl+a", "ctrl+c", "ctrl+v", "ctrl+x", "ctrl+z", "ctrl+y",
     "ctrl+f", "ctrl+l", "ctrl+t", "ctrl+w", "ctrl+s", "ctrl+plus", "ctrl+minus",
-    "ctrl+shift+a", "shift+tab", "alt+left", "alt+right",
+    "ctrl+shift+a", "shift+tab", "shift+home", "shift+end", "alt+left", "alt+right",
 }
 
 
@@ -104,13 +104,26 @@ def _screens_visually_unchanged(previous: bytes, current: bytes) -> bool:
             before_preview = before.convert("L").resize((32, 18), Image.Resampling.BILINEAR)
             after_preview = after.convert("L").resize((32, 18), Image.Resampling.BILINEAR)
             difference = ImageStat.Stat(ImageChops.difference(before_preview, after_preview)).mean[0]
-        # A value changing in a small status label should count as progress even
-        # when most of the full-window screenshot is blank. The next controller
-        # action still provides the repeated-action circuit breaker if this
-        # lower threshold causes a minor animated region to look like progress.
+        # This deliberately cheap pixel check ignores cursor-level changes.
+        # Recognized OCR text is compared separately when the caller requested it.
         return difference <= 0.03
     except Exception:
         return False
+
+
+def _screen_state_unchanged(
+    previous_image: bytes,
+    current_image: bytes,
+    previous_text: tuple[str, ...] | None = None,
+    current_text: tuple[str, ...] | None = None,
+) -> bool:
+    """Use recognized text changes to catch small controls missed by pixel sampling."""
+    if previous_text is not None or current_text is not None:
+        # If OCR ran on only one frame, the controller cannot establish that the
+        # screen stayed the same. Avoid turning missing evidence into a no-change claim.
+        if previous_text is None or current_text is None or previous_text != current_text:
+            return False
+    return _screens_visually_unchanged(previous_image, current_image)
 
 
 def _normalize_ocr_target(value: str) -> str:
@@ -370,7 +383,7 @@ class ComputerController:
         if self.ocr_only and self._include_ocr:
             try:
                 with timed_stage("controller.ocr"):
-                    self._ocr_regions = self._ocr_reader.read(image) if self._ocr_reader else []
+                    self._ocr_regions = self._read_ocr_regions(image) if self._ocr_reader else []
                 self._ocr_state = ScreenOCR.format(self._ocr_regions)
             except Exception as exc:
                 error_lines = str(exc).strip().splitlines()
@@ -390,7 +403,7 @@ class ComputerController:
                 try:
                     with timed_stage("controller.ocr"):
                         if hasattr(self._ocr_reader, "read"):
-                            self._ocr_regions = self._ocr_reader.read(image)
+                            self._ocr_regions = self._read_ocr_regions(image)
                         elif hasattr(self._ocr_reader, "read_zoomed_band"):
                             header_regions = self._ocr_reader.read_zoomed_band(image, self._active_bounds)
                             panel_regions: list[OCRRegion] = []
@@ -496,6 +509,63 @@ class ComputerController:
             snapshot_id=self._snapshot_id,
             ocr_regions=list(self._ocr_regions),
         )
+
+    def _read_ocr_regions(self, image: bytes) -> list[OCRRegion]:
+        """Read only the focused window when its bounds are known, then restore screen coordinates."""
+        if self._ocr_reader is None:
+            return []
+
+        crop_origin = (0, 0)
+        ocr_image = image
+        if self._scope == "window" and self._active_bounds:
+            try:
+                from io import BytesIO
+                from PIL import Image
+
+                crop_started = time.perf_counter()
+                with Image.open(BytesIO(image)) as source:
+                    left, top, right, bottom = self._active_bounds
+                    left = max(0, min(left, source.width))
+                    top = max(0, min(top, source.height))
+                    right = max(left, min(right, source.width))
+                    bottom = max(top, min(bottom, source.height))
+                    if right > left and bottom > top and (left, top, right, bottom) != (
+                        0, 0, source.width, source.height
+                    ):
+                        encoded = BytesIO()
+                        source.crop((left, top, right, bottom)).save(encoded, format="PNG")
+                        ocr_image = encoded.getvalue()
+                        crop_origin = (left, top)
+                        log_duration(
+                            "controller.ocr_window_crop",
+                            crop_started,
+                            source_width=source.width,
+                            source_height=source.height,
+                            crop_width=right - left,
+                            crop_height=bottom - top,
+                        )
+            except Exception as exc:
+                print(
+                    f"[OCR] Window crop unavailable ({type(exc).__name__}); reading the captured image.",
+                    flush=True,
+                )
+
+        regions = self._ocr_reader.read(ocr_image)
+        dx, dy = crop_origin
+        if not dx and not dy:
+            return regions
+        return [
+            OCRRegion(
+                region.ref,
+                region.text,
+                region.confidence,
+                region.left + dx,
+                region.top + dy,
+                region.right + dx,
+                region.bottom + dy,
+            )
+            for region in regions
+        ]
 
     def _call(self, args: list[str], timeout: float = 5.0, **kwargs) -> subprocess.CompletedProcess:
         result = self._runner(args, capture_output=True, text=True, timeout=timeout, **kwargs)
@@ -1114,26 +1184,50 @@ class ComputerController:
             # Keyboard/text input and pauses have no reusable screen coordinates.
             # Allow click followed by typing into the selected control, keypresses
             # such as Enter to submit, and wait/delay pauses between or after.
+            key_name = str(step.get("key", "")).strip().casefold().replace(" ", "")
+            move_to_text_start_after_ocr_target = (
+                last_concrete_action == "ocr_click"
+                and action == "press"
+                and key_name == "home"
+            )
+            select_text_to_line_end = (
+                last_concrete_action == "text_start"
+                and action == "press"
+                and key_name == "shift+end"
+            )
             coordinate_free_continuation = (
                 action == "wait"
             ) or (
                 last_concrete_action in {"click", "ocr_click"}
                 and action == "type"
             ) or (
+                last_concrete_action == "text_selected"
+                and action == "type"
+            ) or (
+                move_to_text_start_after_ocr_target
+                or select_text_to_line_end
+            ) or (
                 last_concrete_action == "type"
                 and action == "press"
             ) or (
                 # A text label is resolved against current OCR for each step;
                 # it does not reuse the prior click's pixel coordinates.
-                last_concrete_action in {"ocr_click", "type"}
+                last_concrete_action in {"click", "ocr_click", "type"}
                 and action == "click"
                 and bool(str(step.get("target_text", "")).strip())
                 and bool(include_ocr or self._include_ocr)
             )
             if index and not coordinate_free_continuation:
+                pause_reason = (
+                    "Ctrl+A was not sent because Linux single-line fields may move the caret instead of selecting text. "
+                    "For replacement, click the OCR-recognized current value, press Home, press Shift+End, then type the requested value."
+                    if last_concrete_action == "ocr_click"
+                    and action == "press"
+                    and key_name == "ctrl+a"
+                    else "Sequence paused before this input because continuing could reuse a target or assume focus."
+                )
                 return ComputerControlResult(
-                    "Sequence paused before this input because continuing could reuse a target or assume focus. "
-                    "Adam must choose the next action from the fresh observation.\n"
+                    f"{pause_reason} Adam must choose the next action from the fresh observation.\n"
                     + "\n".join(results) + "\n" + (latest.message if latest else ""),
                     latest.screenshot if latest else None,
                     status="partial",
@@ -1154,6 +1248,8 @@ class ComputerController:
                     )
                 continue
             last_concrete_action = (
+                "text_start" if move_to_text_start_after_ocr_target else
+                "text_selected" if select_text_to_line_end else
                 "ocr_click"
                 if action == "click"
                 and bool(str(step.get("target_text", "")).strip())
@@ -1237,6 +1333,7 @@ class ComputerController:
             )
         action = (action or "inspect").strip().lower()
         previous_screenshot = self._last_screenshot
+        previous_ocr_text = ScreenOCR.text_signature(self._ocr_regions)
         if action == "inspect":
             self._include_ocr = (self.ocr_only if include_ocr is None else bool(include_ocr))
             self._include_visual_grounding = bool(include_visual_grounding)
@@ -1327,7 +1424,7 @@ class ComputerController:
                     ):
                         try:
                             with timed_stage("controller.ocr_target_lookup"):
-                                self._ocr_regions = self._ocr_reader.read(self._last_screenshot)
+                                self._ocr_regions = self._read_ocr_regions(self._last_screenshot)
                             self._ocr_state = ScreenOCR.format(self._ocr_regions)
                         except Exception as exc:
                             selection_message = (
@@ -1499,7 +1596,12 @@ class ComputerController:
                 and action_succeeded
                 and previous_screenshot
                 and captured.screenshot
-                and _screens_visually_unchanged(previous_screenshot, captured.screenshot)
+                and _screen_state_unchanged(
+                    previous_screenshot,
+                    captured.screenshot,
+                    previous_ocr_text,
+                    ScreenOCR.text_signature(captured.ocr_regions),
+                )
             ):
                 captured.message += (
                     " The fresh screen appears unchanged after this click. The input was dispatched, "

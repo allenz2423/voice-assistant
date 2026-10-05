@@ -87,6 +87,60 @@ def test_visual_mode_clicks_unambiguous_ocr_label_without_model_coordinates(monk
     assert "Matched visible OCR label" in clicked.message
 
 
+def test_window_scoped_ocr_crops_and_clicks_using_restored_screen_coordinates(monkeypatch):
+    reads = []
+
+    class Reader:
+        def read(self, image):
+            with Image.open(BytesIO(image)) as captured:
+                reads.append(captured.size)
+            return [computer.OCRRegion("O1", "Target", 0.99, 10, 20, 50, 40)]
+
+    controller = computer.ComputerController(
+        screenshot_fn=lambda: _valid_png(1000, 700),
+        runner=lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (200, 100, 800, 600))
+    monkeypatch.setattr(computer.ComputerController, "available", property(lambda _self: True))
+    clicks = []
+    monkeypatch.setattr(controller, "_click", lambda x, y, button: clicks.append((x, y, button)))
+
+    inspected = controller.run("inspect", scope="window", include_ocr=True)
+    clicked = controller.run(
+        "click", snapshot_id=inspected.snapshot_id, target_text="Target",
+    )
+
+    assert reads == [(600, 500), (600, 500)]
+    assert clicks == [(230, 130, "left")]
+    assert clicked.status == "ok"
+    assert len(inspected.ocr_regions) == 1
+    assert inspected.ocr_regions[0] == computer.OCRRegion("O1", "Target", 0.99, 210, 120, 250, 140)
+
+
+def test_monitor_scoped_ocr_keeps_full_capture():
+    reads = []
+
+    class Reader:
+        def read(self, image):
+            with Image.open(BytesIO(image)) as captured:
+                reads.append(captured.size)
+            return []
+
+    controller = computer.ComputerController(
+        screenshot_fn=lambda: _valid_png(1000, 700),
+        runner=lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (200, 100, 800, 600))
+
+    controller.run("inspect", scope="monitor", include_ocr=True)
+
+    assert reads == [(1000, 700)]
+
+
 def test_visual_mode_refuses_ambiguous_ocr_label_click(monkeypatch):
     regions = [
         computer.OCRRegion("O1", "5:00 PM", 0.99, 100, 200, 200, 240),
@@ -187,6 +241,41 @@ def test_sequence_can_re_resolve_multiple_ocr_text_clicks_from_fresh_screens(mon
     assert len(reads) == 4  # Initial OCR plus fresh OCR after each click.
 
 
+def test_sequence_can_retarget_fresh_ocr_after_a_coordinate_click(monkeypatch):
+    regions = [computer.OCRRegion("O1", "100", 0.99, 416, 419, 458, 451)]
+    reads = []
+
+    class Reader:
+        def read(self, image):
+            reads.append(image)
+            return regions
+
+    controller = computer.ComputerController(
+        screenshot_fn=_valid_png,
+        runner=lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, stdout="", stderr=""),
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (0, 0, 1000, 700))
+    monkeypatch.setattr(computer.ComputerController, "available", property(lambda _self: True))
+    clicks = []
+    monkeypatch.setattr(controller, "_click", lambda x, y, button: clicks.append((x, y, button)))
+    inspected = controller.run("inspect", include_ocr=True)
+
+    result = controller.run_sequence(
+        snapshot_id=inspected.snapshot_id,
+        include_ocr=True,
+        actions=[
+            {"action": "click", "x": 435, "y": 259},
+            {"action": "click", "target_text": "100"},
+        ],
+    )
+
+    assert result.status == "ok"
+    assert clicks == [(435, 259, "left"), (437, 435, "left")]
+    assert len(reads) == 3  # The text target is resolved from OCR after the first click.
+
+
 def test_sequence_can_type_between_fresh_ocr_target_clicks(monkeypatch):
     regions = [
         computer.OCRRegion("O1", "Enter a note", 0.99, 100, 100, 300, 140),
@@ -227,6 +316,105 @@ def test_sequence_can_type_between_fresh_ocr_target_clicks(monkeypatch):
     assert clicks == [(200, 120, "left"), (190, 220, "left")]
     assert typed == ["Call the dentist Tuesday at 2 pm"]
     assert len(reads) == 4  # Initial OCR plus fresh OCR after each dispatched step.
+
+
+def test_sequence_can_replace_text_after_an_ocr_targeted_current_value(monkeypatch):
+    regions = [computer.OCRRegion("O1", "100", 0.99, 416, 419, 458, 451)]
+    reads = []
+
+    class Reader:
+        def read(self, image):
+            reads.append(image)
+            return regions
+
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+    commands = []
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    controller = computer.ComputerController(
+        screenshot_fn=_valid_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (0, 0, 1000, 700))
+    monkeypatch.setattr(computer.ComputerController, "available", property(lambda _self: True))
+    clicks = []
+    monkeypatch.setattr(controller, "_click", lambda x, y, button: clicks.append((x, y, button)))
+    inspected = controller.run("inspect", include_ocr=True)
+
+    result = controller.run_sequence(
+        snapshot_id=inspected.snapshot_id,
+        include_ocr=True,
+        actions=[
+            {"action": "click", "target_text": "100"},
+            {"action": "press", "key": "Home"},
+            {"action": "press", "key": "Shift+End"},
+            {"action": "type", "text": "500"},
+        ],
+    )
+
+    assert result.status == "ok"
+    assert result.dispatched is True
+    assert clicks == [(437, 435, "left")]
+    assert [command for command in commands if command[:2] == ["xdotool", "key"]] == [
+        ["xdotool", "key", "--clearmodifiers", "Home"],
+        ["xdotool", "key", "--clearmodifiers", "shift+End"],
+    ]
+    assert commands[-1] == ["xdotool", "type", "--clearmodifiers", "--delay", "1", "--", "500"]
+    assert len(reads) == 5  # Initial OCR, then OCR lookup plus a fresh capture after each input.
+
+
+def test_sequence_explains_linux_ctrl_a_replacement_failure_after_ocr_click(monkeypatch):
+    class Reader:
+        def read(self, _image):
+            return [computer.OCRRegion("O1", "100", 0.99, 416, 419, 458, 451)]
+
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+    commands = []
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        commands.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    controller = computer.ComputerController(
+        screenshot_fn=_valid_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (0, 0, 1000, 700))
+    monkeypatch.setattr(computer.ComputerController, "available", property(lambda _self: True))
+    clicks = []
+    monkeypatch.setattr(controller, "_click", lambda x, y, button: clicks.append((x, y, button)))
+    inspected = controller.run("inspect", include_ocr=True)
+
+    result = controller.run_sequence(
+        snapshot_id=inspected.snapshot_id,
+        include_ocr=True,
+        actions=[
+            {"action": "click", "target_text": "100"},
+            {"action": "press", "key": "Ctrl+A"},
+            {"action": "type", "text": "500"},
+        ],
+    )
+
+    assert result.status == "partial"
+    assert "Ctrl+A was not sent" in result.message
+    assert "press Home, press Shift+End" in result.message
+    assert clicks == [(437, 435, "left")]
+    assert not any(command[:2] == ["xdotool", "key"] for command in commands)
 
 
 def test_small_status_text_change_counts_as_visible_progress():
@@ -322,6 +510,59 @@ def test_click_reports_when_fresh_screenshot_is_visually_unchanged(monkeypatch):
     assert clicked.dispatched is True
     assert "screen appears unchanged" in clicked.message
     assert "effect is not visually confirmed" in clicked.message
+
+
+def test_click_treats_changed_ocr_text_as_visible_progress(monkeypatch):
+    monkeypatch.setattr(computer.shutil, "which", lambda name: "/usr/bin/xdotool" if name == "xdotool" else None)
+
+    def runner(args, **kwargs):
+        if args == ["xdotool", "getactivewindow"]:
+            return subprocess.CompletedProcess(args, 0, stdout="123", stderr="")
+        if args[:3] == ["xdotool", "getactivewindow", "getwindowgeometry"]:
+            return subprocess.CompletedProcess(args, 0, stdout="WINDOW=123\nX=0\nY=0\nWIDTH=1000\nHEIGHT=700\n", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    class Reader:
+        def __init__(self):
+            self.reads = 0
+
+        def read(self, _image):
+            self.reads += 1
+            text = "Normal" if self.reads == 1 else "Quiet"
+            return [computer.OCRRegion("O1", text, 0.99, 100, 100, 180, 130)]
+
+    controller = computer.ComputerController(
+        screenshot_fn=_valid_png,
+        runner=runner,
+        environ={"XDG_SESSION_TYPE": "x11", "DISPLAY": ":1"},
+        ocr_reader=Reader(),
+    )
+    controller._read_active_window_state = lambda: ("test-window", (0, 0, 1000, 700))
+    monkeypatch.setattr(computer.ComputerController, "available", property(lambda _self: True))
+    inspected = controller.run("inspect", include_ocr=True, screenshot_delay_seconds=0)
+
+    clicked = controller.run(
+        "click", snapshot_id=inspected.snapshot_id, x=120, y=115,
+        include_ocr=True, screenshot_delay_seconds=0,
+    )
+
+    assert clicked.status == "ok"
+    assert "Quiet" in clicked.message
+    assert "screen appears unchanged" not in clicked.message
+
+
+def test_missing_ocr_comparison_does_not_claim_that_the_screen_was_unchanged():
+    screenshot = _valid_png()
+
+    assert computer._screen_state_unchanged(
+        screenshot, screenshot, None, ("quiet",)
+    ) is False
+    assert computer._screen_state_unchanged(
+        screenshot, screenshot, ("normal",), None
+    ) is False
+    assert computer._screen_state_unchanged(
+        screenshot, screenshot, ("quiet",), ("quiet",)
+    ) is True
 
 
 def test_x11_type_shortcut_and_scroll_have_xdotool_counterparts(monkeypatch):

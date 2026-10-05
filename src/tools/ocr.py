@@ -58,6 +58,16 @@ class OCRRegion:
 class ScreenOCR:
     """Extract text and clickable text-region boxes with a bounded PP-OCRv6 model."""
 
+    @staticmethod
+    def text_signature(regions: list[OCRRegion]) -> tuple[str, ...] | None:
+        """Return stable visible text for progress checks, without OCR coordinates/confidence."""
+        texts = [
+            " ".join(str(region.text or "").split()).casefold()
+            for region in regions
+            if str(region.text or "").strip()
+        ]
+        return tuple(sorted(texts)) if texts else None
+
     # The current onnxruntime-gpu wheels use CUDA 13, which dropped support
     # for pre-Turing NVIDIA devices. In the measured CUDA 12 compatibility
     # path, PP-OCRv6 was also substantially slower on Pascal than the CPU path.

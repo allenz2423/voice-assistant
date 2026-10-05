@@ -321,7 +321,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
                         "The controller carries a fresh snapshot between steps and pauses before a later spatial action that needs a new target choice. "
                         "When OCR is enabled, explicit target_text clicks are re-resolved from each fresh OCR result. A short sequence may click a labeled text field, type the exact user-requested text, then click another already-visible OCR label; each target is re-matched after the preceding step. "
             "A standalone action='wait' is accepted as a delayed inspection; use seconds for that delay. Within actions, wait is a sequence step. "
-            "Coordinate-free follow-up inputs such as clicking a visibly editable text field then typing can be sequenced; press may follow typing only as the final step. For window movement use drag with "
+            "Coordinate-free follow-up inputs such as clicking a visibly editable text field then typing can be sequenced. For Linux single-line text replacement, do not use Ctrl+A because some widgets only move the caret; sequence an OCR click on the field's visible current value, press Home, press Shift+End, then type the requested replacement. These selection keys are allowed only after that OCR-targeted click. For window movement use drag with "
             "modifier='window'; the controller reads the desktop's configured move modifier. Drag starts inside the active window. "
             "A sequence is rejected before execution if its total typed text exceeds computer_control.max_sequence_text_length "
             "(default 20000 characters). The sequence time budget is checked between steps; an active backend action is allowed to finish under its own timeout. "
@@ -338,7 +338,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
             "properties": {
                 "action": {"type": "string", "enum": ["inspect", "click", "drag", "type", "press", "scroll", "sequence", "wait"], "description": "Wait is accepted as a standalone alias for inspect with a delay, or as a sequence action."},
             "scope": {"type": "string", "enum": ["window", "monitor", "desktop"], "description": "For inspect, use the focused application window (default), a single verified monitor, or the full desktop only when explicitly requested. Unsupported monitor scopes fail closed. The chosen scope persists for follow-up actions."},
-                "snapshot_id": {"type": "string", "description": "Copy the exact ID returned with the latest screenshot for input actions. Inspect does not need a snapshot ID."},
+                "snapshot_id": {"type": "string", "description": "Optional after a fresh observation in this turn; Adam binds the latest controller-issued ID automatically. If supplied, it must exactly match the latest screenshot. Inspect does not need an ID."},
                 "x": {"type": "integer", "description": "Horizontal click coordinate, using the units stated in the latest screenshot response."},
                 "y": {"type": "integer", "description": "Vertical click coordinate, using the units stated in the latest screenshot response."},
                 "end_x": {"type": "integer", "description": "Horizontal destination coordinate for drag, using the same units as x."},
@@ -347,7 +347,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
                 "button": {"type": "string", "enum": ["left", "right", "middle"]},
                 "modifier": {"type": "string", "enum": ["none", "alt", "super", "window"], "description": "For drag, hold no modifier or hold the compositor's window-move modifier (window detects it from the current desktop config)."},
                 "text": {"type": "string", "description": "Text explicitly requested by the user. Do not include private data from the screen."},
-                "key": {"type": "string", "description": "Enter, Tab, Escape, Backspace, Delete, arrows, Home, End, PageUp/PageDown, Space, single letters for explicit editor commands, or an allowed shortcut such as Ctrl+S, Ctrl+Plus, Ctrl+Minus, or Ctrl+Shift+A (browser tab search)."},
+                "key": {"type": "string", "description": "Enter, Tab, Escape, Backspace, Delete, arrows, Home, End, PageUp/PageDown, Space, Shift+Home/Shift+End (only after an OCR-targeted current value for a single-line replacement), single letters for explicit editor commands, or an allowed shortcut such as Ctrl+S, Ctrl+Plus, Ctrl+Minus, or Ctrl+Shift+A (browser tab search). Avoid Ctrl+A for Linux field replacement; some widgets move the caret rather than selecting text."},
                 "direction": {"type": "string", "enum": ["up", "down", "left", "right"]},
                 "amount": {"type": "integer", "description": "Scroll steps from 1 to 8."},
                 "screenshot_delay_seconds": {

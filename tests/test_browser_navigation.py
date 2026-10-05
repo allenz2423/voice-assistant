@@ -102,6 +102,14 @@ def test_browser_navigation_flow(browser, local_page, tmp_path):
             assert "Local browser fixture" in home
             rejected = await navigator.run("navigate", target="javascript:alert(1)")
             assert "only opens HTTP or HTTPS" in rejected
+
+            await navigator.release_browser()
+            assert navigator._context is None
+            stale_ref = await navigator.run("click", target="L1")
+            assert "reference is missing or stale" in stale_ref
+            restored = await navigator.run("inspect")
+            assert "Local browser fixture" in restored
+            assert navigator._restore_url == ""
         finally:
             navigator.close()
 

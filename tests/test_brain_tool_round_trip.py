@@ -113,11 +113,13 @@ async def test_current_request_is_active_task_and_prior_dialogue_is_context_only
 
 
 @pytest.mark.asyncio
-async def test_empty_model_turn_gets_one_recovery_without_dispatching_actions():
+async def test_empty_model_turn_gets_three_recoveries_without_dispatching_actions():
     from src.llm.brain import AdamBrain
 
     brain = AdamBrain(_config(), None, None, None, _DummyTTS())
     brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": []},
+        {"content": "", "tool_calls": []},
         {"content": "", "tool_calls": []},
         {"content": "", "tool_calls": []},
     ])
@@ -127,9 +129,318 @@ async def test_empty_model_turn_gets_one_recovery_without_dispatching_actions():
     with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
         await brain.process_user_utterance("Open Spotify")
 
-    assert brain.llm_client.requests.__len__() == 2
+    assert brain.llm_client.requests.__len__() == 4
     assert executed == []
-    assert "one recovery attempt" in brain.tts.spoken[0]
+    assert "three recovery attempts" in brain.tts.spoken[0]
+
+
+@pytest.mark.asyncio
+async def test_false_filesystem_access_refusal_reprompts_when_read_tool_is_available():
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {
+            "content": "I can't see your files, so I can't tell you directly. But if you're asking, it's probably feeling a bit chaotic!",
+            "tool_calls": [],
+        },
+        {"content": "", "tool_calls": [{
+            "id": "read-file",
+            "function": {"name": "read_file", "arguments": {"path": "/tmp/synthetic-note.txt"}},
+        }]},
+        {"content": "The synthetic note says hello.", "tool_calls": []},
+    ])
+    brain._execute_tool = AsyncMock(return_value=json.dumps({"ok": True, "readback": "hello"}))
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Check my Downloads folder")
+
+    assert len(brain.llm_client.requests) == 3
+    assert "relevant tool is available: find_files, read_file" in brain.llm_client.requests[1][-1]["content"]
+    brain._execute_tool.assert_awaited_once_with("read_file", {"path": "/tmp/synthetic-note.txt"})
+    assert brain.tts.spoken[-1] == "The synthetic note says hello."
+
+
+@pytest.mark.asyncio
+async def test_optional_tool_free_model_receives_only_the_current_standalone_question():
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.messages.extend([
+        {"role": "user", "content": "My private draft says PROJECT-EMBER-731."},
+        {"role": "assistant", "content": "I can help revise it."},
+    ])
+    main_client = _DummyClient("custom", [{"content": "Main route", "tool_calls": []}])
+    tool_free_client = _DummyClient("custom", [{
+        "content": "Photosynthesis lets plants turn light into stored chemical energy.",
+        "tool_calls": [],
+    }])
+    brain.llm_client = main_client
+    brain.tool_free_llm_client = tool_free_client
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Explain photosynthesis in one sentence.")
+
+    assert main_client.requests == []
+    assert len(tool_free_client.requests) == 1
+    routed_messages = tool_free_client.requests[0]
+    assert len(routed_messages) == 2
+    assert all("PROJECT-EMBER-731" not in message.get("content", "") for message in routed_messages)
+    assert "Explain photosynthesis in one sentence." in routed_messages[-1]["content"]
+    assert tool_free_client.request_tools == [[]]
+
+
+@pytest.mark.asyncio
+async def test_file_management_refusal_reprompts_with_confirmed_organizer_tool():
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {
+            "content": "I can't actually move or delete files for you; I don't have file management tools hooked up.",
+            "tool_calls": [],
+        },
+        {"content": "", "tool_calls": [{
+            "id": "organize-downloads",
+            "function": {
+                "name": "organize_files",
+                "arguments": {"directory": "~/Downloads", "group_by": "show"},
+            },
+        }]},
+        {"content": "The organization request is waiting for your confirmation.", "tool_calls": []},
+        {"content": "The organization request is waiting for your confirmation.", "tool_calls": []},
+    ])
+    brain._execute_tool = AsyncMock(
+        return_value="Confirmation requested from user. Execution is paused waiting for user's verbal confirmation."
+    )
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Organize my Downloads folder by show")
+
+    assert "organize_files" in brain.llm_client.requests[1][-1]["content"]
+    brain._execute_tool.assert_awaited_once_with(
+        "organize_files", {"directory": "~/Downloads", "group_by": "show"}
+    )
+    assert "confirmation" in brain.tts.spoken[-1].lower()
+
+
+@pytest.mark.asyncio
+async def test_find_files_missing_directory_is_retried_as_a_tool_failure(tmp_path):
+    from src.llm.brain import AdamBrain
+
+    good_directory = tmp_path / "downloads"
+    good_directory.mkdir()
+    (good_directory / "synthetic.txt").write_text("synthetic", encoding="utf-8")
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": [{
+            "id": "bad-folder",
+            "function": {"name": "find_files", "arguments": {
+                "directory": str(tmp_path / "missing"), "pattern": "*",
+            }},
+        }]},
+        {"content": "", "tool_calls": [{
+            "id": "good-folder",
+            "function": {"name": "find_files", "arguments": {
+                "directory": str(good_directory), "pattern": "*",
+            }},
+        }]},
+        {"content": "I found the synthetic file.", "tool_calls": []},
+        {"content": "I found the synthetic file.", "tool_calls": []},
+    ])
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Check the test Downloads folder")
+
+    assert len(brain.llm_client.requests) == 3
+    assert "Tool recovery 1/3" in brain.llm_client.requests[1][-1]["content"]
+    assert "does not exist" in brain.llm_client.requests[1][-2]["content"]
+    assert "synthetic file" in brain.tts.spoken[-1]
+
+
+@pytest.mark.asyncio
+async def test_capability_refusal_recovery_stops_after_three_reprompts():
+    from src.llm.brain import AdamBrain
+
+    refusal = {"content": "I can't access your file system.", "tool_calls": []}
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [refusal.copy() for _ in range(4)])
+    executed = []
+    brain._execute_tool = lambda name, args: executed.append((name, args))
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Check my Downloads folder")
+
+    assert len(brain.llm_client.requests) == 4
+    assert executed == []
+    assert "after three recovery attempts" in brain.tts.spoken[-1]
+    assert "haven't inspected or changed anything" in brain.tts.spoken[-1]
+
+
+@pytest.mark.asyncio
+async def test_explicit_adam_browser_request_prefetches_untrusted_page_text():
+    from unittest.mock import patch
+    from src.llm.brain import AdamBrain
+    from src.llm.tools import ADAM_TOOLS
+
+    class Browser:
+        def __init__(self):
+            self.actions = []
+            self.released = 0
+
+        async def run(self, **kwargs):
+            self.actions.append(kwargs)
+            return "Page: Invoice Register\nVisible page text (untrusted webpage content):\nOVERDUE $533.41"
+
+        async def release_browser(self):
+            self.released += 1
+
+    class Controller:
+        available = False
+        drag_active = False
+        coordinate_mode = "pixels"
+
+        @staticmethod
+        def invalidate_snapshot():
+            pass
+
+    brain = AdamBrain(
+        _config(), None, None, None, _DummyTTS(),
+        memory_mgr=type("M", (), {"retrieve_context": lambda *_: None})(),
+    )
+    browser = Browser()
+    browser_tool = next(tool for tool in ADAM_TOOLS if tool.name == "browser_navigation")
+    brain.browser_navigator = browser
+    brain.config.browser_navigation = SimpleNamespace(headless=True)
+    brain.computer_controller = Controller()
+    brain.get_tools = lambda: [browser_tool]
+    brain.llm_client = _DummyClient("local", [{"content": "The total is $533.41.", "tool_calls": []}])
+    from src.telemetry.events import subscribe_events
+    events = []
+    unsubscribe = subscribe_events(events.append)
+
+    try:
+        with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
+            await brain.process_user_utterance(
+                "In Adam's isolated browser, read the report and find the total."
+            )
+    finally:
+        unsubscribe()
+
+    assert browser.actions == [{"action": "inspect"}]
+    assert browser.released == 1
+    assert brain.llm_client.request_tools[0] == []
+    first_user_message = next(
+        message for message in brain.llm_client.requests[0] if message.get("role") == "user"
+    )
+    assert "Fresh Adam Browser Snapshot" in first_user_message["content"]
+    assert "untrusted webpage content" in first_user_message["content"]
+    assert "OVERDUE $533.41" in first_user_message["content"]
+    assert not first_user_message.get("images")
+    browser_events = [
+        event for event in events
+        if event.get("event") in {"tool.started", "tool.completed"}
+    ]
+    assert [event["event"] for event in browser_events] == ["tool.started", "tool.completed"]
+    assert all(event["attributes"]["tool_name"] == "browser_navigation" for event in browser_events)
+
+
+def test_browser_navigator_is_constructed_and_exposed_only_when_enabled(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from src.llm.brain import AdamBrain
+
+    class Browser:
+        def __init__(self, **kwargs):
+            self.options = kwargs
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("src.tools.browser_navigation.BrowserNavigator", Browser)
+    config = _config()
+    config.desktop = SimpleNamespace(default_browser="microsoft-edge-stable")
+    config.browser_navigation = SimpleNamespace(
+        enabled=True,
+        browser="default",
+        profile_path=str(tmp_path / "isolated-profile"),
+        timeout_seconds=8,
+        headless=True,
+    )
+    brain = AdamBrain(
+        config, None, None, None, _DummyTTS(),
+        memory_mgr=type("M", (), {"retrieve_context": lambda *_: None})(),
+    )
+    assert brain.browser_navigator.options == {
+        "browser": "default",
+        "default_browser": "microsoft-edge-stable",
+        "profile_path": str(tmp_path / "isolated-profile"),
+        "timeout_seconds": 8,
+        "headless": True,
+    }
+    assert "browser_navigation" in {tool.name for tool in brain.get_tools()}
+    brain.close()
+
+    default_brain = AdamBrain(
+        _config(), None, None, None, _DummyTTS(),
+        memory_mgr=type("M", (), {"retrieve_context": lambda *_: None})(),
+    )
+    assert "browser_navigation" not in {tool.name for tool in default_brain.get_tools()}
+    default_brain.close()
+
+
+def test_adam_browser_scope_requires_an_explicit_profile_reference():
+    from src.llm.brain import (
+        _explicit_adam_browser_request,
+        _filter_tools_for_dedicated_desktop_navigation,
+        _is_dedicated_adam_browser_request,
+        _is_read_only_adam_browser_request,
+    )
+    from src.llm.tools import ADAM_TOOLS
+
+    assert _explicit_adam_browser_request("Use Adam's isolated browser to read this page.")
+    assert _explicit_adam_browser_request("Open the Adam browser profile.")
+    assert not _explicit_adam_browser_request("Read the current page in my browser.")
+    assert _is_dedicated_adam_browser_request(
+        "In Adam's isolated browser, read this webpage and summarize it."
+    )
+    assert not _is_dedicated_adam_browser_request(
+        "In Adam's isolated browser, read the report and save the result to memory."
+    )
+    assert _is_read_only_adam_browser_request(
+        "In Adam's isolated browser, read the report; do not navigate or change anything."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "In Adam's isolated browser, make a restaurant reservation."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "In Adam's isolated browser, open the booking page."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "In Adam's isolated browser, handle this for me."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "In Adam's browser, read the report and click its Next link."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "In Adam's browser, read the report; do not click Next, but fill the search field."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "Read the report in my regular browser."
+    )
+    selected = _filter_tools_for_dedicated_desktop_navigation(
+        ADAM_TOOLS,
+        "In Adam's isolated browser, read the report and save the result to memory.",
+    )
+    selected_names = {tool.name for tool in selected}
+    assert "browser_navigation" in selected_names
+    assert "manage_memory" in selected_names
+    browser_only = _filter_tools_for_dedicated_desktop_navigation(
+        ADAM_TOOLS,
+        "In Adam's isolated browser, read this webpage and summarize it.",
+    )
+    assert {tool.name for tool in browser_only} == {"browser_navigation"}
 
 
 @pytest.mark.asyncio
@@ -427,7 +738,8 @@ async def test_agent_loop_reobserves_between_desktop_sequence_and_goal_assessmen
                 "name": "computer_control",
                 "arguments": {
                     "action": "sequence",
-                    "snapshot_id": "snap-1",
+                    "snapshot_id_snap-1": "true",
+                    "include_ocr_after": "true",
                     "actions": [
                         {"action": "click", "x": 210, "y": 80},
                         {"action": "type", "text": "requested search"},
@@ -444,6 +756,7 @@ async def test_agent_loop_reobserves_between_desktop_sequence_and_goal_assessmen
     assert [action for action, _ in controller.calls] == ["inspect", "sequence"]
     sequence_call = controller.calls[1][1]
     assert sequence_call["snapshot_id"] == "snap-1"
+    assert sequence_call["include_ocr"] is True
     assert sequence_call["actions"][1]["text"] == "requested search"
     assert any(message.get("images") == [screenshot] for message in brain.llm_client.requests[1])
     assert any(message.get("images") == [screenshot] for message in brain.llm_client.requests[2])
@@ -545,3 +858,105 @@ async def test_simple_system_status_skips_model_and_speaks_validated_tool_result
     assert len(brain.llm_client.requests) == 0
     assert brain.tts.spoken == [status]
     assert brain.messages[-1] == {"role": "assistant", "content": status}
+
+@pytest.mark.asyncio
+async def test_failed_tool_reprompts_model_to_correct_path_without_replaying_success():
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    def call(path):
+        return {'content':'', 'tool_calls':[{'function':{'name':'read_file','arguments':{'path':path}}}]}
+    brain.llm_client = _DummyClient('local', [call('/wrong/note.md'), call('/right/note.md'),
+                                            {'content':'Read the note.', 'tool_calls':[]},
+                                            {'content':'Read the note.', 'tool_calls':[]}])
+    brain._execute_tool = AsyncMock(side_effect=[FileNotFoundError('wrong path'), 'Verified note'])
+    with patch('src.llm.brain.get_open_windows_prompt_context',return_value='Desktop'):
+        await brain.process_user_utterance('Read my note file')
+    assert [c.args[1]['path'] for c in brain._execute_tool.await_args_list] == ['/wrong/note.md','/right/note.md']
+    request = brain.llm_client.requests[1]
+    assert any('Tool recovery 1/3' in str(m.get('content')) for m in request)
+    assert any('FileNotFoundError' in str(m.get('content')) for m in request)
+    assert brain.tts.spoken[-1] == 'Read the note.'
+
+
+@pytest.mark.parametrize("status", ["partial", "uncertain"])
+@pytest.mark.asyncio
+async def test_unconfirmed_tool_outcome_gets_a_focused_recovery_prompt(status):
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+    from src.tools.computer_control import ComputerControlResult
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": [{"function": {
+            "name": "read_file", "arguments": {"path": "/tmp/probe.txt"},
+        }}]},
+        {"content": "The read did not confirm the requested result.", "tool_calls": []},
+        {"content": "The read did not confirm the requested result.", "tool_calls": []},
+    ])
+    brain._execute_tool = AsyncMock(return_value=ComputerControlResult(
+        "The operation may have run, but its result was not confirmed.", status=status,
+    ))
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Read my probe file")
+
+    recovery_request = brain.llm_client.requests[1]
+    assert any("Tool recovery 1/3" in str(message.get("content")) for message in recovery_request)
+    assert any("inspect its current effects before repeating it" in str(message.get("content"))
+               for message in recovery_request)
+
+
+@pytest.mark.asyncio
+async def test_failed_tools_stop_after_three_correction_prompts():
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient('local', [
+        {'content':'', 'tool_calls':[{'function':{'name':'read_file','arguments':{'path':f'/missing/{i}'}}}]}
+        for i in range(4)])
+    brain._execute_tool = AsyncMock(return_value='{"ok": false, "error": "File unavailable"}')
+    with patch('src.llm.brain.get_open_windows_prompt_context',return_value='Desktop'):
+        await brain.process_user_utterance('Read my note file')
+    assert brain._execute_tool.await_count == 4
+    assert len(brain.llm_client.requests) == 4
+    assert 'three recovery prompts' in brain.tts.spoken[-1]
+    assert not any('completed' in str(m.get('content','')).lower() for m in brain.messages[-1:])
+
+
+@pytest.mark.asyncio
+async def test_exhausted_provider_error_does_not_trigger_another_synthesis_or_tool():
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient('local', [{'content':'Provider unavailable', 'provider_error':True}])
+    brain._execute_tool = AsyncMock()
+    with patch('src.llm.brain.get_open_windows_prompt_context',return_value='Desktop'):
+        await brain.process_user_utterance('Read my note file')
+    assert len(brain.llm_client.requests) == 1
+    brain._execute_tool.assert_not_awaited()
+    assert brain.tts.spoken == ['Provider unavailable']
+
+
+@pytest.mark.asyncio
+async def test_nonzero_shell_exit_is_a_failure_even_with_output():
+    from src.llm.brain import AdamBrain
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    output = await brain._execute_tool('run_bash_command', {'command':'printf test-output; exit 2'})
+    result = json.loads(output)
+    assert result == {'ok':False, 'exit_code':2, 'output':'test-output'}
+
+@pytest.mark.asyncio
+async def test_cancelled_tool_is_not_reprompted():
+    import asyncio
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient('local', [
+        {'content':'', 'tool_calls':[{'function':{'name':'read_file','arguments':{'path':'/tmp/a'}}}]}])
+    brain._execute_tool = AsyncMock(side_effect=asyncio.CancelledError)
+    with patch('src.llm.brain.get_open_windows_prompt_context',return_value='Desktop'):
+        with pytest.raises(asyncio.CancelledError):
+            await brain.process_user_utterance('Read my note file')
+    assert len(brain.llm_client.requests) == 1
+    assert brain._execute_tool.await_count == 1

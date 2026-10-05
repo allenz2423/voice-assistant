@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from src.llm.brain import (
     AdamBrain,
+    COMPACT_CONVERSATION_SYSTEM_PROMPT,
     _can_direct_dispatch_system_status,
     _can_direct_dispatch_system_status_and_processes,
     _can_answer_without_tools,
@@ -33,6 +34,7 @@ from src.llm.brain import (
     _is_dedicated_system_status_request,
     _is_browser_app,
     _should_use_compact_conversation_prompt,
+    _can_route_to_tool_free_model,
 )
 
 
@@ -95,6 +97,34 @@ def test_compact_conversation_prompt_requires_no_external_context():
     assert not _should_use_compact_conversation_prompt(
         "Explain entropy in plain language.", skill_context="Specialized guidance"
     )
+
+
+def test_compact_conversation_prompt_defaults_to_short_plain_comparisons():
+    assert "one or two short sentences by default" in COMPACT_CONVERSATION_SYSTEM_PROMPT
+    assert "state the main difference first" in COMPACT_CONVERSATION_SYSTEM_PROMPT
+    assert "avoid tables and lists unless requested" in COMPACT_CONVERSATION_SYSTEM_PROMPT
+    assert "When the user asks for detail, examples, or a list, provide them" in COMPACT_CONVERSATION_SYSTEM_PROMPT
+
+
+def test_optional_tool_free_model_route_accepts_only_standalone_generic_chat():
+    assert _can_route_to_tool_free_model(
+        "Explain photosynthesis in one sentence.",
+        compact_conversation=True,
+        has_image=False,
+        memory_only_query=False,
+    )
+    for prompt, has_image, memory_only_query in (
+        ("What did I say about work last week?", False, False),
+        ("Why is it blue?", False, False),
+        ("Explain photosynthesis.", True, False),
+        ("Explain photosynthesis.", False, True),
+    ):
+        assert not _can_route_to_tool_free_model(
+            prompt,
+            compact_conversation=True,
+            has_image=has_image,
+            memory_only_query=memory_only_query,
+        )
 
 
 def test_browser_name_detection_does_not_match_part_of_an_unrelated_app_name():
@@ -229,6 +259,27 @@ def test_desktop_no_progress_breaker_ignores_small_live_screen_changes():
 
     assert _desktop_screens_match(baseline, one_animated_pixel)
     assert not _desktop_screens_match(baseline, major_scene_change)
+
+
+def test_ocr_text_change_counts_as_desktop_progress_when_pixels_look_unchanged():
+    from src.tools.ocr import OCRRegion
+    from PIL import Image
+    from io import BytesIO
+
+    image = Image.new("RGB", (320, 180), (20, 20, 20))
+    output = BytesIO()
+    image.save(output, format="PNG")
+    screenshot = output.getvalue()
+    changed_text = [OCRRegion("O1", "Quiet", 0.99, 100, 80, 150, 110)]
+    same_text_repositioned = [OCRRegion("O2", "quiet", 0.80, 105, 85, 155, 115)]
+    original_text = [OCRRegion("O1", "Normal", 0.99, 100, 80, 150, 110)]
+
+    before = _desktop_screenshot_signature(screenshot, original_text)
+    changed = _desktop_screenshot_signature(screenshot, changed_text)
+    repositioned = _desktop_screenshot_signature(screenshot, same_text_repositioned)
+
+    assert not _desktop_screens_match(before, changed)
+    assert _desktop_screens_match(changed, repositioned)
 
 
 def test_desktop_action_signature_matches_sequence_first_step_to_standalone_action():
@@ -393,6 +444,30 @@ def test_initial_ocr_is_limited_to_desktop_tasks_with_explicit_text_values():
         "Click the visible settings button."
     )
     assert not _should_use_initial_ocr_for_desktop_request("What time is it?")
+
+
+def test_quoted_screen_labels_do_not_disable_compact_ocr_prefetch():
+    request = (
+        "Click Advanced in Archive Preferences. Turn on ‘Show hidden files’, enter 500 "
+        "in the entry labeled ‘Search index item limit’, leave ‘Automatically refresh "
+        "folders’ checked, then click Apply and verify the result."
+    )
+    assert _is_desktop_context_request(request)
+    assert _is_dedicated_desktop_navigation_request(request)
+    assert _should_use_initial_ocr_for_desktop_request(request)
+
+    available = [
+        SimpleNamespace(name=name)
+        for name in (
+            "computer_control", "focus_window", "list_windows", "read_file", "search_web",
+        )
+    ]
+    assert [tool.name for tool in _filter_tools_for_dedicated_desktop_navigation(
+        available, request
+    )] == ["computer_control", "focus_window", "list_windows"]
+    assert not _is_dedicated_desktop_navigation_request(
+        "Click ‘Search’ in preferences and search the web for its documented meaning."
+    )
 
 
 def test_generic_ui_acknowledgment_uses_explicit_requested_readback():

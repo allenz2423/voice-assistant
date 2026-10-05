@@ -354,6 +354,71 @@ def test_temporal_event_parser_keeps_precision_and_original_phrase():
     assert day_before.date_start == "2026-10-01"
 
 
+def test_temporal_event_clock_offsets_follow_dst_and_preserve_unresolved_times():
+    spring_shift = parse_event_time(
+        "I worked on 2026-03-08 from 1:30am to 3:30am",
+        "2026-10-05T12:00:00-04:00",
+        timezone_name="America/New_York",
+    )
+    assert spring_shift is not None
+    assert spring_shift.start_at == "2026-03-08T01:30:00-05:00"
+    assert spring_shift.end_at == "2026-03-08T03:30:00-04:00"
+    assert spring_shift.timezone == "America/New_York"
+
+    spring_gap = parse_event_time(
+        "I worked on 2026-03-08 from 1:30am to 2:30am",
+        "2026-10-05T12:00:00-04:00",
+        timezone_name="America/New_York",
+    )
+    assert spring_gap is not None
+    assert spring_gap.start_at is None
+    assert spring_gap.end_at is None
+    assert "1:30am to 2:30am" in spring_gap.original_expression
+
+    fall_overlap = parse_event_time(
+        "I worked on 2026-11-01 from 1:30am to 2:30am",
+        "2026-10-05T12:00:00-04:00",
+        timezone_name="America/New_York",
+    )
+    assert fall_overlap is not None
+    assert fall_overlap.start_at is None
+    assert fall_overlap.end_at is None
+    assert "1:30am to 2:30am" in fall_overlap.original_expression
+
+    overnight = parse_event_time(
+        "I worked on 2026-03-07 from 11:00pm to 3:00am",
+        "2026-10-05T12:00:00-04:00",
+        timezone_name="America/New_York",
+    )
+    assert overnight is not None
+    assert overnight.date_end == "2026-03-08"
+    assert overnight.start_at == "2026-03-07T23:00:00-05:00"
+    assert overnight.end_at == "2026-03-08T03:00:00-04:00"
+
+
+def test_temporal_relative_day_uses_capture_timezone_and_memory_retains_it(monkeypatch, tmp_path):
+    shifted_capture = parse_event_time(
+        "Today, I worked from 3:45 to 8:00pm",
+        "2026-03-09T02:30:00-04:00",
+        timezone_name="America/Los_Angeles",
+    )
+    assert shifted_capture is not None
+    assert shifted_capture.date_start == "2026-03-08"
+    assert shifted_capture.start_at == "2026-03-08T15:45:00-07:00"
+    assert shifted_capture.timezone == "America/Los_Angeles"
+
+    monkeypatch.setattr("src.memory.manager.local_timezone_name", lambda: "America/Los_Angeles")
+    mgr = MemoryManager(storage_path=tmp_path / "timezone-memory.json", embedder=MemoryEmbedder(disabled=True))
+    saved = mgr.save("I worked today from 3:45 to 8:00pm")
+    assert saved.event_timezone == "America/Los_Angeles"
+    assert saved.event_start_at.endswith("-07:00")
+
+    assert mgr.update(saved.id, "I worked today from 3:45 to 9:00pm")
+    updated = mgr.list_memories()[0]
+    assert updated.event_timezone == "America/Los_Angeles"
+    assert updated.event_end_at.endswith("-07:00")
+
+
 def test_temporal_memory_search_is_date_and_type_bounded_and_persists(tmp_path):
     storage = tmp_path / "dated_memories.json"
     mgr = MemoryManager(storage_path=storage, embedder=MemoryEmbedder(disabled=True))

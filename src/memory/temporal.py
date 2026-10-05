@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import calendar
+import os
 import re
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, tzinfo, timezone as datetime_timezone
+from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 @dataclass(frozen=True)
@@ -36,7 +39,41 @@ _TIME_RANGE = re.compile(
 _TIME = re.compile(r"^(?P<hour>\d{1,2})(?:[:.](?P<minute>\d{2}))?\s*(?P<period>a\.?m\.?|p\.?m\.?)?$", re.I)
 
 
-def _parse_anchor(recorded_at: str | datetime) -> datetime:
+def _zone_info(name: str | None) -> ZoneInfo | None:
+    if not name:
+        return None
+    try:
+        return ZoneInfo(str(name))
+    except (ZoneInfoNotFoundError, ValueError):
+        return None
+
+
+def local_timezone_name() -> str | None:
+    """Return the system's IANA timezone key when the OS exposes one."""
+    configured = str(os.environ.get("TZ", "")).strip().lstrip(":")
+    if _zone_info(configured) is not None:
+        return configured
+
+    try:
+        resolved = Path("/etc/localtime").resolve(strict=True)
+        parts = resolved.parts
+        marker = parts.index("zoneinfo")
+        key = "/".join(parts[marker + 1:])
+        if _zone_info(key) is not None:
+            return key
+    except (OSError, ValueError):
+        pass
+
+    try:
+        key = Path("/etc/timezone").read_text(encoding="utf-8").strip()
+        if _zone_info(key) is not None:
+            return key
+    except OSError:
+        pass
+    return None
+
+
+def _parse_anchor(recorded_at: str | datetime, timezone_name: str | None = None) -> datetime:
     if isinstance(recorded_at, datetime):
         anchor = recorded_at
     else:
@@ -44,9 +81,36 @@ def _parse_anchor(recorded_at: str | datetime) -> datetime:
         if value.endswith("Z"):
             value = value[:-1] + "+00:00"
         anchor = datetime.fromisoformat(value)
+    timezone = _zone_info(timezone_name)
+    if timezone is not None:
+        return anchor.replace(tzinfo=timezone) if anchor.tzinfo is None else anchor.astimezone(timezone)
     if anchor.tzinfo is None:
         anchor = anchor.astimezone()
     return anchor
+
+
+def _local_datetime(day: date, clock: time, timezone: tzinfo) -> datetime | None:
+    """Resolve a wall clock only when its local-time instant is unambiguous."""
+    wall_time = datetime.combine(day, clock)
+    if not isinstance(timezone, ZoneInfo):
+        return wall_time.replace(tzinfo=timezone)
+
+    candidates: list[datetime] = []
+    for fold in (0, 1):
+        candidate = wall_time.replace(tzinfo=timezone, fold=fold)
+        round_trip = candidate.astimezone(datetime_timezone.utc).astimezone(timezone)
+        if round_trip.replace(tzinfo=None) == wall_time:
+            candidates.append(candidate)
+
+    if not candidates:
+        # The clock time falls in a spring-forward gap.
+        return None
+    offsets = {candidate.utcoffset() for candidate in candidates}
+    if len(offsets) > 1:
+        # Fall-back repeats this local clock time; there is no evidence for which
+        # occurrence the user meant, so keep the phrase but do not invent an offset.
+        return None
+    return candidates[0]
 
 
 def _month_start(year: int, month: int) -> date:
@@ -159,26 +223,34 @@ def _time_range(text: str) -> tuple[time, time, str] | None:
     return start_time, end_time, match.group(0)
 
 
-def parse_event_time(text: str, recorded_at: str | datetime) -> EventTime | None:
+def parse_event_time(
+    text: str,
+    recorded_at: str | datetime,
+    timezone_name: str | None = None,
+) -> EventTime | None:
     """Resolve explicit relative or absolute event timing against its record time."""
     clean_text = str(text or "")
-    anchor = _parse_anchor(recorded_at)
+    anchor = _parse_anchor(recorded_at, timezone_name)
     resolved = _resolve_date_expression(clean_text, anchor)
     if resolved is None:
         return None
     date_start, date_end, date_expression, precision = resolved
     tzinfo = anchor.tzinfo
-    tz_name = getattr(tzinfo, "key", None) or anchor.tzname() or anchor.strftime("%z")
+    tz_name = (
+        timezone_name if _zone_info(timezone_name) is not None
+        else getattr(tzinfo, "key", None) or anchor.tzname() or anchor.strftime("%z")
+    )
     event_type = "work" if re.search(r"\b(?:work(?:ed|ing)?|shift|clocked\s+(?:in|out))\b", clean_text, re.I) else "event"
     clock_range = _time_range(clean_text)
     start_at = end_at = None
     expression = date_expression
     if clock_range and date_start == date_end:
         start_time, end_time, clock_expression = clock_range
-        start_dt = datetime.combine(date_start, start_time, tzinfo=tzinfo)
         end_date = date_start + timedelta(days=1) if end_time <= start_time else date_start
-        end_dt = datetime.combine(end_date, end_time, tzinfo=tzinfo)
-        start_at, end_at = start_dt.isoformat(), end_dt.isoformat()
+        start_dt = _local_datetime(date_start, start_time, tzinfo)
+        end_dt = _local_datetime(end_date, end_time, tzinfo)
+        if start_dt is not None and end_dt is not None:
+            start_at, end_at = start_dt.isoformat(), end_dt.isoformat()
         if end_date > date_end:
             date_end = end_date
         expression = f"{date_expression}; {clock_expression}"
