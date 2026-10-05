@@ -6,7 +6,7 @@ import difflib
 import threading
 from collections import deque
 from src.audio.earcon import resolve_pulse_device_index, setup_audio_routing
-from src.telemetry.events import emit_event, new_span_id
+from src.telemetry.events import emit_event, get_speech_role, new_span_id
 
 MONTH_NAMES = ["", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"]
 
@@ -295,10 +295,19 @@ class StreamingVoiceSynthesizer:
 
             threading.Thread(target=abort_output, name="adam-tts-abort", daemon=True).start()
 
-    async def _play_interruptibly(self, playback_fn, *args, epoch: int):
+    async def _play_interruptibly(
+        self, playback_fn, *args, epoch: int, utterance_id: str | None = None,
+    ):
         """Run blocking audio playback without pinning speech completion after barge-in."""
         playback_span = new_span_id()
-        emit_event("playback.started", span_id=playback_span, component="playback", status="started")
+        playback_attributes = {
+            "speech_role": get_speech_role(),
+            "utterance_id": utterance_id,
+        }
+        emit_event(
+            "playback.started", span_id=playback_span, component="playback", status="started",
+            attributes=playback_attributes,
+        )
         playback_state = {"submitted": False, "error": False}
         playback_task = asyncio.create_task(
             asyncio.to_thread(
@@ -313,7 +322,8 @@ class StreamingVoiceSynthesizer:
                     lambda task: task.exception() if not task.cancelled() else None
                 )
                 emit_event(
-                    "playback.completed", span_id=playback_span, component="playback", status="cancelled"
+                    "playback.completed", span_id=playback_span, component="playback", status="cancelled",
+                    attributes=playback_attributes,
                 )
                 return
             await asyncio.wait({playback_task}, timeout=0.05)
@@ -322,11 +332,22 @@ class StreamingVoiceSynthesizer:
         except Exception as exc:
             emit_event(
                 "playback.completed", span_id=playback_span, component="playback", status="error",
-                attributes={"error_type": type(exc).__name__},
+                attributes={**playback_attributes, "error_type": type(exc).__name__},
             )
             raise
-        playback_status = "error" if playback_state["error"] else ("ok" if playback_state["submitted"] else "skipped")
-        emit_event("playback.completed", span_id=playback_span, component="playback", status=playback_status)
+        # The worker may finish in the same scheduling window as a barge-in.
+        # If the epoch changed before this coroutine resumed, its buffer may
+        # have been aborted after submission; do not report confirmed playback.
+        playback_status = (
+            "cancelled" if epoch != self.current_epoch else
+            "error" if playback_state["error"] else
+            "ok" if playback_state["submitted"] else
+            "skipped"
+        )
+        emit_event(
+            "playback.completed", span_id=playback_span, component="playback", status=playback_status,
+            attributes=playback_attributes,
+        )
 
     def speak_now(self, text: str):
         """Non-blocking fire-and-forget speech."""
@@ -458,6 +479,7 @@ class StreamingVoiceSynthesizer:
                 return
 
             self.current_spoken_text = clean_text
+            utterance_id = new_span_id()
 
             stop_event = asyncio.Event()
             barge_task = asyncio.create_task(self._barge_in_monitor(stop_event))
@@ -472,7 +494,9 @@ class StreamingVoiceSynthesizer:
                     if epoch != self.current_epoch:
                         break
                     self.current_sentence = sentence
-                    await self._synthesize_and_play_clause(sentence, epoch)
+                    await self._synthesize_and_play_clause(
+                        sentence, epoch, utterance_id=utterance_id,
+                    )
                     self.speech_history.append((time.time(), sentence.lower()))
             finally:
                 stop_event.set()
@@ -636,6 +660,7 @@ class StreamingVoiceSynthesizer:
 
         async with self._lock:
             epoch = self.current_epoch
+            utterance_id = new_span_id()
             buffer = ""
             async for token in token_async_generator:
                 if epoch != self.current_epoch:
@@ -646,10 +671,14 @@ class StreamingVoiceSynthesizer:
                     clause = (parts[0] + parts[1]).strip()
                     buffer = "".join(parts[2:])
                     if clause:
-                        await self._synthesize_and_play_clause(clause, epoch)
+                        await self._synthesize_and_play_clause(
+                            clause, epoch, utterance_id=utterance_id,
+                        )
 
             if buffer.strip() and epoch == self.current_epoch:
-                await self._synthesize_and_play_clause(buffer.strip(), epoch)
+                await self._synthesize_and_play_clause(
+                    buffer.strip(), epoch, utterance_id=utterance_id,
+                )
 
 
     async def _synthesize_cosyvoice(self, clause: str):
@@ -724,7 +753,9 @@ class StreamingVoiceSynthesizer:
             return None
 
 
-    async def _synthesize_and_play_clause(self, clause: str, epoch: int):
+    async def _synthesize_and_play_clause(
+        self, clause: str, epoch: int, *, utterance_id: str | None = None,
+    ):
         if epoch != self.current_epoch:
             return
         clause_span = new_span_id()
@@ -734,7 +765,9 @@ class StreamingVoiceSynthesizer:
             pcm = await self._synthesize_openai(clause)
             if pcm and epoch == self.current_epoch:
                 emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="ok")
-                await self._play_interruptibly(self._play_raw_pcm, pcm, epoch, epoch=epoch)
+                await self._play_interruptibly(
+                    self._play_raw_pcm, pcm, epoch, epoch=epoch, utterance_id=utterance_id,
+                )
             elif pcm:
                 emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="cancelled")
             elif not pcm:
@@ -748,7 +781,10 @@ class StreamingVoiceSynthesizer:
                     emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="cancelled")
                     return
                 emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="ok")
-                await self._play_interruptibly(self._play_float32_audio, samples, sr, epoch, epoch=epoch)
+                await self._play_interruptibly(
+                    self._play_float32_audio, samples, sr, epoch,
+                    epoch=epoch, utterance_id=utterance_id,
+                )
                 return
 
         if self.engine == "kokoro" or (self.engine == "cosyvoice" and self.kokoro):
@@ -782,7 +818,10 @@ class StreamingVoiceSynthesizer:
                     return
 
                 emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="ok")
-                await self._play_interruptibly(self._play_float32_audio, samples, sr, epoch, epoch=epoch)
+                await self._play_interruptibly(
+                    self._play_float32_audio, samples, sr, epoch,
+                    epoch=epoch, utterance_id=utterance_id,
+                )
                 return
             elif self.engine == "kokoro":
                 emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="error")
@@ -863,7 +902,9 @@ class StreamingVoiceSynthesizer:
 
         # Play audio buffer through sounddevice
         emit_event("tts.clause_synthesized", span_id=clause_span, component="tts", status="ok")
-        await self._play_interruptibly(self._play_raw_pcm, stdout_data, epoch, epoch=epoch)
+        await self._play_interruptibly(
+            self._play_raw_pcm, stdout_data, epoch, epoch=epoch, utterance_id=utterance_id,
+        )
 
     def _play_float32_audio(
         self, audio_data, sample_rate: int, epoch: int, *, playback_span_id: str | None = None,

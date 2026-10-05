@@ -10,7 +10,7 @@ import math
 import hashlib
 import threading
 from pathlib import Path
-from src.telemetry.events import emit_event, new_span_id
+from src.telemetry.events import emit_event, new_span_id, speech_role_scope
 from src.tools.desktop_timing import timed_stage, timing_operation
 from src.llm.provider import UniversalLLMClient
 from src.llm.tools import ADAM_TOOLS, normalize_tool_arguments, validate_tool_arguments
@@ -1774,6 +1774,11 @@ class AdamBrain:
         if self.visual_grounder is not None:
             self.visual_grounder.close()
 
+    async def _speak_with_role(self, text: str, role: str) -> None:
+        """Speak while attaching only the caller-known, non-content role to telemetry."""
+        with speech_role_scope(role):
+            await self.tts.speak_async(text)
+
     async def _await_with_progress(self, awaitable):
         """Keep a long model/tool wait from sounding like a hung assistant."""
         task = asyncio.ensure_future(awaitable)
@@ -1784,7 +1789,9 @@ class AdamBrain:
             if task in done:
                 return task.result()
             if not self._is_interrupted and not getattr(self.tts, "pending_barge_in_text", None):
-                await self.tts.speak_async("I’m still working through your request.")
+                await self._speak_with_role(
+                    "I’m still working through your request.", "progress",
+                )
             return await task
         except BaseException:
             if not task.done():
@@ -2118,7 +2125,7 @@ class AdamBrain:
                 else:
                     print("[TTS] Silent mode enabled by explicit voice command.", flush=True)
                     message = "Silent mode enabled. Future responses will appear as desktop notifications."
-            await self.tts.speak_async(message)
+            await self._speak_with_role(message, "final")
             return
 
         self._recent_computer_goal = user_text
@@ -2179,7 +2186,7 @@ class AdamBrain:
             self.messages.append({"role": "user", "content": user_text})
             self.messages.append({"role": "assistant", "content": response_text})
             with timed_stage("brain.tts_speak"):
-                await self.tts.speak_async(response_text)
+                await self._speak_with_role(response_text, "final")
             return
 
         needs_desktop_context = _is_desktop_context_request(user_text)
@@ -2240,7 +2247,7 @@ class AdamBrain:
 
             async def acknowledge_desktop_task():
                 try:
-                    await self.tts.speak_async(acknowledgment_text)
+                    await self._speak_with_role(acknowledgment_text, "acknowledgment")
                 except Exception as exc:
                     print(
                         f"[Progress] Desktop acknowledgment unavailable ({type(exc).__name__}).",
@@ -2336,7 +2343,7 @@ class AdamBrain:
                     )
                     self.messages.append({"role": "user", "content": user_text})
                     self.messages.append({"role": "assistant", "content": response_text})
-                    await self.tts.speak_async(response_text)
+                    await self._speak_with_role(response_text, "final")
                     return
             except Exception as exc:
                 print(
@@ -2522,7 +2529,7 @@ class AdamBrain:
                 response_text = content or "The language model is unavailable. I stopped with the existing task results preserved."
                 print(f"[Adam] Response: {response_text}", flush=True)
                 self.messages.append({"role": "assistant", "content": response_text})
-                await self.tts.speak_async(response_text)
+                await self._speak_with_role(response_text, "final")
                 return
             capability_tools = (
                 _available_tools_for_capability_refusal(user_text, content, available_tools)
@@ -2561,7 +2568,7 @@ class AdamBrain:
                 )
                 self.messages.append({"role": "assistant", "content": response_text})
                 print(f"[Adam] Response: {response_text}", flush=True)
-                await self.tts.speak_async(response_text)
+                await self._speak_with_role(response_text, "final")
                 return
             if not str(content or "").strip() and not tool_calls:
                 if empty_completion_retries < 3:
@@ -2594,7 +2601,7 @@ class AdamBrain:
                 )
                 print(f"[Adam] Response: {response_text}", flush=True)
                 self.messages.append({"role": "assistant", "content": response_text})
-                await self.tts.speak_async(response_text)
+                await self._speak_with_role(response_text, "final")
                 return
             call_ids_by_idx: dict[int, str] = {}
             seen_call_ids: set[str] = set()
@@ -2637,7 +2644,7 @@ class AdamBrain:
                     content = save_readback_guard
                 print(f"[Adam] Response: {content}")
                 with timed_stage("brain.tts_speak"):
-                    await self.tts.speak_async(content)
+                    await self._speak_with_role(content, "final")
                 turn_completed_with_speech = True
 
             # 2. Record the assistant's turn in conversation history
@@ -2866,9 +2873,16 @@ class AdamBrain:
                             ):
                                 signature_args = dict(args) if isinstance(args, dict) else {}
                                 action_signature = _desktop_action_signature(name, signature_args)
-                                if raw_output.screenshot:
+                                # OmniParser's annotated image is the model-facing
+                                # observation, but changing detector overlays do not
+                                # establish progress in the underlying desktop state.
+                                state_screenshot = (
+                                    getattr(raw_output, "raw_screenshot", None)
+                                    or raw_output.screenshot
+                                )
+                                if state_screenshot:
                                     state_fingerprint = _desktop_screenshot_signature(
-                                        raw_output.screenshot,
+                                        state_screenshot,
                                         getattr(raw_output, "ocr_regions", None),
                                     )
                                 else:
@@ -3216,7 +3230,7 @@ class AdamBrain:
                 self.messages.append({"role": "assistant", "content": response_text})
                 print(f"[Adam] Response: {response_text}", flush=True)
                 with timed_stage("brain.tts_speak"):
-                    await self.tts.speak_async(response_text)
+                    await self._speak_with_role(response_text, "final")
                 return
 
             if self._pending_screenshot is not None:
@@ -3237,7 +3251,7 @@ class AdamBrain:
             if hop % 3 == 0 and not turn_completed_with_speech:
                 progress = self._computer_progress_update(executed_hop_results)
                 print(f"[Adam] Progress: {progress}", flush=True)
-                await self.tts.speak_async(progress)
+                await self._speak_with_role(progress, "progress")
 
         if self._is_interrupted or getattr(self.tts, "pending_barge_in_text", None):
             self._is_interrupted = True
@@ -3253,7 +3267,7 @@ class AdamBrain:
                 )
                 print(f"[Adam] Response: {response_text}", flush=True)
                 self.messages.append({"role": "assistant", "content": response_text})
-                await self.tts.speak_async(response_text)
+                await self._speak_with_role(response_text, "final")
                 return
             summary_response = await self._await_with_progress(
                 self.llm_client.chat(self.messages, tools=[])
@@ -3299,7 +3313,7 @@ class AdamBrain:
             print(f"[Adam] Response: {final_content}")
             self.messages.append({"role": "assistant", "content": final_content})
             with timed_stage("brain.tts_speak"):
-                await self.tts.speak_async(final_content)
+                await self._speak_with_role(final_content, "final")
 
     async def _execute_tool(self, name: str, args: dict) -> str | ComputerControlResult:
         """Executes the requested tool action."""

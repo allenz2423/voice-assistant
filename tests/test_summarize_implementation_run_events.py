@@ -66,7 +66,37 @@ def _provider_call(
     ]
 
 
-def _write_inputs(tmp_path, events: list[dict], *, request_end: int = BASE):
+def _playback_pair(
+    started_at: int,
+    *,
+    span_id: str,
+    speech_role: str | None,
+    utterance_id: str | None,
+    completion_status: str = "ok",
+    completion_delay_ns: int = 10_000,
+    extra_attributes: dict | None = None,
+) -> list[dict]:
+    attributes = {
+        "speech_role": speech_role,
+        "utterance_id": utterance_id,
+        **(extra_attributes or {}),
+    }
+    return [
+        _event(
+            "playback.started", started_at, span_id=span_id, status="started",
+            attributes=attributes,
+        ),
+        _event(
+            "playback.completed", started_at + completion_delay_ns,
+            span_id=span_id, status=completion_status, attributes=attributes,
+        ),
+    ]
+
+
+def _write_inputs(
+    tmp_path, events: list[dict], *, request_end: int = BASE,
+    verified_completion: int = BASE + 4_000_000,
+):
     record = {
         "run_id": "loop6-run-001",
         "trace_id": TRACE_ID,
@@ -76,7 +106,7 @@ def _write_inputs(tmp_path, events: list[dict], *, request_end: int = BASE):
         "failure_class": "provider_transport",
         "event_clock_ns": {
             "request_end": request_end,
-            "verified_completion": BASE + 4_000_000,
+            "verified_completion": verified_completion,
         },
     }
     record_path = tmp_path / "run.json"
@@ -192,6 +222,106 @@ def test_join_isolates_trace_counts_provider_attempts_and_preserves_failure_evid
     assert summary["first_playback"]["meaningful_acknowledgment"] is None
     assert "unrelated private text" not in json.dumps(summary)
     assert "must not be retained" not in json.dumps(summary)
+    assert summary["speech"]["first_acknowledgment"]["missing_reason"] == (
+        "no successfully completed playback tagged 'acknowledgment' in the task window"
+    )
+
+
+def test_speech_summary_uses_tagged_roles_and_groups_clause_playback(tmp_path):
+    events = [
+        *_playback_pair(
+            BASE + 500_000_000, span_id="earcon", speech_role=None,
+            utterance_id="earcon-utterance",
+        ),
+        *_playback_pair(
+            BASE + 900_000_000, span_id="failed-ack", speech_role="acknowledgment",
+            utterance_id="failed-ack", completion_status="error",
+        ),
+        *_playback_pair(
+            BASE + 1_000_000_000, span_id="ack-1", speech_role="acknowledgment",
+            utterance_id="ack-utterance",
+        ),
+        *_playback_pair(
+            BASE + 1_500_000_000, span_id="ack-2", speech_role="acknowledgment",
+            utterance_id="ack-utterance",
+        ),
+        *_playback_pair(
+            BASE + 12_000_000_000, span_id="progress-1a", speech_role="progress",
+            utterance_id="progress-one",
+        ),
+        *_playback_pair(
+            BASE + 12_100_000_000, span_id="progress-1b", speech_role="progress",
+            utterance_id="progress-one",
+            extra_attributes={"text": "private speech content must not be returned"},
+        ),
+        *_playback_pair(
+            BASE + 28_000_000_000, span_id="progress-2", speech_role="progress",
+            utterance_id="progress-two",
+        ),
+        *_playback_pair(
+            BASE + 30_000_000_000, span_id="final-1", speech_role="final",
+            utterance_id="final-utterance",
+        ),
+    ]
+    record_path, event_path = _write_inputs(
+        tmp_path, events, verified_completion=BASE + 40_000_000_000,
+    )
+
+    summary = summarize_files(record_path, event_path)
+    speech = summary["speech"]
+
+    assert summary["first_playback"]["clock_ns"] == BASE + 500_000_000
+    assert speech["first_acknowledgment"] == {
+        "clock_ns": BASE + 1_000_000_000,
+        "request_end_delta_ms": 1000.0,
+        "missing_reason": None,
+        "within_5s_target": True,
+    }
+    assert speech["progress"]["update_count"] == 2
+    assert [row["request_end_delta_ms"] for row in speech["progress"]["updates"]] == [
+        12_000.0, 28_000.0,
+    ]
+    assert speech["progress"]["measured_intervals_ms"] == [
+        12_000.0, 16_000.0, 2_000.0,
+    ]
+    assert speech["progress"]["max_measured_interval_ms"] == 16_000.0
+    assert speech["progress"]["within_10s_target"] is False
+    assert speech["progress"]["end_reason"] == "first_final_speech"
+    assert speech["progress"]["gap_to_end_ms"] == 2_000.0
+    assert speech["first_final_speech"]["request_end_delta_ms"] == 30_000.0
+    assert speech["unclassified_playback_count"] == 1
+    assert speech["unconfirmed_playback_count"] == 1
+    assert "private speech content" not in json.dumps(summary)
+
+
+def test_unknown_and_identityless_speech_roles_remain_unavailable(tmp_path):
+    events = [
+        *_playback_pair(
+            BASE + 500_000, span_id="ack-no-id", speech_role="acknowledgment",
+            utterance_id=None,
+        ),
+        *_playback_pair(
+            BASE + 1_000_000, span_id="progress-no-id", speech_role="progress",
+            utterance_id=None,
+        ),
+        *_playback_pair(
+            BASE + 1_500_000, span_id="unknown-role", speech_role="not-a-role",
+            utterance_id="unknown",
+        ),
+    ]
+    record_path, event_path = _write_inputs(tmp_path, events)
+
+    speech = summarize_files(record_path, event_path)["speech"]
+
+    assert speech["first_acknowledgment"]["clock_ns"] is None
+    assert speech["first_acknowledgment"]["within_5s_target"] is None
+    assert "lacked an utterance_id" in speech["first_acknowledgment"]["missing_reason"]
+    assert speech["progress"]["update_count"] == 0
+    assert speech["progress"]["missing_reason"] == (
+        "1 progress playback event(s) lacked an utterance_id"
+    )
+    assert speech["unclassified_playback_count"] == 1
+    assert speech["tagged_playback_missing_utterance_id_count"] == 2
 
 
 def test_same_currency_complete_accounting_sums_usage_and_provider_durations(tmp_path):

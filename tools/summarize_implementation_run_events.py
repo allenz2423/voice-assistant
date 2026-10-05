@@ -3,8 +3,8 @@
 
 The join uses the exact trace_id recorded by the run. It summarizes provider
 attempts, retry signals, provider timing/accounting, Brain turn timing, and
-playback timing. Telemetry does not identify playback purpose, so playback is
-never interpreted as a meaningful acknowledgment.
+playback timing. Caller-declared speech roles are summarized separately from
+generic playback; a role tag does not prove that the spoken content was useful.
 
 Example:
 
@@ -24,6 +24,7 @@ from typing import Any
 
 
 EVENT_SCHEMA_VERSION = 1
+SPEECH_ROLES = frozenset({"acknowledgment", "progress", "final"})
 
 
 class RunEventSummaryError(ValueError):
@@ -428,6 +429,154 @@ def _turn_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _speech_summary(
+    events: list[dict[str, Any]],
+    request_end: int,
+    verified_completion: int,
+) -> dict[str, Any]:
+    """Summarize caller-declared speech roles without retaining speech content."""
+    grouped: dict[str, dict[str, dict[str, Any]]] = {
+        role: {} for role in SPEECH_ROLES
+    }
+    unknown_role_count = 0
+    missing_utterance_id_counts = Counter()
+    completions_by_span: dict[str, list[str | None]] = {}
+    starts_by_span: Counter[str] = Counter()
+    for row in events:
+        span_id = row.get("span_id")
+        if row["event"] == "playback.started" and isinstance(span_id, str) and span_id:
+            starts_by_span[span_id] += 1
+        elif row["event"] == "playback.completed" and isinstance(span_id, str) and span_id:
+            completions_by_span.setdefault(span_id, []).append(row.get("status"))
+
+    playback_events = [row for row in events if row["event"] == "playback.started"]
+    unconfirmed_playback_count = 0
+
+    for row in playback_events:
+        span_id = row.get("span_id")
+        statuses = completions_by_span.get(span_id, []) if isinstance(span_id, str) else []
+        if (
+            not isinstance(span_id, str)
+            or starts_by_span[span_id] != 1
+            or statuses != ["ok"]
+        ):
+            unconfirmed_playback_count += 1
+            continue
+        attributes = row["attributes"]
+        role = attributes.get("speech_role")
+        if not isinstance(role, str) or role not in SPEECH_ROLES:
+            unknown_role_count += 1
+            continue
+        utterance_id = attributes.get("utterance_id")
+        if not isinstance(utterance_id, str) or not utterance_id:
+            missing_utterance_id_counts[role] += 1
+            continue
+        current = grouped[role].get(utterance_id)
+        if current is None or row["clock_ns"] < current["clock_ns"]:
+            grouped[role][utterance_id] = row
+
+    def event_summary(row: dict[str, Any] | None, role: str) -> dict[str, Any]:
+        delta_ms = (
+            round((row["clock_ns"] - request_end) / 1_000_000, 3)
+            if row else None
+        )
+        missing_reason = None
+        if row is None:
+            if missing_utterance_id_counts[role]:
+                missing_reason = (
+                    f"{missing_utterance_id_counts[role]} playback event(s) tagged "
+                    f"{role!r} lacked an utterance_id"
+                )
+            else:
+                missing_reason = f"no successfully completed playback tagged {role!r} in the task window"
+        return {
+            "clock_ns": row["clock_ns"] if row else None,
+            "request_end_delta_ms": delta_ms,
+            "missing_reason": missing_reason,
+        }
+
+    acknowledgments = sorted(
+        grouped["acknowledgment"].values(), key=lambda row: row["clock_ns"]
+    )
+    final_speech = sorted(grouped["final"].values(), key=lambda row: row["clock_ns"])
+    progress_end_clock = min(
+        final_speech[0]["clock_ns"] if final_speech else verified_completion,
+        verified_completion,
+    )
+    progress_end_reason = "first_final_speech" if final_speech else "verified_completion"
+    progress_updates = sorted(
+        (
+            row for row in grouped["progress"].values()
+            if row["clock_ns"] <= progress_end_clock
+        ),
+        key=lambda row: row["clock_ns"],
+    )
+
+    progress_rows = []
+    progress_intervals_ms = []
+    previous_clock = request_end
+    for row in progress_updates:
+        interval_ms = round((row["clock_ns"] - previous_clock) / 1_000_000, 3)
+        progress_intervals_ms.append(interval_ms)
+        progress_rows.append({
+            "clock_ns": row["clock_ns"],
+            "request_end_delta_ms": round((row["clock_ns"] - request_end) / 1_000_000, 3),
+            "gap_from_previous_progress_ms": (
+                None if row is progress_updates[0] else interval_ms
+            ),
+        })
+        previous_clock = row["clock_ns"]
+    if progress_updates:
+        end_gap_ms = round(
+            (progress_end_clock - progress_updates[-1]["clock_ns"]) / 1_000_000,
+            3,
+        )
+        progress_intervals_ms.append(end_gap_ms)
+    else:
+        end_gap_ms = None
+
+    progress_missing_reason = None
+    if not progress_updates:
+        if missing_utterance_id_counts["progress"]:
+            progress_missing_reason = (
+                f"{missing_utterance_id_counts['progress']} progress playback event(s) "
+                "lacked an utterance_id"
+            )
+        else:
+            progress_missing_reason = "no successfully completed playback tagged 'progress' in the task window"
+
+    return {
+        "first_acknowledgment": {
+            **event_summary(acknowledgments[0] if acknowledgments else None, "acknowledgment"),
+            "within_5s_target": (
+                (acknowledgments[0]["clock_ns"] - request_end) <= 5_000_000_000
+                if acknowledgments else None
+            ),
+        },
+        "progress": {
+            "update_count": len(progress_updates),
+            "updates": progress_rows,
+            "end_clock_ns": progress_end_clock,
+            "end_reason": progress_end_reason,
+            "gap_to_end_ms": end_gap_ms,
+            "measured_intervals_ms": progress_intervals_ms,
+            "max_measured_interval_ms": (
+                max(progress_intervals_ms) if progress_intervals_ms else None
+            ),
+            "within_10s_target": (
+                max(progress_intervals_ms) <= 10_000 if progress_intervals_ms else None
+            ),
+            "missing_reason": progress_missing_reason,
+        },
+        "first_final_speech": event_summary(
+            final_speech[0] if final_speech else None, "final",
+        ),
+        "unclassified_playback_count": unknown_role_count,
+        "unconfirmed_playback_count": unconfirmed_playback_count,
+        "tagged_playback_missing_utterance_id_count": sum(missing_utterance_id_counts.values()),
+    }
+
+
 def summarize_run_events(
     run_record: dict[str, Any],
     events: list[dict[str, Any]],
@@ -520,6 +669,7 @@ def summarize_run_events(
         if row["event"] == "playback.started" and row["clock_ns"] >= request_end
     ]
     first_playback = min(playback_events, key=lambda row: row["clock_ns"]) if playback_events else None
+    speech_summary = _speech_summary(events, request_end, verified_completion)
     tool_start_events = [
         row for row in events
         if row["event"] == "tool.started" and row["clock_ns"] >= request_end
@@ -544,7 +694,7 @@ def summarize_run_events(
         ),
         "meaningful_acknowledgment": None,
         "meaningful_acknowledgment_missing_reason": (
-            "playback events do not identify speech purpose or meaningfulness"
+            "role-tagged playback identifies caller-declared purpose only; content meaning is not verified"
         ),
         "missing_reason": None if first_playback else "no playback.started event in the task window",
     }
@@ -601,6 +751,7 @@ def summarize_run_events(
         "provider_error_evidence": [_event_evidence(row) for row in provider_errors],
         "first_tool_start": first_tool_start_summary,
         "first_playback": first_playback_summary,
+        "speech": speech_summary,
         "interpretation": {
             "trace_join": (
                 "Events were filtered by exact trace_id and the recorded request-end-to-verified-"
@@ -615,7 +766,12 @@ def summarize_run_events(
                 "with available cost in the same currency."
             ),
             "first_playback": (
-                "Playback timing is reported separately; it is not evidence of a meaningful acknowledgment."
+                "Generic playback timing is separate from role-tagged speech timing and does not establish useful content."
+            ),
+            "speech": (
+                "Speech roles are caller-declared non-content labels. A playback counts only with one matching "
+                "status='ok' completion, and playback events sharing one utterance_id are grouped as one utterance. "
+                "Role tags do not establish that the words were useful."
             ),
         },
     }

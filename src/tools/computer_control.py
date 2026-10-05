@@ -162,6 +162,7 @@ class ComputerControlResult:
     dispatched: bool | None = False
     snapshot_id: str = ""
     ocr_regions: list[OCRRegion] = field(default_factory=list, repr=False)
+    raw_screenshot: bytes | None = field(default=None, repr=False)
 
 
 class ComputerController:
@@ -515,6 +516,7 @@ class ComputerController:
             dispatched=False,
             snapshot_id=self._snapshot_id,
             ocr_regions=list(self._ocr_regions),
+            raw_screenshot=None if self.ocr_only else raw_screenshot,
         )
 
     def _read_ocr_regions(self, image: bytes) -> list[OCRRegion]:
@@ -1160,6 +1162,7 @@ class ComputerController:
                     status="cancelled",
                     dispatched=any_dispatched,
                     snapshot_id=latest.snapshot_id if latest else "",
+                    raw_screenshot=latest.raw_screenshot if latest else None,
                 )
             if time.monotonic() - started >= self.sequence_timeout_seconds:
                 return ComputerControlResult(
@@ -1170,6 +1173,7 @@ class ComputerController:
                     status="timed_out",
                     dispatched=any_dispatched,
                     snapshot_id=latest.snapshot_id if latest else "",
+                    raw_screenshot=latest.raw_screenshot if latest else None,
                 )
             if not isinstance(step, dict):
                 return ComputerControlResult(
@@ -1178,6 +1182,7 @@ class ComputerController:
                     status="invalid_input",
                     dispatched=any_dispatched,
                     snapshot_id=latest.snapshot_id if latest else "",
+                    raw_screenshot=latest.raw_screenshot if latest else None,
                 )
             action = str(step.get("action", "")).strip().lower()
             if action not in {"click", "drag", "type", "press", "scroll", "wait"}:
@@ -1187,6 +1192,7 @@ class ComputerController:
                     status="invalid_input",
                     dispatched=any_dispatched,
                     snapshot_id=latest.snapshot_id if latest else "",
+                    raw_screenshot=latest.raw_screenshot if latest else None,
                 )
             # Keyboard/text input and pauses have no reusable screen coordinates.
             # Allow click followed by typing into the selected control, keypresses
@@ -1240,6 +1246,7 @@ class ComputerController:
                     status="partial",
                     dispatched=any_dispatched,
                     snapshot_id=latest.snapshot_id if latest else "",
+                    raw_screenshot=latest.raw_screenshot if latest else None,
                 )
             if action == "wait":
                 delay_sec = min(max(float(step.get("seconds") or step.get("amount") or 1.0), 0.0), 10.0)
@@ -1288,6 +1295,7 @@ class ComputerController:
                     status=latest.status,
                     dispatched=any_dispatched,
                     snapshot_id=latest.snapshot_id,
+                    raw_screenshot=latest.raw_screenshot,
                 )
             if not latest.snapshot_id:
                 return ComputerControlResult(
@@ -1297,6 +1305,7 @@ class ComputerController:
                     status="partial",
                     dispatched=True,
                     snapshot_id=latest.snapshot_id,
+                    raw_screenshot=latest.raw_screenshot,
                 )
             current_snapshot = latest.snapshot_id
         return ComputerControlResult(
@@ -1306,6 +1315,7 @@ class ComputerController:
             status="ok",
             dispatched=any_dispatched,
             snapshot_id=latest.snapshot_id if latest else "",
+            raw_screenshot=latest.raw_screenshot if latest else None,
         )
 
     @_serialized

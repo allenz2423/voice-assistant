@@ -8,6 +8,7 @@ never valid attributes.
 from __future__ import annotations
 
 import contextvars
+from contextlib import contextmanager
 import json
 import math
 import os
@@ -22,6 +23,10 @@ from typing import Any, Callable
 _trace_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "adam_telemetry_trace_id", default=None
 )
+_speech_role: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "adam_telemetry_speech_role", default=None
+)
+_SPEECH_ROLES = frozenset({"acknowledgment", "progress", "final"})
 _writer_lock = threading.Lock()
 _writer: "EventWriter | None" = None
 _reported_write_failure = False
@@ -68,6 +73,23 @@ def set_trace_id(trace_id: str | None):
 def reset_trace_id(token) -> None:
     """Restore the trace context that was active before ``set_trace_id``."""
     _trace_id.reset(token)
+
+
+@contextmanager
+def speech_role_scope(role: str):
+    """Mark TTS playback purpose without retaining the speech content."""
+    if not isinstance(role, str) or role not in _SPEECH_ROLES:
+        raise ValueError(f"unsupported speech role: {role!r}")
+    token = _speech_role.set(role)
+    try:
+        yield
+    finally:
+        _speech_role.reset(token)
+
+
+def get_speech_role() -> str | None:
+    """Return the purpose label active for playback in this async context."""
+    return _speech_role.get()
 
 
 def _safe_attributes(attributes: dict[str, Any] | None) -> dict[str, Any]:

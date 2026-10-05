@@ -1396,13 +1396,17 @@ async def test_multistep_browser_to_document_task_acknowledges_before_tool_work(
         "<LOCAL_REPORT_URL>", "http://127.0.0.1:8765/invoice-report.html"
     )
     events = []
+    speech_roles = []
 
     class DummyTTS:
         engine = "silent"
         pending_barge_in_text = None
 
         async def speak_async(self, text):
+            from src.telemetry.events import get_speech_role
+
             events.append(("speech", text))
+            speech_roles.append(get_speech_role())
 
     class DummyClient:
         def __init__(self):
@@ -1453,6 +1457,7 @@ async def test_multistep_browser_to_document_task_acknowledges_before_tool_work(
         "I’ll compare the overdue invoices, update the work order, and reopen it to verify the saved file.",
     )
     assert events[1] == ("tool", "list_windows")
+    assert speech_roles == ["acknowledgment", "final"]
 
 
 def test_general_question_skips_desktop_context():

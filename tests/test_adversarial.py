@@ -204,7 +204,7 @@ async def test_queued_speech_leaks_after_barge_in_epoch_advance():
 
     spoken_clauses = []
 
-    async def mock_play(clause, epoch):
+    async def mock_play(clause, epoch, *, utterance_id=None):
         if epoch == tts.current_epoch:
             spoken_clauses.append((clause, epoch))
             await asyncio.sleep(0.15)

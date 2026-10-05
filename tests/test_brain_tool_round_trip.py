@@ -8,9 +8,13 @@ import pytest
 class _DummyTTS:
     def __init__(self):
         self.spoken = []
+        self.speech_roles = []
 
     async def speak_async(self, text):
+        from src.telemetry.events import get_speech_role
+
         self.spoken.append(text)
+        self.speech_roles.append(get_speech_role())
 
 
 class _DummyClient:
@@ -526,6 +530,7 @@ async def test_long_wait_speaks_progress_but_short_wait_does_not(monkeypatch):
     slow = await brain._await_with_progress(asyncio.sleep(0.02, result="done"))
     assert slow == "done"
     assert brain.tts.spoken == ["I’m still working through your request."]
+    assert brain.tts.speech_roles == ["progress"]
 
 
 @pytest.mark.asyncio
