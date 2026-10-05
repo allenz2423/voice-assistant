@@ -1,6 +1,6 @@
 # Adam memory proposal: evidence, facts, and dates
 
-> **Research update (October 5, 2026):** The deeper review in [agent-memory-research-2026-10-05.md](agent-memory-research-2026-10-05.md) makes the storage decision conditional. Preserve original episodes as answer evidence, add short-lived task state and separately governed procedural lessons, and measure memory-guided actions as well as recall. SQLite should be compared with JSON only after the behavior and resource baselines are fixed.
+> **Retrieval update (October 5, 2026):** This proposal was written while considering a storage redesign. The active priority is now [retrieval accuracy](memory-retrieval-accuracy-plan.md): find the right source, reject wrong matches, and use the evidence correctly. Keep JSON for those experiments. The broader [architecture research](agent-memory-research-2026-10-05.md) remains background; the SQLite design below is deferred unless a separate storage need is measured.
 
 ## Recommendation
 
@@ -10,7 +10,7 @@ Give Adam a small, local memory system with three layers:
 2. **Derived facts and events** make dates, preferences, and corrections queryable without changing the original statement.
 3. **Search indexes** find relevant records quickly and can be rebuilt from the first two layers.
 
-SQLite is a possible local home for these layers, but the data model and recall behavior matter more than the file format. Build and evaluate the model against the current JSON store before considering a storage switch. Keep the system useful with lexical search alone; load the embedding model only when semantic recall needs it.
+The layers are possible future changes, not a prerequisite for improving retrieval. First measure and improve the current JSON-backed candidate, ranking, and evidence path. Keep the system useful with lexical search alone; load the embedding model only when semantic recall needs it.
 
 The proposed four fields—Date Created, Memory Title, Memory Content, Relative Date—are a useful display view. They are too small as the underlying record: a relative date needs a capture time, timezone, normalized date or range, and the original phrase. A title should help a person browse memories, not become the evidence Adam relies on when answering.
 
@@ -67,7 +67,7 @@ For example, if a user in New York says on October 5, 2026, “Remember that I w
 
 This keeps the current fast date filtering and optional semantic recall, while adding a way to represent multiple facts and corrections. A display title helps browsing; it should have little weight in answer selection.
 
-## Storage choice
+## Deferred storage choice
 
 If measured update, concurrency, or resident-memory needs justify a storage change, prototype **SQLite** locally after the model is defined. A compact layout would be:
 
@@ -84,14 +84,8 @@ Index active facts by kind and event date; use foreign keys so source deletion r
 
 The main expected benefits are incremental transactions, consistent correction/deletion, indexed queries, and the option to stop retaining the whole text index in Python memory. A faster answer or lower RAM use is a hypothesis until measured. The current JSON path remains a reasonable baseline, especially for a small personal store.
 
-## Build and acceptance sequence
+## Active sequence and later storage decision
 
-1. **Fix the recall contract.** Create a small, synthetic evaluation set covering ordinary facts, preferences, multiple facts in one save, corrections, negation, a missing answer, date/week/year questions, overnight shifts, and daylight-saving edge cases. Score final answers and cited source IDs, including false memories injected into unrelated questions. Keep private memories out of test artifacts.
-2. **Add the source/fact model behind the existing memory API.** Preserve the JSON store initially. Keep old records as one source plus their existing temporal fact when present; preserve their IDs, original text, timestamps, and stored date interpretation. Do not resolve an old “yesterday” against migration day.
-3. **Test SQLite behind the same API if storage needs justify it.** Import a copy of the JSON file in one transaction, validate counts, IDs, text, date fields, and index consistency, then compare both backends on the same queries. Keep the original JSON file as a rollback copy through cutover. Use restrictive local file permissions and a documented backup procedure.
-4. **Measure on laptop first.** Compare answer accuracy, p50/p95 recall time, save/update time, startup time, process PSS/RSS, database size, and peak memory with and without embeddings at 100, 1,000, and 10,001 synthetic records. Include a crash or interrupted-write recovery check. Repeat resource checks on Desky only after its experiment pause is lifted; keep its results separate and its memory use low as well.
-5. **Switch only after equivalence and a clear gain.** Require no lost memories, no date/correction regressions, and no increase in irrelevant memory injection. Keep the storage switch reversible until live recall through Adam succeeds. Update the plan and progress report, and commit each verified large checkpoint.
+Follow the [retrieval accuracy plan](memory-retrieval-accuracy-plan.md): establish source-level and final-answer baselines, classify failures, then compare query routing, source-linked search keys, reranking, and evidence handoff on the same JSON store. Promote changes only after held-out accuracy and laptop resource checks. Preserve original memory text and temporal anchors while improving retrieval. Commit each verified large checkpoint. Desky experiments remain paused; when resumed, measure its memory use separately and keep it low.
 
-## Decision rule
-
-Adopt SQLite if the prototype improves update safety or resource use while preserving recall quality and latency. If the data model improves answers but SQLite offers no measurable benefit at the current store size, keep the model on JSON and defer the storage migration. The durable design is the source-to-fact relationship; SQLite is the implementation choice to validate.
+Only if update safety, concurrency, or resident memory becomes a measured problem should SQLite be prototyped behind the same API. Hold data and retrieval policy fixed, validate every imported ID and date interpretation, and require no recall regression. Until then, JSON is the working store.

@@ -2,7 +2,7 @@
 
 ## The decision in one paragraph
 
-**SQLite is a plausible local storage engine, not an agent memory architecture.** Adam's next memory improvement should be judged by what it remembers, how it updates or forgets a claim, whether it finds the right evidence, and whether it uses that evidence in an answer or action. Keep the current JSON store as the baseline while testing those behaviors. If incremental writes, reliable multi-process access, or a smaller resident index becomes a measured need, use SQLite as the local source of truth; a separate graph database or always-on vector service has no demonstrated need in this project. This is an inference from the research and Adam's current measurements, not a claim that one architecture has solved agent memory.
+**Adam's current problem is retrieval accuracy.** The next improvement should increase the chance that the relevant source reaches the prompt, reject plausible but wrong matches, and make the final answer or action use the evidence correctly. Keep the current JSON store while measuring those outcomes. The concrete sequence and code-derived failure hypotheses are in the [retrieval accuracy plan](memory-retrieval-accuracy-plan.md). Storage changes are deferred unless a separate operational bottleneck is measured. This is an inference from the research and Adam's code, not a claim that one architecture has solved agent memory.
 
 ## Why the field is still open
 
@@ -78,7 +78,9 @@ Route by need rather than searching every memory the same way:
 
 This resembles LongMemEval's separation of indexing, retrieval, and reading. A correctly retrieved item can still be misused by the answer model, so score evidence recall and final answer/action separately.
 
-## Where SQLite fits
+## Storage background: SQLite
+
+This section answers the earlier storage question. It is outside the current retrieval-accuracy workstream. A storage comparison would hold the retrieval policy fixed and address a measured operational need; it should not be used as a proxy for recall quality.
 
 SQLite can store sources, derived facts, status, temporal indexes, and an optional edge table. [FTS5](https://www.sqlite.org/fts5.html) can generate lexical candidates, and [WAL mode](https://www.sqlite.org/wal.html) permits local readers alongside a writer. A graph does not require a dedicated graph server at Adam's current scale; a small relationship table can be tried if multi-hop queries show a need. Embeddings can remain optional binary vectors in the same local file or a companion index.
 
@@ -91,9 +93,9 @@ SQLite can store sources, derived facts, status, temporal indexes, and an option
 
 That does **not** show SQLite will improve recall or memory use. Adam's present version 2 JSON store has atomic replacement, an in-memory date index, BM25, and optional dense search in [`MemoryManager`](../src/memory/manager.py). The synthetic 10,001-record check documented in [`PLAN.md`](PLAN.md) took about 116 ms to load on the laptop, with date-bounded lookup near 0.05 ms. SQLite earns its complexity only if an end-to-end comparison shows a benefit such as safer incremental updates, effective multi-process access, less process RAM after moving indexes to disk, or simpler correction/deletion integrity.
 
-The next experiment should hold the *memory model and retrieval policy constant* while swapping JSON for SQLite. Otherwise a better answer cannot be attributed to the database. Use local SQLite; no remote vector store or graph service is justified by the current evidence. Keep Desky experiments paused until the user explicitly lifts that pause, and minimize its memory use when testing resumes.
+If a storage problem later appears, hold the *memory model and retrieval policy constant* while comparing JSON with SQLite. Otherwise a better answer cannot be attributed to the database. Keep Desky experiments paused until the user explicitly lifts that pause, and minimize its memory use when testing resumes.
 
-## Evaluation Adam should run before choosing storage
+## Evaluation Adam should run for retrieval accuracy
 
 Build a small private synthetic suite and run it through the real Adam answer/tool path with an isolated memory store. Measure:
 
@@ -105,14 +107,14 @@ Build a small private synthetic suite and run it through the real Adam answer/to
 | **Use** | Is the final answer correct and grounded? Does a remembered preference change the right tool parameter without changing unrelated tasks? Does Adam abstain when evidence is absent? |
 | **Resources** | p50/p95 write and retrieval latency, first response and total task latency, tokens/cost, startup and peak PSS/RSS, CPU, database size, and concurrent speech/vision memory on the laptop. |
 
-Compare at least four variants on the same examples and model route: current JSON/BM25-plus-optional-dense baseline; source episodes with derived search keys; source episodes plus typed temporal facts and corrections; and that same model backed by SQLite. Test a graph or extra summary tier only when a specific category still fails. Use a small subset of LongMemEval and an Adam-specific action set inspired by MemoryArena/Mem2ActBench. Do not claim a benchmark ranking from a few synthetic examples or LLM-judge scores alone; inspect raw errors and include human-scored cases.
+Compare retrieval variants on the same examples, store, and model route: current JSON/BM25-plus-optional-dense baseline; source-linked search keys; intent-aware date and fact retrieval; and reranking plus evidence checks. Score source recall and final answers separately. Test a graph or extra summary tier only when a specific category still fails. Use a small subset of LongMemEval and an Adam-specific action set inspired by MemoryArena/Mem2ActBench. Do not claim a benchmark ranking from a few synthetic examples or LLM-judge scores alone; inspect raw errors and include human-scored cases. See the [retrieval accuracy plan](memory-retrieval-accuracy-plan.md) for fixtures, measures, and promotion rules.
 
 ## Practical next steps
 
-1. Freeze a baseline on the current code and synthetic memories, including false retrieval and incorrect action cases.
-2. Prototype source-preserving derived search keys and correction semantics behind the existing `MemoryManager` interface while retaining JSON.
-3. Add separate task-state and verified procedural-memory experiments only after defining their write rules and scope.
-4. Compare SQLite against JSON with identical data and retrieval. Switch storage only if it provides a measured operational gain with no recall regression.
+1. Freeze a source-level and final-answer baseline on current code and synthetic memories, including wrong matches, missing evidence, and incorrect actions.
+2. Classify failures by query interpretation, candidate generation, ranking, evidence handoff, and answer/action use.
+3. Prototype source-preserving search keys, intent-aware retrieval, and evidence checks behind `MemoryManager` while retaining JSON. Promote each change only after a held-out comparison.
+4. Add separate task-state and verified procedural-memory experiments only after a retrieval failure demonstrates the need and their write rules are defined.
 5. Validate through Adam's live path on the laptop without disrupting daytime use. Commit each verified large checkpoint; test Desky only after its pause is lifted.
 
 ## Research limits
