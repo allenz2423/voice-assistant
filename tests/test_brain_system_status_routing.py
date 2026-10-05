@@ -27,6 +27,7 @@ from src.llm.brain import (
     _filter_tools_for_system_status,
     _is_memory_only_recall_request,
     _is_desktop_context_request,
+    _desktop_task_acknowledgment,
     _should_acknowledge_desktop_task,
     _should_use_initial_ocr_for_desktop_request,
     _summarize_desktop_readback_if_generic,
@@ -574,6 +575,8 @@ def test_generic_save_acknowledgment_reads_back_the_exact_saved_text():
 async def test_scratchpad_save_round_trip_uses_compact_tools_and_verified_readback(
     tool_evidence, expected_response,
 ):
+    events = []
+
     class SilentTTS:
         engine = "silent"
         pending_barge_in_text = None
@@ -583,6 +586,7 @@ async def test_scratchpad_save_round_trip_uses_compact_tools_and_verified_readba
 
         async def speak_async(self, text):
             self.spoken.append(text)
+            events.append(("speech", text))
 
     class Memory:
         def retrieve_context(self, _query):
@@ -649,6 +653,7 @@ async def test_scratchpad_save_round_trip_uses_compact_tools_and_verified_readba
 
     async def execute_tool(name, args):
         calls.append((name, args))
+        events.append(("tool", name))
         return tool_evidence
 
     brain._execute_tool = execute_tool
@@ -669,6 +674,8 @@ async def test_scratchpad_save_round_trip_uses_compact_tools_and_verified_readba
     assert len(calls) == 1
     assert calls[0][0] == "computer_control"
     assert calls[0][1]["actions"][1]["text"] == "Call the dentist Tuesday at 2 pm"
+    assert events[0] == ("speech", "I’ll save the note and check the saved text.")
+    assert events[1] == ("tool", "computer_control")
     assert tts.spoken[-1] == expected_response
 
 
@@ -1032,6 +1039,96 @@ def test_visible_desktop_work_gets_an_immediate_status_cue():
     assert not _should_acknowledge_desktop_task("Explain what a browser report is.")
 
 
+def test_task_acknowledgment_names_explicit_workflows_without_repeating_note_content():
+    g2_request = (
+        'In the local scratchpad, enter "Call the dentist Tuesday at 2 pm" in the Note text field, '
+        "click Save note, and tell me the saved text."
+    )
+    w1_request = (
+        "In the visible browser report at http://127.0.0.1:8765/invoice-report.html, find the supplier "
+        "with the largest overdue invoice total and all its invoice IDs. In the open work order document, "
+        "replace the TBD supplier, invoice IDs, and total with those values; change REVIEW from Pending "
+        "to Complete. Leave every other character unchanged, save the document, reopen it, and report "
+        "the saved values."
+    )
+
+    assert _should_acknowledge_desktop_task(g2_request)
+    assert _desktop_task_acknowledgment(g2_request) == "I’ll save the note and check the saved text."
+    assert "Call the dentist" not in _desktop_task_acknowledgment(g2_request)
+    assert _desktop_task_acknowledgment(w1_request) == (
+        "I’ll compare the overdue invoices, update the work order, "
+        "and reopen it to verify the saved file."
+    )
+    assert _desktop_task_acknowledgment("Click Reveal code in the Safe UI Pilot.") == (
+        "I’ve got the request. I’m checking the screen now."
+    )
+
+
+@pytest.mark.parametrize("prompt", [
+    (
+        "In the visible browser report, find the supplier with the largest overdue invoice total. "
+        "In the open work order, do not update, save, or reopen the file. "
+        "Explain the numbers without changing it."
+    ),
+    (
+        "In the visible browser report, find the largest overdue invoice total. "
+        "Don't modify, save, or reopen the work order; just explain the numbers."
+    ),
+    (
+        "In the visible browser report, find the largest overdue invoice total. "
+        "Keep the work order read-only; do not update, save, or reopen it."
+    ),
+    (
+        "In the visible browser report, find the largest overdue invoice total. "
+        "Leave the work order unchanged; do not save it or reopen it."
+    ),
+])
+def test_work_order_acknowledgment_respects_negative_and_read_only_instructions(prompt):
+    assert _should_acknowledge_desktop_task(prompt)
+    assert _desktop_task_acknowledgment(prompt) == (
+        "I’ve got the request. I’m checking the screen now."
+    )
+
+
+@pytest.mark.parametrize("negation", [
+    "I won't update, save, or reopen the work order.",
+    "I cannot update, save, or reopen the work order.",
+    "I’m not going to update, save, or reopen the work order.",
+])
+def test_work_order_acknowledgment_does_not_override_explicit_negation(negation):
+    prompt = (
+        "In the visible browser report, find the supplier with the largest overdue invoice total. "
+        "In the open work order, replace the TBD supplier and change REVIEW to Complete. "
+        f"{negation} Explain the numbers."
+    )
+
+    assert _should_acknowledge_desktop_task(prompt)
+    assert _desktop_task_acknowledgment(prompt) == (
+        "I’ve got the request. I’m checking the screen now."
+    )
+
+
+@pytest.mark.parametrize(("prompt", "eligible_for_acknowledgment"), [
+    (
+        'In the local scratchpad, enter "Call the dentist Tuesday at 2 pm" in the Note text field, '
+        "do not click Save note, and tell me the saved text.",
+        True,
+    ),
+    (
+        'In the local scratchpad, enter "Call the dentist Tuesday at 2 pm" in the Note text field, '
+        "don't save the note or click Save note, and tell me the saved text.",
+        False,
+    ),
+])
+def test_scratchpad_acknowledgment_does_not_promise_a_forbidden_save(
+    prompt, eligible_for_acknowledgment,
+):
+    assert _should_acknowledge_desktop_task(prompt) is eligible_for_acknowledgment
+    assert _desktop_task_acknowledgment(prompt) == (
+        "I’ve got the request. I’m checking the screen now."
+    )
+
+
 @pytest.mark.asyncio
 async def test_multistep_browser_to_document_task_acknowledges_before_tool_work(tmp_path, monkeypatch):
     from tools.create_implementation_fixtures import create_fixtures
@@ -1094,7 +1191,10 @@ async def test_multistep_browser_to_document_task_acknowledges_before_tool_work(
     brain._execute_tool = execute_tool
     await brain.process_user_utterance(request)
 
-    assert events[0] == ("speech", "I’ve got the request. I’m checking the screen now.")
+    assert events[0] == (
+        "speech",
+        "I’ll compare the overdue invoices, update the work order, and reopen it to verify the saved file.",
+    )
     assert events[1] == ("tool", "list_windows")
 
 

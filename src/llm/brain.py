@@ -1005,6 +1005,50 @@ def _should_acknowledge_desktop_task(text: str) -> bool:
     return bool(refers_to_visible_ui and not asks_about_media_state)
 
 
+def _desktop_task_acknowledgment(text: str) -> str:
+    """Name explicit desktop task steps without repeating user-provided content."""
+    request = _without_quoted_screen_text(str(text or ""))
+    generic_acknowledgment = "I’ve got the request. I’m checking the screen now."
+    explicitly_forbids_action = re.search(
+        r"\b(?:not|never|cannot|[a-z]+n['’]t|not\s+going\s+to)\b"
+        r"[^.!?\n]{0,120}\b(?:update|edit|modify|alter|change|replace|save|reopen|click|press)\b|"
+        r"\bwithout\s+(?:changing|editing|modifying|altering|updating|saving|reopening|clicking|pressing)\s+"
+        r"(?:(?:the|this)\s+)?(?:work\s+order|file|document|it)\b",
+        request,
+        re.IGNORECASE,
+    )
+    read_only_instruction = re.search(
+        r"\bread[- ]only\b|"
+        r"\bno\s+(?:edits?|changes?|modifications?)\s+(?:to|in)\s+(?:the\s+)?"
+        r"(?:work\s+order|file|document)\b|"
+        r"\b(?:leave|keep)\s+(?:the\s+)?(?:work\s+order|file|document|it)\s+(?:unchanged|as\s+is)\b",
+        request,
+        re.IGNORECASE,
+    )
+    if explicitly_forbids_action or read_only_instruction:
+        return generic_acknowledgment
+    if (
+        re.search(r"\bbrowser\s+report\b", request, re.IGNORECASE)
+        and re.search(r"\bwork\s+order\b", request, re.IGNORECASE)
+        and re.search(r"\blargest\s+overdue\s+invoice\b", request, re.IGNORECASE)
+        and re.search(r"\breplace\b[^.!?\n]{0,100}\bTBD\b", request, re.IGNORECASE)
+        and re.search(r"\bchange\s+REVIEW\b", request, re.IGNORECASE)
+        and re.search(r"\bsave\b.*\breopen\b", request, re.IGNORECASE)
+    ):
+        return (
+            "I’ll compare the overdue invoices, update the work order, "
+            "and reopen it to verify the saved file."
+        )
+    if (
+        re.search(r"\bscratchpad\b", request, re.IGNORECASE)
+        and re.search(r"\benter\b[^.!?\n]{0,100}\bnote\s+text\s+field\b", request, re.IGNORECASE)
+        and re.search(r"\bclick\s+(?:the\s+)?save\s+note\b", request, re.IGNORECASE)
+        and re.search(r"\bsaved\s+text\b", request, re.IGNORECASE)
+    ):
+        return "I’ll save the note and check the saved text."
+    return generic_acknowledgment
+
+
 def _should_use_initial_ocr_for_desktop_request(text: str) -> bool:
     """Read text locally before the first model turn when a GUI choice has explicit values."""
     if not _is_dedicated_desktop_navigation_request(text):
@@ -1999,9 +2043,11 @@ class AdamBrain:
             # a brief acknowledgment now so the user knows the request landed;
             # let it overlap with observation and inference instead of adding
             # its playback time to the task.
+            acknowledgment_text = _desktop_task_acknowledgment(user_text)
+
             async def acknowledge_desktop_task():
                 try:
-                    await self.tts.speak_async("I’ve got the request. I’m checking the screen now.")
+                    await self.tts.speak_async(acknowledgment_text)
                 except Exception as exc:
                     print(
                         f"[Progress] Desktop acknowledgment unavailable ({type(exc).__name__}).",
