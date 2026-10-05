@@ -715,6 +715,34 @@ async def test_failed_tool_reprompts_model_to_correct_path_without_replaying_suc
     assert brain.tts.spoken[-1] == 'Read the note.'
 
 
+@pytest.mark.parametrize("status", ["partial", "uncertain"])
+@pytest.mark.asyncio
+async def test_unconfirmed_tool_outcome_gets_a_focused_recovery_prompt(status):
+    from unittest.mock import AsyncMock
+    from src.llm.brain import AdamBrain
+    from src.tools.computer_control import ComputerControlResult
+
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": [{"function": {
+            "name": "read_file", "arguments": {"path": "/tmp/probe.txt"},
+        }}]},
+        {"content": "The read did not confirm the requested result.", "tool_calls": []},
+        {"content": "The read did not confirm the requested result.", "tool_calls": []},
+    ])
+    brain._execute_tool = AsyncMock(return_value=ComputerControlResult(
+        "The operation may have run, but its result was not confirmed.", status=status,
+    ))
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
+        await brain.process_user_utterance("Read my probe file")
+
+    recovery_request = brain.llm_client.requests[1]
+    assert any("Tool recovery 1/3" in str(message.get("content")) for message in recovery_request)
+    assert any("inspect its current effects before repeating it" in str(message.get("content"))
+               for message in recovery_request)
+
+
 @pytest.mark.asyncio
 async def test_failed_tools_stop_after_three_correction_prompts():
     from unittest.mock import AsyncMock

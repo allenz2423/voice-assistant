@@ -96,6 +96,17 @@ PARALLEL_READ_ONLY_TOOLS = {
     "web_search", "fetch_webpage", "get_weather", "get_system_status",
     "list_processes", "read_terminal", "detect_terminal",
 }
+
+# These outcomes need a focused follow-up prompt. In particular, desktop tools
+# can return partial/uncertain when input may have run without confirming the
+# visible result; leaving those to an ordinary next turn lets weaker models
+# incorrectly stop as if the action were complete.
+TOOL_RECOVERY_STATUSES = frozenset({
+    "failed", "invalid_input", "timed_out", "partial", "uncertain",
+    "denied", "unavailable",
+})
+
+
 def _tool_result_message(
     *, call_id: str, origin: str, status: str,
     result: str, duration_ms: int, dispatched: bool | None = None,
@@ -2312,7 +2323,7 @@ class AdamBrain:
                 last_tool_output = str(tool_output)
                 emit_event(
                     "tool.completed", span_id=tool_span, component="tool",
-                    status="error" if tool_status in {"failed", "invalid_input", "timed_out"} else "ok",
+                    status="error" if tool_status in TOOL_RECOVERY_STATUSES else "ok",
                     attributes={"tool_name": str(name), "outcome": str(tool_status)},
                 )
                 if name in DESKTOP_MUTATION_TOOLS and origin not in {"text_fallback", "dsml_fallback"}:
@@ -2505,7 +2516,7 @@ class AdamBrain:
                 break
 
             failed_calls = [name for name, _args, _output, status in executed_hop_results
-                            if status in {"failed", "invalid_input", "timed_out"}]
+                            if status in TOOL_RECOVERY_STATUSES]
             if failed_calls:
                 if tool_recovery_attempts >= 3:
                     resource_limit_reached = True
