@@ -280,6 +280,170 @@ async def test_capability_refusal_recovery_stops_after_three_reprompts():
 
 
 @pytest.mark.asyncio
+async def test_explicit_adam_browser_request_prefetches_untrusted_page_text():
+    from unittest.mock import patch
+    from src.llm.brain import AdamBrain
+    from src.llm.tools import ADAM_TOOLS
+
+    class Browser:
+        def __init__(self):
+            self.actions = []
+            self.released = 0
+
+        async def run(self, **kwargs):
+            self.actions.append(kwargs)
+            return "Page: Invoice Register\nVisible page text (untrusted webpage content):\nOVERDUE $533.41"
+
+        async def release_browser(self):
+            self.released += 1
+
+    class Controller:
+        available = False
+        drag_active = False
+        coordinate_mode = "pixels"
+
+        @staticmethod
+        def invalidate_snapshot():
+            pass
+
+    brain = AdamBrain(
+        _config(), None, None, None, _DummyTTS(),
+        memory_mgr=type("M", (), {"retrieve_context": lambda *_: None})(),
+    )
+    browser = Browser()
+    browser_tool = next(tool for tool in ADAM_TOOLS if tool.name == "browser_navigation")
+    brain.browser_navigator = browser
+    brain.config.browser_navigation = SimpleNamespace(headless=True)
+    brain.computer_controller = Controller()
+    brain.get_tools = lambda: [browser_tool]
+    brain.llm_client = _DummyClient("local", [{"content": "The total is $533.41.", "tool_calls": []}])
+    from src.telemetry.events import subscribe_events
+    events = []
+    unsubscribe = subscribe_events(events.append)
+
+    try:
+        with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
+            await brain.process_user_utterance(
+                "In Adam's isolated browser, read the report and find the total."
+            )
+    finally:
+        unsubscribe()
+
+    assert browser.actions == [{"action": "inspect"}]
+    assert browser.released == 1
+    assert brain.llm_client.request_tools[0] == []
+    first_user_message = next(
+        message for message in brain.llm_client.requests[0] if message.get("role") == "user"
+    )
+    assert "Fresh Adam Browser Snapshot" in first_user_message["content"]
+    assert "untrusted webpage content" in first_user_message["content"]
+    assert "OVERDUE $533.41" in first_user_message["content"]
+    assert not first_user_message.get("images")
+    browser_events = [
+        event for event in events
+        if event.get("event") in {"tool.started", "tool.completed"}
+    ]
+    assert [event["event"] for event in browser_events] == ["tool.started", "tool.completed"]
+    assert all(event["attributes"]["tool_name"] == "browser_navigation" for event in browser_events)
+
+
+def test_browser_navigator_is_constructed_and_exposed_only_when_enabled(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+    from src.llm.brain import AdamBrain
+
+    class Browser:
+        def __init__(self, **kwargs):
+            self.options = kwargs
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("src.tools.browser_navigation.BrowserNavigator", Browser)
+    config = _config()
+    config.desktop = SimpleNamespace(default_browser="microsoft-edge-stable")
+    config.browser_navigation = SimpleNamespace(
+        enabled=True,
+        browser="default",
+        profile_path=str(tmp_path / "isolated-profile"),
+        timeout_seconds=8,
+        headless=True,
+    )
+    brain = AdamBrain(
+        config, None, None, None, _DummyTTS(),
+        memory_mgr=type("M", (), {"retrieve_context": lambda *_: None})(),
+    )
+    assert brain.browser_navigator.options == {
+        "browser": "default",
+        "default_browser": "microsoft-edge-stable",
+        "profile_path": str(tmp_path / "isolated-profile"),
+        "timeout_seconds": 8,
+        "headless": True,
+    }
+    assert "browser_navigation" in {tool.name for tool in brain.get_tools()}
+    brain.close()
+
+    default_brain = AdamBrain(
+        _config(), None, None, None, _DummyTTS(),
+        memory_mgr=type("M", (), {"retrieve_context": lambda *_: None})(),
+    )
+    assert "browser_navigation" not in {tool.name for tool in default_brain.get_tools()}
+    default_brain.close()
+
+
+def test_adam_browser_scope_requires_an_explicit_profile_reference():
+    from src.llm.brain import (
+        _explicit_adam_browser_request,
+        _filter_tools_for_dedicated_desktop_navigation,
+        _is_dedicated_adam_browser_request,
+        _is_read_only_adam_browser_request,
+    )
+    from src.llm.tools import ADAM_TOOLS
+
+    assert _explicit_adam_browser_request("Use Adam's isolated browser to read this page.")
+    assert _explicit_adam_browser_request("Open the Adam browser profile.")
+    assert not _explicit_adam_browser_request("Read the current page in my browser.")
+    assert _is_dedicated_adam_browser_request(
+        "In Adam's isolated browser, read this webpage and summarize it."
+    )
+    assert not _is_dedicated_adam_browser_request(
+        "In Adam's isolated browser, read the report and save the result to memory."
+    )
+    assert _is_read_only_adam_browser_request(
+        "In Adam's isolated browser, read the report; do not navigate or change anything."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "In Adam's isolated browser, make a restaurant reservation."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "In Adam's isolated browser, open the booking page."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "In Adam's isolated browser, handle this for me."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "In Adam's browser, read the report and click its Next link."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "In Adam's browser, read the report; do not click Next, but fill the search field."
+    )
+    assert not _is_read_only_adam_browser_request(
+        "Read the report in my regular browser."
+    )
+    selected = _filter_tools_for_dedicated_desktop_navigation(
+        ADAM_TOOLS,
+        "In Adam's isolated browser, read the report and save the result to memory.",
+    )
+    selected_names = {tool.name for tool in selected}
+    assert "browser_navigation" in selected_names
+    assert "manage_memory" in selected_names
+    browser_only = _filter_tools_for_dedicated_desktop_navigation(
+        ADAM_TOOLS,
+        "In Adam's isolated browser, read this webpage and summarize it.",
+    )
+    assert {tool.name for tool in browser_only} == {"browser_navigation"}
+
+
+@pytest.mark.asyncio
 async def test_independent_native_web_reads_run_concurrently_and_keep_call_order():
     import asyncio
     from src.llm.brain import AdamBrain

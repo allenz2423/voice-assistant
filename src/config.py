@@ -134,6 +134,7 @@ class BrowserNavigationConfig(BaseModel):
     browser: str = "default"  # "default", "chromium", or "firefox"
     profile_path: str = "~/.local/share/adam/browser-navigation"
     timeout_seconds: float = 15.0
+    headless: bool = False
 
 class ComputerControlConfig(BaseModel):
     enabled: bool = True

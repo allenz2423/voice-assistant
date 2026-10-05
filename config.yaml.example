@@ -62,6 +62,7 @@ browser_navigation:
   browser: "default" # "default" follows desktop.default_browser; or choose "chromium" / "firefox"
   profile_path: "~/.local/share/adam/browser-navigation"
   timeout_seconds: 15.0
+  headless: false # Set true to keep it invisible and release it after read-only turns
 
 computer_control:
   enabled: true # Screenshot-guided mouse and keyboard control; chooses X11 or Wayland automatically
