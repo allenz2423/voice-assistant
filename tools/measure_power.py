@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 NVIDIA_FIELDS = (
     "index,uuid,name,driver_version,power.draw,pstate,clocks.current.memory,"
     "clocks.current.graphics,temperature.gpu,display_active"
@@ -208,12 +208,16 @@ def query_laptop_battery() -> Dict[str, Any]:
 def query_rapl_energy() -> Dict[str, Any]:
     """Read raw Intel RAPL counters and wrap ranges for direct package zones."""
     rapl_base = Path("/sys/class/powercap/intel-rapl")
-    result: Dict[str, Any] = {"status": "unavailable", "error": None, "zones": []}
+    result: Dict[str, Any] = {
+        "status": "unavailable", "error": None, "zones": [],
+        "sample_clock_ns_by_zone": {},
+    }
     if not rapl_base.exists():
         result["error"] = f"{rapl_base} does not exist"
         return result
 
     zones: List[Dict[str, Any]] = []
+    sample_clock_ns_by_zone: Dict[str, int] = {}
     errors: List[str] = []
     try:
         packages = sorted(rapl_base.glob("intel-rapl:*"))
@@ -225,6 +229,10 @@ def query_rapl_energy() -> Dict[str, Any]:
     for package in packages:
         name, name_error = _read_text(package / "name")
         energy_text, energy_error = _read_text(package / "energy_uj")
+        # Timestamp each counter immediately after reading it. Other telemetry
+        # queries can take long or variable amounts of time, so their loop
+        # start time is not a suitable denominator for a RAPL energy delta.
+        sample_clock_ns_by_zone[package.name] = time.monotonic_ns()
         range_text, range_error = _read_text(package / "max_energy_range_uj")
         energy = _parse_int(energy_text)
         energy_range = _parse_int(range_text)
@@ -250,6 +258,7 @@ def query_rapl_energy() -> Dict[str, Any]:
         zones.append(zone)
 
     result["zones"] = zones
+    result["sample_clock_ns_by_zone"] = sample_clock_ns_by_zone
     if not zones:
         result["error"] = "No direct intel-rapl:* package zones found"
     elif errors:
@@ -361,21 +370,33 @@ def run_benchmark(
             after_queries_ns = time.monotonic_ns()
             actual_interval = ((sample_clock_ns - previous_clock_ns) / 1e9) if previous_clock_ns is not None else None
             rapl_intervals: List[Dict[str, Any]] = []
-            current_rapl: Dict[str, Dict[str, Any]] = {}
-            rapl_dt = actual_interval
+            valid_current_rapl: Dict[str, Dict[str, Any]] = {}
+            rapl_timestamps = rapl.get("sample_clock_ns_by_zone", {})
+            if not isinstance(rapl_timestamps, dict):
+                rapl_timestamps = {}
             for zone in rapl["zones"]:
                 zone_id = zone["id"]
+                rapl_clock_ns = rapl_timestamps.get(zone_id)
+                if not isinstance(rapl_clock_ns, int) or isinstance(rapl_clock_ns, bool):
+                    # Keep compatibility with callers that provide the old
+                    # query result shape. Production reads always carry a
+                    # per-zone timestamp from query_rapl_energy().
+                    rapl_clock_ns = after_queries_ns
                 current = {
                     "name": zone["name"],
                     "energy_uj": zone["energy_uj"],
                     "max_energy_range_uj": zone["max_energy_range_uj"],
+                    "clock_ns": rapl_clock_ns,
                 }
-                current_rapl[zone_id] = current
                 prior = previous_rapl.get(zone_id)
                 energy_delta = None
                 average_power = None
                 interval_status = "unavailable"
                 error = None
+                rapl_dt = (
+                    (current["clock_ns"] - prior["clock_ns"]) / 1e9
+                    if prior is not None else None
+                )
                 if zone["status"] != "ok":
                     error = "current RAPL counter or range is unavailable"
                 elif prior is None:
@@ -384,7 +405,7 @@ def run_benchmark(
                       prior["max_energy_range_uj"] != current["max_energy_range_uj"]):
                     error = "RAPL zone identity or counter range changed"
                 elif rapl_dt is None or rapl_dt <= 0:
-                    error = "elapsed sample interval is not positive"
+                    error = "elapsed RAPL counter interval is not positive"
                 else:
                     raw_delta = current["energy_uj"] - prior["energy_uj"]
                     if raw_delta < 0:
@@ -398,17 +419,31 @@ def run_benchmark(
                         energy_delta = raw_delta
                         average_power = (energy_delta / 1_000_000.0) / rapl_dt
                         interval_status = "ok"
+                if (
+                    zone["status"] == "ok"
+                    and isinstance(current["energy_uj"], int)
+                    and not isinstance(current["energy_uj"], bool)
+                    and isinstance(current["max_energy_range_uj"], int)
+                    and not isinstance(current["max_energy_range_uj"], bool)
+                    and current["max_energy_range_uj"] > 0
+                ):
+                    valid_current_rapl[zone_id] = current
                 rapl_intervals.append({
                     "id": zone_id,
                     "name": zone["name"],
                     "energy_delta_uj": energy_delta,
                     "average_power_w": average_power,
                     "elapsed_sec": rapl_dt,
+                    "start_clock_ns": prior["clock_ns"] if prior is not None else None,
+                    "end_clock_ns": current["clock_ns"],
                     "status": interval_status,
                     "error": error,
                 })
-            # A missing/invalid sample breaks continuity; do not bridge its gap.
-            previous_rapl = current_rapl if rapl["status"] in {"ok", "partial"} else {}
+            # A missing/invalid zone sample breaks its continuity; do not bridge
+            # a gap, while valid zones in an overall partial result can continue.
+            previous_rapl = (
+                valid_current_rapl if rapl["status"] in {"ok", "partial"} else {}
+            )
 
             source_errors = {
                 "nvidia": nvidia["error"],
@@ -521,7 +556,11 @@ def _optional_label(value: Optional[str]) -> Optional[str]:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Sample host power telemetry into versioned JSON (not wall power).")
-    parser.add_argument("--duration", type=_positive_float, default=10.0, help="Sampling duration in seconds (default: 10)")
+    parser.add_argument(
+        "--duration", type=_positive_float, default=10.0,
+        help=("Sampling start window in seconds (default: 10); a sample started before "
+              "the deadline may finish after it"),
+    )
     parser.add_argument("--interval", type=_positive_float, default=1.0, help="Requested sample interval in seconds (default: 1)")
     parser.add_argument("--output", help="Optional output versioned JSON trace")
     parser.add_argument("--host-label", type=_optional_label, help="Operator-supplied host label; hostname is not collected")

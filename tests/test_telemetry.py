@@ -342,6 +342,187 @@ def test_power_parsers_keep_na_unavailable_and_reject_nonfinite_values():
     assert _parse_int("12.5") is None
 
 
+def test_rapl_query_timestamps_each_energy_counter_read(monkeypatch):
+    import tools.measure_power as power
+
+    clock_ns = [1_000]
+
+    class FakePath:
+        def __init__(self, path):
+            self.path = str(path)
+            self.name = self.path.rsplit("/", 1)[-1]
+
+        def __truediv__(self, part):
+            return FakePath(f"{self.path}/{part}")
+
+        def exists(self):
+            return self.path == "/sys/class/powercap/intel-rapl"
+
+        def glob(self, pattern):
+            assert pattern == "intel-rapl:*"
+            return [FakePath(f"{self.path}/intel-rapl:0")]
+
+    def read_text(path):
+        if path.name == "name":
+            return "package-0", None
+        if path.name == "energy_uj":
+            clock_ns[0] += 5
+            return "1234", None
+        if path.name == "max_energy_range_uj":
+            clock_ns[0] += 50
+            return "1000000", None
+        raise AssertionError(f"Unexpected RAPL path: {path.path}")
+
+    monkeypatch.setattr(power, "Path", FakePath)
+    monkeypatch.setattr(power, "_read_text", read_text)
+    monkeypatch.setattr(power.time, "monotonic_ns", lambda: clock_ns[0])
+
+    result = power.query_rapl_energy()
+
+    assert result["status"] == "ok"
+    assert result["sample_clock_ns_by_zone"] == {"intel-rapl:0": 1_005}
+
+
+def test_power_sampler_uses_rapl_read_timestamps_for_average_power(tmp_path, monkeypatch):
+    import pytest
+    import tools.measure_power as power
+
+    clock_ns = [0]
+    rapl_call = 0
+
+    def query_rapl_energy():
+        nonlocal rapl_call
+        before_read_ns, after_read_ns = (
+            (500_000_000, 100_000_000)
+            if rapl_call == 0
+            else (200_000_000, 800_000_000)
+        )
+        clock_ns[0] += before_read_ns
+        read_clock_ns = clock_ns[0]
+        rapl_call += 1
+        clock_ns[0] += after_read_ns
+        return {
+            "status": "ok",
+            "error": None,
+            "zones": [{
+                "id": "intel-rapl:0", "name": "package-0",
+                "energy_uj": read_clock_ns // 1_000,
+                "max_energy_range_uj": 10_000_000,
+                "status": "ok", "errors": [],
+            }],
+            "sample_clock_ns_by_zone": {"intel-rapl:0": read_clock_ns},
+        }
+
+    monkeypatch.setattr(power.time, "monotonic_ns", lambda: clock_ns[0])
+    monkeypatch.setattr(power.time, "sleep", lambda seconds: clock_ns.__setitem__(
+        0, clock_ns[0] + round(seconds * 1_000_000_000)
+    ))
+    monkeypatch.setattr(power, "_utc_now", lambda: "2026-10-05T00:00:00Z")
+    monkeypatch.setattr(power, "query_nvidia_version", lambda: {"status": "unavailable"})
+    monkeypatch.setattr(power, "query_nvidia_smi", lambda: {
+        "status": "unavailable", "error": "not available", "devices": [],
+    })
+    monkeypatch.setattr(power, "query_laptop_battery", lambda: {
+        "status": "unavailable", "error": "not available", "devices": [],
+    })
+    monkeypatch.setattr(power, "query_rapl_energy", query_rapl_energy)
+
+    trace = power.run_benchmark(1.5, 1.0, str(tmp_path / "power.json"))
+
+    assert len(trace["samples"]) == 2
+    interval = trace["samples"][1]["rapl_intervals"][0]
+    assert interval["start_clock_ns"] == 500_000_000
+    assert interval["end_clock_ns"] == 1_200_000_000
+    assert interval["elapsed_sec"] == pytest.approx(0.7)
+    assert interval["average_power_w"] == pytest.approx(1.0)
+
+
+def test_power_sampler_completes_sample_started_before_duration_deadline(monkeypatch):
+    import tools.measure_power as power
+
+    clock_ns = [0]
+
+    def query_rapl_energy():
+        # Simulate a source query that starts in the window and returns after it.
+        clock_ns[0] += 20_000_000
+        return {"status": "unavailable", "error": "not available", "zones": []}
+
+    monkeypatch.setattr(power.time, "monotonic_ns", lambda: clock_ns[0])
+    monkeypatch.setattr(power.time, "sleep", lambda seconds: clock_ns.__setitem__(
+        0, clock_ns[0] + round(seconds * 1_000_000_000)
+    ))
+    monkeypatch.setattr(power, "_utc_now", lambda: "2026-10-05T00:00:00Z")
+    monkeypatch.setattr(power, "query_nvidia_version", lambda: {"status": "unavailable"})
+    monkeypatch.setattr(power, "query_nvidia_smi", lambda: {
+        "status": "unavailable", "error": "not available", "devices": [],
+    })
+    monkeypatch.setattr(power, "query_laptop_battery", lambda: {
+        "status": "unavailable", "error": "not available", "devices": [],
+    })
+    monkeypatch.setattr(power, "query_rapl_energy", query_rapl_energy)
+
+    trace = power.run_benchmark(0.01, 1.0)
+
+    assert len(trace["samples"]) == 1
+    assert trace["samples"][0]["clock_ns"] < 10_000_000
+    assert trace["metadata"]["ended_clock_ns"] > 10_000_000
+
+
+def test_partial_rapl_sample_breaks_continuity_only_for_unavailable_zone(monkeypatch):
+    import pytest
+    import tools.measure_power as power
+
+    clock_ns = [0]
+    rapl_samples = iter((
+        ("ok", (100, "ok"), (100, "ok")),
+        ("partial", (150, "ok"), (None, "partial")),
+        ("ok", (200, "ok"), (500, "ok")),
+    ))
+
+    def query_rapl_energy():
+        status, package, dram = next(rapl_samples)
+        timestamp = clock_ns[0]
+        zones = []
+        for zone_id, name, (energy, zone_status) in (
+            ("intel-rapl:0", "package-0", package),
+            ("intel-rapl:0:0", "dram", dram),
+        ):
+            zones.append({
+                "id": zone_id, "name": name, "energy_uj": energy,
+                "max_energy_range_uj": 1000,
+                "status": zone_status, "errors": [],
+            })
+        return {
+            "status": status, "error": None, "zones": zones,
+            "sample_clock_ns_by_zone": {zone["id"]: timestamp for zone in zones},
+        }
+
+    monkeypatch.setattr(power.time, "monotonic_ns", lambda: clock_ns[0])
+    monkeypatch.setattr(power.time, "sleep", lambda seconds: clock_ns.__setitem__(
+        0, clock_ns[0] + round(seconds * 1_000_000_000)
+    ))
+    monkeypatch.setattr(power, "_utc_now", lambda: "2026-10-05T00:00:00Z")
+    monkeypatch.setattr(power, "query_nvidia_version", lambda: {"status": "unavailable"})
+    monkeypatch.setattr(power, "query_nvidia_smi", lambda: {
+        "status": "unavailable", "error": "not available", "devices": [],
+    })
+    monkeypatch.setattr(power, "query_laptop_battery", lambda: {
+        "status": "unavailable", "error": "not available", "devices": [],
+    })
+    monkeypatch.setattr(power, "query_rapl_energy", query_rapl_energy)
+
+    trace = power.run_benchmark(0.03, 0.01)
+
+    assert len(trace["samples"]) == 3
+    recovered = trace["samples"][2]["rapl_intervals"]
+    assert recovered[0]["status"] == "ok"
+    assert recovered[0]["energy_delta_uj"] == 50
+    assert recovered[0]["average_power_w"] == pytest.approx(0.005)
+    assert recovered[1]["status"] == "unavailable"
+    assert recovered[1]["error"] == "no prior valid sample for this zone"
+    assert recovered[1]["average_power_w"] is None
+
+
 def test_power_sampler_marks_decreasing_rapl_counter_ambiguous(tmp_path, monkeypatch):
     import tools.measure_power as power
 
