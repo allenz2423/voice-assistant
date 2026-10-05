@@ -450,6 +450,19 @@ def test_temporal_memory_search_is_date_and_type_bounded_and_persists(tmp_path):
     assert loaded.event_time_expression == current.event_time_expression
 
 
+def test_temporal_memory_context_includes_iana_timezone(monkeypatch, tmp_path):
+    monkeypatch.setattr("src.memory.manager.local_timezone_name", lambda: "America/New_York")
+    mgr = MemoryManager(storage_path=tmp_path / "timezone-context.json", embedder=MemoryEmbedder(disabled=True))
+    saved = mgr.save("I worked on 2026-09-29 from 9:30 to 10:15am")
+
+    context = mgr.retrieve_context("What timezone did I use for the 2026-09-29 work entry?")
+
+    assert saved.event_timezone == "America/New_York"
+    assert saved.event_start_at == "2026-09-29T09:30:00-04:00"
+    assert context is not None
+    assert "[event timezone: America/New_York]" in context
+
+
 def test_memory_search_rejects_single_token_false_positive_in_large_store(tmp_path):
     mgr = MemoryManager(storage_path=tmp_path / "specific.json", embedder=MemoryEmbedder(disabled=True))
     expected = mgr.save("I worked on project zircon from 3:45 to 8:00pm")

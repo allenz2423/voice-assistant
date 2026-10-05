@@ -635,6 +635,8 @@ class MemoryManager:
                     event_note += f" [original time phrase: {memory.event_time_expression}]"
             if memory.event_start_at and memory.event_time_expression:
                 event_note += f" [original time phrase: {memory.event_time_expression}]"
+            if memory.event_timezone:
+                event_note += f" [event timezone: {memory.event_timezone}]"
             lines.append(f"- {memory.text}{event_note}")
         return "\n".join(lines)
 
