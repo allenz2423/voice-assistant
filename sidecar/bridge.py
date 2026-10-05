@@ -131,7 +131,9 @@ class DaemonBridge(RuntimeBridge):
         if brain is not None:
             llm_client = getattr(brain, "llm_client", None)
             if llm_client is not None:
-                model_name = getattr(llm_client, "model", "default")
+                model_field = "local_model" if getattr(llm_client, "provider", None) == "local" else "cloud_model"
+                configured_model = getattr(llm_client, model_field, None)
+                model_name = configured_model if isinstance(configured_model, str) else getattr(llm_client, "model", "default")
             tools = brain.get_tools() if hasattr(brain, "get_tools") else []
             tools_count = len(tools)
 

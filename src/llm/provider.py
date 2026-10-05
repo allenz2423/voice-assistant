@@ -526,7 +526,7 @@ class UniversalLLMClient:
                     try:
                         data = await resp.json()
                         response_body_done_at = asyncio.get_running_loop().time()
-                    except Exception:
+                    except (ValueError, aiohttp.ContentTypeError):
                         complete_event("invalid_response", response_status=resp.status)
                         print("[LLM] OpenAI-compatible call returned invalid JSON.", flush=True)
                         fallback = self._emergency_rule_fallback("")

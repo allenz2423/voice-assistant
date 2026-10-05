@@ -83,7 +83,7 @@ def test_openai_compatible_requests_apply_text_and_vision_timeouts(monkeypatch):
     assert [session.timeout.total for session in sessions] == [17, 73]
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('failure', ['json', 'shape', 'choices', 'message', '429', 'provider429'])
+@pytest.mark.parametrize('failure', ['json', 'shape', 'choices', 'message', '429', 'provider429', 'timeout', 'payload'])
 async def test_provider_failure_recovers_with_three_retries_and_preserves_progress(monkeypatch, failure):
     import aiohttp
     from unittest.mock import AsyncMock
@@ -101,6 +101,8 @@ async def test_provider_failure_recovers_with_three_retries_and_preserves_progre
             if self.attempt == 4:
                 return {'choices': [{'message': {'content': 'Recovered', 'tool_calls': []}}]}
             if failure == 'json': raise ValueError('malformed JSON')
+            if failure == 'timeout': raise asyncio.TimeoutError()
+            if failure == 'payload': raise aiohttp.ClientPayloadError('truncated body')
             if failure == 'shape': return []
             if failure == 'choices': return {'choices': []}
             if failure == 'provider429': return {'error': {'code': 429}}
@@ -127,8 +129,10 @@ async def test_provider_failure_recovers_with_three_retries_and_preserves_progre
     assert sleep.await_count == 3
     assert all(any(m.get('tool_call_id') == 'done' for m in r['messages']) for r in requests)
     assert len(messages) == 3
-    if failure not in {'429', 'provider429'}:
+    if failure not in {'429', 'provider429', 'timeout', 'payload'}:
         assert 'do not repeat completed actions' in requests[-1]['messages'][-1]['content']
+    else:
+        assert requests[-1]['messages'] == requests[0]['messages']
 
 
 @pytest.mark.asyncio

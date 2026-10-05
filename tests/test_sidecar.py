@@ -605,3 +605,86 @@ async def test_index_versions_assets_and_disables_stale_browser_cache():
         assert response.headers['Cache-Control'] == 'no-store'
         status = await (await client.get('/api/status')).json()
         assert status['ui_revision'] == revision
+
+@pytest.mark.asyncio
+async def test_websocket_receives_ping_and_rejects_second_turn_during_chat():
+    gate = asyncio.Event()
+    started = asyncio.Event()
+    bridge = DisconnectedBridge()
+
+    async def execute(text):
+        started.set()
+        await gate.wait()
+        return {'status': 'completed', 'response': 'Done'}
+
+    bridge.handle_user_message = AsyncMock(side_effect=execute)
+    async with TestClient(TestServer(create_app(WebUIConfig(), bridge))) as client:
+        async with client.ws_connect('/api/ws') as ws:
+            await ws.receive_json(timeout=2)
+            await ws.send_json({'type': 'chat', 'message': 'First'})
+            await asyncio.wait_for(started.wait(), 2)
+            await ws.send_json({'type': 'ping'})
+            assert (await ws.receive_json(timeout=2))['type'] == 'pong'
+            await ws.send_json({'type': 'chat', 'message': 'Second'})
+            assert (await ws.receive_json(timeout=2))['result']['status'] == 'busy'
+            assert bridge.handle_user_message.await_count == 1
+            gate.set()
+            assert (await ws.receive_json(timeout=2))['result']['response'] == 'Done'
+
+
+@pytest.mark.asyncio
+async def test_browser_disconnect_does_not_cancel_or_replay_running_turn():
+    started = asyncio.Event()
+    gate = asyncio.Event()
+    finished = asyncio.Event()
+    bridge = DisconnectedBridge()
+
+    async def execute(text):
+        started.set()
+        await gate.wait()
+        finished.set()
+        return {'status': 'completed', 'response': 'Done'}
+
+    bridge.handle_user_message = AsyncMock(side_effect=execute)
+    async with TestClient(TestServer(create_app(WebUIConfig(), bridge))) as client:
+        ws = await client.ws_connect('/api/ws')
+        await ws.receive_json(timeout=2)
+        await ws.send_json({'type': 'chat', 'message': 'First'})
+        await asyncio.wait_for(started.wait(), 2)
+        await ws.close()
+        gate.set()
+        await asyncio.wait_for(finished.wait(), 2)
+        assert bridge.handle_user_message.await_count == 1
+
+@pytest.mark.asyncio
+async def test_protocol_heartbeats_survive_a_slow_turn(monkeypatch):
+    import sidecar.server as server_module
+    original = server_module.web.WebSocketResponse
+
+    def short_heartbeat(*args, **kwargs):
+        kwargs['heartbeat'] = 0.05
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(server_module.web, 'WebSocketResponse', short_heartbeat)
+    started = asyncio.Event()
+    gate = asyncio.Event()
+    bridge = DisconnectedBridge()
+
+    async def execute(text):
+        started.set()
+        await gate.wait()
+        return {'status': 'completed', 'response': 'Done'}
+
+    bridge.handle_user_message = AsyncMock(side_effect=execute)
+    async with TestClient(TestServer(create_app(WebUIConfig(), bridge))) as client:
+        async with client.ws_connect('/api/ws') as ws:
+            await ws.receive_json(timeout=2)
+            await ws.send_json({'type': 'chat', 'message': 'Slow turn'})
+            await asyncio.wait_for(started.wait(), 2)
+            # receive_json processes protocol PING frames and sends PONGs.
+            receiver = asyncio.create_task(ws.receive_json(timeout=2))
+            await asyncio.sleep(0.3)
+            assert not receiver.done(), 'Heartbeat closed the socket during the turn'
+            assert not ws.closed
+            gate.set()
+            assert (await receiver)['result']['response'] == 'Done'
