@@ -477,3 +477,9 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - During the 2026-10-06 00:00:11–01:00:11 UTC watch window, eight authenticated, metadata-only OpenRouter GETs were checked at 00:00:11, 00:10:50, 00:14:50, 00:25:28, 00:28:05, 00:37:30, 00:48:09, and 00:59:42 UTC. Every response returned HTTP **200**, matched the configured model identifier, and reported **0 serving endpoints**.
 - No model inference was submitted; no inference usage or cost was incurred, and no credential value was exposed. The route remains unavailable, so provider-backed Loop 1 and Loop 4 stay closed. Loop 6 laptop acceptance remains deferred under the no-laptop instruction, and the Loop 7 Desky pause remains in force.
 - No laptop, assistant service, microphone, or desktop session was accessed. `PLAN.md` and codebase status were not updated because the Loop 6 exit criteria remain unmet.
+
+## Checkpoint 49 — second one-hour provider watch confirms route remains unavailable
+
+- The second watch ran from 2026-10-06 01:01:53 to 02:01:53 UTC. Six authenticated, metadata-only OpenRouter GETs were checked at 01:01:53, 01:14:40, 01:26:54, 01:37:29, 01:48:04, and 01:58:38 UTC. All six returned HTTP **200**, matched the configured model identifier, and reported **0 serving endpoints**.
+- No persistent HTTP errors were reported. No model inference was submitted, no inference usage or cost was incurred, and no credential value was exposed. Provider-backed Loop 1 and Loop 4 remain closed; Loop 6 laptop acceptance remains deferred under the no-laptop instruction, and the Loop 7 Desky pause remains in force.
+- No laptop, assistant service, microphone, or desktop session was accessed. `PLAN.md` and codebase status were not updated because the Loop 6 exit criteria remain unmet.
