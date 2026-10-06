@@ -17,6 +17,8 @@ from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import io
+from importlib.machinery import PathFinder
+from importlib.util import module_from_spec
 import json
 import math
 import os
@@ -30,6 +32,24 @@ import time
 from types import SimpleNamespace
 from typing import Any, Callable
 from unittest.mock import patch
+
+# Keep imports working when invoked as `python tools/run_implementation_factual_trial.py`.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT_STRING = str(PROJECT_ROOT)
+sys.path[:] = [entry for entry in sys.path if entry != PROJECT_ROOT_STRING]
+sys.path.insert(0, PROJECT_ROOT_STRING)
+
+# `src` is a namespace package, so a later regular package named `src` can
+# override it even when the checkout root is first on sys.path. Anchor the
+# standalone CLI's source package to this checkout before importing it.
+if __name__ == "__main__":
+    _src_spec = PathFinder.find_spec("src", [PROJECT_ROOT_STRING])
+    if _src_spec is None or _src_spec.submodule_search_locations is None:
+        raise ImportError("repository-local 'src' package could not be found")
+    _src_package = module_from_spec(_src_spec)
+    if _src_spec.loader is not None:
+        _src_spec.loader.exec_module(_src_package)
+    sys.modules["src"] = _src_package
 
 from src.config import load_config
 from src.telemetry.events import configure_telemetry, reset_trace_id, set_trace_id

@@ -40,12 +40,12 @@ Use the exact prompts in `expected.json`; replace `<LOCAL_REPORT_URL>` with a UR
 
 For a provider-backed F1 baseline that does not need Adam's daemon, microphone, desktop, or audio playback, use the isolated text-run CLI after the route metadata gate is open. This is a headless Brain-call proxy and remains unscored until a reviewer applies the F1 oracle; it cannot measure request-end-to-verified-state or audible acknowledgment. No live inference is run by the CLI's tests.
 
-Create a new owner-only directory and choose a fresh opaque run ID for each invocation:
+From the repository root, create a new owner-only directory and choose a fresh opaque run ID for each invocation:
 
 ```bash
 umask 077
 mkdir -m 700 /tmp/adam-f1-<series-id>
-uv run --no-sync python tools/run_implementation_factual_trial.py \
+uv run --no-sync python -m tools.run_implementation_factual_trial \
   --config /path/to/existing/protected/config.yaml \
   --prompt "Compare rigatoni and penne in two short sentences." \
   --fixture-run-id <series-id> \
@@ -56,14 +56,22 @@ uv run --no-sync python tools/run_implementation_factual_trial.py \
   --metadata-http-status 200 \
   --metadata-model-id deepseek/deepseek-v4.1-flash \
   --metadata-endpoint-count 31 \
-  --metadata-checked-at 2026-10-06T04:06:03Z \
+  --metadata-checked-at 2026-10-06T04:27:13Z \
   --route-ready-confirmed \
   --confirm-provider-inference
 ```
 
-The config path must already exist and name a regular, non-symlink file owned by the invoking user with no group/other permissions (mode 0600 or stricter). The current metadata-only check returned HTTP 200 for model ID `deepseek/deepseek-v4.1-flash` with 31 serving endpoints at `2026-10-06T04:06:03Z`. Refresh that check before a later run: the CLI accepts metadata no more than one hour old. Supply the intended model in `--expected-model` and copy the metadata response's exact model ID, endpoint count, HTTP status, and UTC check time into the corresponding options. The runner requires `custom`, exact equality between the expected model, configured `cloud_model`, and metadata model ID, the exact API base `https://openrouter.ai/api/v1`, a successful HTTP status, at least one endpoint, and `allow_provider_fallbacks: false`; it records the attestation and configured `provider_only`. The model remains an explicit exact ID; the API base cannot be redirected by these options. `--route-ready-confirmed` confirms the supplied metadata attestation, while `--confirm-provider-inference` separately authorizes one live factual turn. The runner loads configured credentials for the provider client and error redaction, and never serializes or prints them. It pins the exact F1 prompt, disables memory, skills, custom/model tools, desktop, and browser for the in-memory Brain copy, and captures TTS text without playback. Any unexpected model tool call is recorded and stopped before dispatch.
+The config path must already exist and name a regular, non-symlink file owned by the invoking user with no group/other permissions (mode 0600 or stricter). The latest metadata-only check returned HTTP 200 for model ID `deepseek/deepseek-v4.1-flash` with 31 serving endpoints at `2026-10-06T04:27:13Z`. Refresh that check before a later run: the CLI accepts metadata no more than one hour old. Supply the intended model in `--expected-model` and copy the metadata response's exact model ID, endpoint count, HTTP status, and UTC check time into the corresponding options. The runner requires `custom`, exact equality between the expected model, configured `cloud_model`, and metadata model ID, the exact API base `https://openrouter.ai/api/v1`, a successful HTTP status, at least one endpoint, and `allow_provider_fallbacks: false`; it records the attestation and configured `provider_only`. The model remains an explicit exact ID; the API base cannot be redirected by these options. `--route-ready-confirmed` confirms the supplied metadata attestation, while `--confirm-provider-inference` separately authorizes one live factual turn. The runner loads configured credentials for the provider client and error redaction, and never serializes or prints them. It pins the exact F1 prompt, disables memory, skills, custom/model tools, desktop, and browser for the in-memory Brain copy, and captures TTS text without playback. Any unexpected model tool call is recorded and stopped before dispatch.
 
 The run JSONL is append-only under that private directory; each companion `<run-id>.events.jsonl` is created exclusively. Both files are mode 0600, and the parent directory must be owned by the current user with mode 0700 or stricter. Keep them private: they include the exact public fixture prompt, normalized model output, provider usage/cost when reported, route/run identifiers, and operational telemetry. HTTP error response bodies are not available from `UniversalLLMClient`; errors retain safe status/accounting metadata and a reason for unavailable raw detail. Missing provider accounting remains null with reasons. The record stays `outcome: not_scored`, leaves audible acknowledgment and verified-completion timing null, and reports only `headless_brain_call`, the measured `AdamBrain.process_user_utterance` interval; `brain_final_text_submission` is a text-capture timing point. These fields do not measure CLI setup/cleanup, voice latency, or task completion latency. Apply the F1 shape/sauce rubric manually and attach any independently measured completion evidence separately. The CLI does not repeat automatically; retain each raw record, inspect reported cost/retries, then decide whether another sample fits the route's authorized budget.
+
+### F1 CLI startup checkpoint (2026-10-06)
+
+Two attempts stopped before a provider-backed F1 result. Metadata-only checks at `2026-10-06T04:18:53Z` and `2026-10-06T04:27:13Z` each returned HTTP 200 for `deepseek/deepseek-v4.1-flash` with 31 serving endpoints; these checks did not make inference requests.
+
+The first attempt invoked the absolute script path once through `uv run python` and exited 1. Its wrapper captured but discarded stdout and stderr, and its mode-0700 output directory contained neither the run JSONL nor the event log. The exact exception is unconfirmed. The runner creates those files before constructing Brain or calling the provider, so the local artifacts support that execution stopped before a provider request; no server-side receipt was collected.
+
+The second attempt invoked the direct script through `uv run --no-sync python` and exited 1. Private stderr showed `ModuleNotFoundError: No module named 'src'` while importing `src.config`, before argument parsing and runner setup. That failure could not issue a provider request. Its diagnostics remain in owner-only local files; raw diagnostics and private paths are not part of this report. Neither attempt produced an inference sample.
 
 ## GUI capture proof
 

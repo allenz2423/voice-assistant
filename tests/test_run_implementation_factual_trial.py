@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -130,6 +133,48 @@ def _patch_provider(monkeypatch, fake: _FakeProvider) -> None:
 
     monkeypatch.setattr(brain_module, "UniversalLLMClient", construct)
     return configs
+
+
+def test_script_path_help_works_from_outside_repository(tmp_path):
+    script_path = Path(trial.__file__).resolve()
+    project_root = script_path.parents[1]
+    shadow_src = tmp_path / "src"
+    shadow_src.mkdir()
+    (shadow_src / "__init__.py").write_text("", encoding="utf-8")
+    (shadow_src / "config.py").write_text(
+        "raise RuntimeError('shadowed src import')\n", encoding="utf-8",
+    )
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join((str(tmp_path), str(project_root)))
+    result = subprocess.run(
+        [sys.executable, str(script_path), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "usage: run_implementation_factual_trial.py" in result.stdout
+    assert result.stderr == ""
+
+
+def test_module_path_help_works_from_repository_root():
+    project_root = Path(trial.__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-m", "tools.run_implementation_factual_trial", "--help"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0
+    assert "usage: run_implementation_factual_trial.py" in result.stdout
+    assert result.stderr == ""
 
 
 def test_fake_provider_runs_brain_toolless_and_writes_private_trace_and_record(tmp_path, monkeypatch):
