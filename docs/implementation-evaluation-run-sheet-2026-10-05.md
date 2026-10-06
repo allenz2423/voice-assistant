@@ -22,7 +22,7 @@ Use the exact prompts in `expected.json`; replace `<LOCAL_REPORT_URL>` with a UR
 
 | ID | Task and exact prompt | Pass oracle |
 | --- | --- | --- |
-| F1 | Factual: “Compare rigatoni and penne in two short sentences.” | Both shape and sauce/texture distinction are correct in two short sentences. Record the first task-relevant response separately from any earcon/spinner. |
+| F1 | Factual: `prompts.factual` (“Compare rigatoni and penne in two short sentences.”) | Apply the explicit review rubric in `expected.json.oracles.factual`. Record the first task-relevant response separately from any earcon/spinner. |
 | F2 | File: `prompts.file_status` | Exact first line and UTF-8 byte length match `oracles.file_status`; source hash remains unchanged. |
 | F3 | System: `prompts.system_status` | Logical CPU count matches `os.cpu_count()` (or `multiprocessing.cpu_count()` if unavailable); rounded memory percentage matches a contemporaneous `/proc/meminfo` calculation `(MemTotal - MemAvailable) / MemTotal * 100`, within 1 percentage point. Adam's current status tool prints an integer percentage, so retain `MemTotal` and `MemAvailable` as the raw inputs. |
 | M1 | Seed only `oracles.memory.records` into a new memory store via `MemoryManager.save`; use `prompts.memory.day`, `.week`, `.year`, and `.timezone` verbatim. | Day returns the exact date and 9:30–10:15 a.m. local interval; last week returns the two current fixture records and excludes the prior-year distractor; last year returns only the prior-year record; timezone names the fixture IANA zone. Compare against all three expected texts and `expected_record_dates`. |
@@ -35,6 +35,14 @@ Use the exact prompts in `expected.json`; replace `<LOCAL_REPORT_URL>` with a UR
 | X1 | Mixed: `prompts.mixed` | `task-output.txt` equals `oracles.mixed_output_line`; CPU/memory status matches a contemporaneous system snapshot. Record which browser, filesystem, and system-status tools were available to the model. |
 
 `expected.json` contains the concrete prompt strings, fixture paths, starting states, and computed outputs for the selected run. Keep each task in its own trial directory when the UI or agent can mutate state. Reset the source/document/work-order/settings files from the generator before each repetition; never rely on the agent's final prose as the only success signal. For W1, start with the report and work order visible in separate fixture-only windows, record both window identities, and require fresh scoped observation after switching windows. Compare the independently recomputed winner from the rendered report with the reopened work-order bytes.
+
+### F1 factual scoring rubric
+
+Keep the exact prompt unchanged: “Compare rigatoni and penne in two short sentences.” Score the answer as a pass when it uses exactly two short complete sentences, accurately distinguishes the shapes, includes a correct texture or sauce comparison, and triggers none of `expected.json.oracles.factual.reject_if`. Review for factual correctness, not exact wording; the examples in `accepted_examples` are illustrative, not exhaustive.
+
+Penne variants are a source-backed caveat, not a required part of the answer: Barilla describes smooth Penne Lisce and ridged Penne Rigate. A generic penne description can pass if it avoids universal surface claims. Reject an unqualified claim that penne in general are ridged or are smooth, a categorical claim that penne are lighter or smoother in sauce pairing than rigatoni, or an exclusive sauce rule. Sauce recommendations describe suitability; they do not exclude other pairings.
+
+Use these official Barilla references for independent review: [Rigatoni](https://www.barilla.com/en-us/products/pasta/classic-blue-box/rigatoni), [Penne Rigate](https://www.barilla.com/en-ca/products/pasta/classic-blue-box/penne-rigate), [Penne Lisce](https://www.barilla.com/en-ca/products/pasta/classic-blue-box/penne-lisce), and the [pasta and sauce pairing guide](https://www.barilla.com/en-us/help-with/pasta-kitchen-tips/pasta-sauce-pairing-guide). Under this clarified rubric, the three outcomes audited in Checkpoint 53 remain failures: each was recorded as making an unqualified ridged-penne claim and a categorical sauce/texture comparison. No raw provider response is copied here.
 
 ### Headless F1 text capture
 
@@ -72,6 +80,35 @@ Two attempts stopped before a provider-backed F1 result. Metadata-only checks at
 The first attempt invoked the absolute script path once through `uv run python` and exited 1. Its wrapper captured but discarded stdout and stderr, and its mode-0700 output directory contained neither the run JSONL nor the event log. The exact exception is unconfirmed. The runner creates those files before constructing Brain or calling the provider, so the local artifacts support that execution stopped before a provider request; no server-side receipt was collected.
 
 The second attempt invoked the direct script through `uv run --no-sync python` and exited 1. Private stderr showed `ModuleNotFoundError: No module named 'src'` while importing `src.config`, before argument parsing and runner setup. That failure could not issue a provider request. Its diagnostics remain in owner-only local files; raw diagnostics and private paths are not part of this report. Neither attempt produced an inference sample.
+
+## Headless F2 file-status capture
+
+For a provider-backed F2 baseline without Adam's daemon, microphone, desktop capture, or audio playback, generate a fresh fixture and use its `expected.json` as the sole prompt and source oracle. The runner requires the exact generated prompt/path, checks the source bytes against the fixture's recorded SHA-256, byte-length, and first-line oracles, and requires a private fixture directory. It offers only `read_file` and permits one dispatch to that exact `source.txt` path with at most 512 characters. Brain is limited to two logical calls to its configured primary `UniversalLLMClient.chat`; the current provider retry layer can make up to three retries (four HTTP attempts) for each logical call, so there can be up to eight client-issued HTTP attempts. The private record separates logical chat calls from observed HTTP-attempt and retry-event telemetry; provider-side routing or retries beyond Adam's client are not observable. The record includes the normalized provider answer, tool trace, and before/after source hashes. Objective readback and immutability evidence are reported separately, while the natural-language answer is always marked `manual_review_required`; substring presence is never scored as success. This measures a headless Brain call and file-state evidence, not user request-end timing or audible acknowledgment.
+
+The operator must perform a fresh external metadata-only model check immediately before the trial and report its exact configured model ID, HTTP 200 status, positive endpoint count, and UTC check time. The CLI validates those supplied values and rejects a timestamp older than one hour, but it does not fetch or cryptographically verify the metadata; `--route-ready-confirmed` records the operator's confirmation. Keep the existing config file owner-only (0600 or stricter), use `custom`, the pinned OpenRouter API base, and `allow_provider_fallbacks: false`. Route confirmation and live inference are separate required flags:
+
+```bash
+umask 077
+python tools/create_implementation_fixtures.py \
+  --output-root /tmp/adam-implementation-fixtures \
+  --run-id <fresh-fixture-id>
+mkdir -m 700 /tmp/adam-f2-<series-id>
+uv run --no-sync python -m tools.run_implementation_file_status_trial \
+  --fixture-dir /tmp/adam-implementation-fixtures/<fresh-fixture-id> \
+  --config /path/to/existing/protected/config.yaml \
+  --run-id <unique-opaque-run-id> \
+  --config-id <non-secret-stable-route-label> \
+  --output /tmp/adam-f2-<series-id>/runs.jsonl \
+  --expected-model <exact-provider-model-id> \
+  --metadata-http-status 200 \
+  --metadata-model-id <exact-provider-model-id> \
+  --metadata-endpoint-count <positive-count> \
+  --metadata-checked-at <fresh-ISO-8601-UTC-time-ending-in-Z> \
+  --route-ready-confirmed \
+  --confirm-provider-inference
+```
+
+The fixture path is the runner's only task input; do not substitute a prompt or another file. Preserve the generated fixture unchanged for the trial. Do not enable service startup, microphone capture, desktop control, or TTS playback for this headless run.
 
 ## GUI capture proof
 

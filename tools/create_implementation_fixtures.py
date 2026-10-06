@@ -19,9 +19,87 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.memory.temporal import local_timezone_name
 
 
-FIXTURE_VERSION = 3
+FIXTURE_VERSION = 4
 SEED = 20261005
 VENDORS = ("Amber Stationery", "Birch Support", "Cobalt Network", "Maple Office")
+
+FACTUAL_ORACLE = {
+    "oracle_version": 1,
+    "format": {
+        "sentence_count": 2,
+        "length": "short",
+    },
+    "pass_criteria": [
+        {
+            "id": "shape_comparison",
+            "criterion": (
+                "Accurately distinguish the shapes. Supported facts include rigatoni's relatively wide, ridged "
+                "tube and penne's angled, quill-like ends; equivalent accurate descriptions are accepted."
+            ),
+        },
+        {
+            "id": "texture_or_sauce_comparison",
+            "criterion": (
+                "Include an accurate comparative point about texture, sauce retention, or sauce pairing for the shapes."
+            ),
+        },
+    ],
+    "accepted_examples": [
+        "Rigatoni's wider, ridged tubes retain hearty sauces.",
+        "Penne Rigate also captures hearty sauce, while smooth Penne Lisce pairs well with smooth sauces.",
+        "Penne can have a smooth or ridged surface, which changes texture and sauce grip.",
+    ],
+    "variant_caveat": {
+        "required_in_answer": False,
+        "guidance": (
+            "Barilla distinguishes smooth Penne Lisce from ridged Penne Rigate. A response need not name these variants; "
+            "when it makes a general claim about penne's surface, it must allow for both forms."
+        ),
+    },
+    "reject_if": [
+        {
+            "id": "unqualified_universal_penne_surface",
+            "rule": (
+                "The answer categorically says penne in general are ridged or are smooth, without qualification for "
+                "the other surface form."
+            ),
+        },
+        {
+            "id": "categorical_sauce_comparison",
+            "rule": (
+                "The answer claims penne are categorically lighter or smoother in sauce pairing than rigatoni, "
+                "without qualifying the penne form or the suggested pairing."
+            ),
+        },
+        {
+            "id": "exclusive_sauce_rule",
+            "rule": "The answer presents a suggested sauce pairing as the only suitable pairing for a shape.",
+        },
+    ],
+    "scoring_rule": (
+        "Pass when the answer uses exactly two short complete sentences, accurately compares shape and makes an "
+        "accurate texture or sauce comparison, and triggers no reject_if rule. The examples are illustrative, not "
+        "exhaustive; no fixed word count or named penne variant is required. Pairings describe suitability, not exclusivity."
+    ),
+    "sources": [
+        {
+            "title": "Barilla Rigatoni",
+            "url": "https://www.barilla.com/en-us/products/pasta/classic-blue-box/rigatoni",
+        },
+        {
+            "title": "Barilla Penne Rigate",
+            "url": "https://www.barilla.com/en-ca/products/pasta/classic-blue-box/penne-rigate",
+        },
+        {
+            "title": "Barilla Penne Lisce",
+            "url": "https://www.barilla.com/en-ca/products/pasta/classic-blue-box/penne-lisce",
+        },
+        {
+            "title": "Barilla Pasta and Pasta Sauce Pairing Guide",
+            "url": "https://www.barilla.com/en-us/help-with/pasta-kitchen-tips/pasta-sauce-pairing-guide",
+        },
+    ],
+}
 
 
 def _write(path: Path, content: str) -> None:
@@ -289,6 +367,7 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
             "work_order_template": prompt_work_order,
         },
         "oracles": {
+            "factual": FACTUAL_ORACLE,
             "file_status": {"byte_length": len(source_text.encode("utf-8")), "first_line": "ITEM: olive"},
             "terminal": {
                 "source_sha256": hashlib.sha256(source_text.encode("utf-8")).hexdigest(),

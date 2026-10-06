@@ -869,6 +869,12 @@ def _can_answer_without_tools(user_text: str) -> bool:
         r"system\s+status|cpu\s+usage|gpu\s+usage|ram\s+usage|disk\s+space|"
         r"\b(?:desktop|screen|window|workspace|browser|application|app|mouse|keyboard|chat|inbox|"
         r"scheduler|reservation|booking|time\s+slot|local\s+preview)\b|"
+        r"\b(?:web\s+pages?|webpages?|urls?)\b|"
+        r"\b(?:this|that|these|those|both|my|your|our|their|two|first|second|open|current|"
+        r"active|loaded)\s+(?:web\s+)?(?:sites?|websites?)\b|"
+        r"\b(?:website|site)\s+(?:url|address|page|content|text|title)\b|"
+        r"\b(?:on|from|via)\s+the\s+web\b|"
+        r"\bonline\s+(?:search|lookup|research|results|sources?)\b|"
         r"\b(?:cpu|processor|ram|memory|gpu|disk|storage)\b[^.!?]{0,40}\b(?:status|usage|"
         r"utilization|load|process(?:es)?)\b|what\s+did\s+i\s+say|"
         r"did\s+i\s+tell|do\s+you\s+remember|my\s+(?:memory|files?|calendar|email|messages?|"
@@ -877,13 +883,25 @@ def _can_answer_without_tools(user_text: str) -> bool:
         text,
         re.IGNORECASE,
     )
+    personal_reference = r"(?:i|me|my|mine|we|us|our|ours)"
+    personal_memory_signal = (
+        r"remember|recall|said|told|mention(?:ed)?|usual(?:ly)?|normally|typically|"
+        r"prefer(?:red|s)?|preferences?|favorites?|favourites?|likes?|dislikes?|"
+        r"orders?|choose|chose|choices?|habits?|routines?|history|previous|past|earlier|"
+        r"last\s+time"
+    )
     personal_context_request = re.search(
         r"^\s*(?:hey\s+adam[,;:]?\s*)?"
         r"(?:(?:what|which|who|when|where|why|how)\b[^.!?\n]{0,120}"
         r"\b(?:i|me|my|mine|we|our|ours)\b|"
+        r"(?:(?:can|could|would)\s+you\s+)?(?:please\s+)?(?:compare|contrast)\b"
+        r"[^.!?\n]{0,120}"
+        r"\b(?:i|me|my|mine|we|our|ours)\b|"
         r"(?:can|could|would|do|did|have)\s+you\b[^.!?\n]{0,100}"
         r"\b(?:remember|recall|know|tell|remind)\b[^.!?\n]{0,80}"
-        r"\b(?:i|my|mine|we|our|ours)\b)",
+        r"\b(?:i|my|mine|we|our|ours)\b)|"
+        rf"\b{personal_reference}\b[^.!?\n]{{0,120}}\b(?:{personal_memory_signal})\b|"
+        rf"\b(?:{personal_memory_signal})\b[^.!?\n]{{0,120}}\b{personal_reference}\b",
         text,
         re.IGNORECASE,
     )
@@ -891,7 +909,7 @@ def _can_answer_without_tools(user_text: str) -> bool:
         return False
 
     ordinary_conversation = re.search(
-        r"\?|\b(?:explain|describe|why|which|what|who|how|is|are|can|could|should|would|"
+        r"\?|\b(?:explain|describe|compare|contrast|why|which|what|who|how|is|are|can|could|should|would|"
         r"tell\s+me|give\s+me|write|draft|compose|imagine|suggest|recommend|list|hello|hi|hey)\b",
         text,
         re.IGNORECASE,

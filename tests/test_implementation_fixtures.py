@@ -60,7 +60,7 @@ class _InvoiceTableParser(HTMLParser):
 def test_implementation_fixture_oracles_are_independently_observable(tmp_path):
     fixture = create_fixtures(tmp_path, "fixture-test")
     expected = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
-    assert expected["fixture_version"] == 3
+    assert expected["fixture_version"] == 4
     rows = json.loads((fixture / "invoices.json").read_text(encoding="utf-8"))
     invoice_oracle = expected["oracles"]["invoices"]
 
@@ -184,6 +184,41 @@ def test_generated_memory_fixture_retrieves_exact_day_week_year_and_zone(tmp_pat
     for context in (day, week, year, timezone):
         assert f"[event timezone: {spec['timezone']}]" in context
     assert spec["records"][0] in timezone
+
+
+def test_generated_factual_fixture_has_stable_objective_rubric(tmp_path):
+    first = create_fixtures(tmp_path, "factual-one")
+    second = create_fixtures(tmp_path, "factual-two")
+    first_expected = json.loads((first / "expected.json").read_text(encoding="utf-8"))
+    second_expected = json.loads((second / "expected.json").read_text(encoding="utf-8"))
+
+    assert first_expected["prompts"]["factual"] == "Compare rigatoni and penne in two short sentences."
+    oracle = first_expected["oracles"]["factual"]
+    assert oracle == second_expected["oracles"]["factual"]
+    assert oracle["oracle_version"] == 1
+    assert oracle["format"] == {
+        "sentence_count": 2,
+        "length": "short",
+    }
+    assert "max_whitespace_delimited_words" not in oracle["format"]
+
+    criteria = {claim["id"]: claim["criterion"] for claim in oracle["pass_criteria"]}
+    assert set(criteria) == {"shape_comparison", "texture_or_sauce_comparison"}
+    assert "rigatoni's relatively wide, ridged tube" in criteria["shape_comparison"]
+    assert "penne's angled, quill-like ends" in criteria["shape_comparison"]
+    assert "accurate comparative point" in criteria["texture_or_sauce_comparison"]
+    assert oracle["variant_caveat"]["required_in_answer"] is False
+    assert "both forms" in oracle["variant_caveat"]["guidance"]
+    assert any("Penne Lisce" not in example and "Penne Rigate" not in example for example in oracle["accepted_examples"])
+
+    reject_ids = {rule["id"] for rule in oracle["reject_if"]}
+    assert reject_ids == {
+        "unqualified_universal_penne_surface",
+        "categorical_sauce_comparison",
+        "exclusive_sauce_rule",
+    }
+    assert all(source["url"].startswith("https://www.barilla.com/") for source in oracle["sources"])
+    assert len(oracle["sources"]) == 4
 
 
 def test_implementation_fixture_ids_cannot_overwrite_existing_state(tmp_path):
