@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from tools import run_implementation_factual_trial as trial
+
+MODEL_ID = "deepseek/deepseek-v4.1-flash"
 
 
 def _config_file(
@@ -15,12 +18,13 @@ def _config_file(
     *,
     fallbacks: bool = False,
     api_base: str = trial.EXPECTED_API_BASE,
+    model: str = MODEL_ID,
 ) -> Path:
     path = tmp_path / "protected-config.yaml"
     path.write_text(
         "llm:\n"
         "  provider: custom\n"
-        "  cloud_model: stealth/space-bunny-alpha\n"
+        f"  cloud_model: {model}\n"
         f"  api_base: {api_base}\n"
         "  api_key: synthetic-test-secret\n"
         f"  allow_provider_fallbacks: {'true' if fallbacks else 'false'}\n"
@@ -59,9 +63,14 @@ def _run_args(
         "prompt": trial.FACTUAL_PROMPT,
         "fixture_run_id": "f1-series-001",
         "run_id": run_id,
-        "config_id": "space-bunny-fallbacks-off-v1",
+        "config_id": "deepseek-openrouter-fallbacks-off-v1",
         "output_path": output_dir / "runs.jsonl",
         "route_ready_confirmed": True,
+        "expected_model": MODEL_ID,
+        "metadata_http_status": 200,
+        "metadata_model_id": MODEL_ID,
+        "metadata_endpoint_count": 31,
+        "metadata_checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "confirm_provider_inference": True,
     }
 
@@ -73,6 +82,7 @@ class _FakeProvider:
         self.tool_call = tool_call
         self.emit_usage = emit_usage
         self.request_tools = []
+        self.model = MODEL_ID
 
     async def chat(self, messages, tools=None, max_tokens=None, think=None):
         from src.telemetry.events import emit_event
@@ -80,7 +90,7 @@ class _FakeProvider:
         self.request_tools.append(tools)
         emit_event(
             "llm.request_started", span_id="provider-span-1", status="started",
-            provider="custom", model="stealth/space-bunny-alpha", component="provider",
+            provider="custom", model=self.model, component="provider",
         )
         attributes = {"accounting_status": "available"}
         if self.emit_usage:
@@ -92,7 +102,7 @@ class _FakeProvider:
             }
         emit_event(
             "llm.completed", span_id="provider-span-1", status="ok",
-            provider="custom", model="stealth/space-bunny-alpha", component="provider",
+            provider="custom", model=self.model, component="provider",
             attributes=attributes,
         )
         tool_calls = []
@@ -115,6 +125,7 @@ def _patch_provider(monkeypatch, fake: _FakeProvider) -> None:
 
     def construct(config):
         configs.append(config)
+        fake.model = config.llm.cloud_model
         return fake
 
     monkeypatch.setattr(brain_module, "UniversalLLMClient", construct)
@@ -131,18 +142,27 @@ def test_fake_provider_runs_brain_toolless_and_writes_private_trace_and_record(t
     assert fake.request_tools == [[]]
     assert len(constructed_configs) == 1
     assert constructed_configs[0].llm.provider == "custom"
-    assert constructed_configs[0].llm.cloud_model == "stealth/space-bunny-alpha"
+    assert constructed_configs[0].llm.cloud_model == MODEL_ID
     assert constructed_configs[0].llm.tool_free_model == ""
+    assert constructed_configs[0].computer_control.enabled is False
+    assert constructed_configs[0].computer_vision.enabled is False
+    assert constructed_configs[0].browser_navigation.enabled is False
     assert record["outcome"] == "not_scored"
     assert record["oracle_status"] == "manual_review_required"
     assert record["brain_response_text"].startswith("Rigatoni has ridges")
     assert record["route"] == {
         "provider": "custom",
-        "model": "stealth/space-bunny-alpha",
+        "model": MODEL_ID,
         "api_base": "https://openrouter.ai/api/v1",
-        "config_id": "space-bunny-fallbacks-off-v1",
+        "config_id": "deepseek-openrouter-fallbacks-off-v1",
         "provider_only": [],
         "allow_provider_fallbacks": False,
+        "metadata_attestation": {
+            "http_status": 200,
+            "model_id": MODEL_ID,
+            "endpoint_count": 31,
+            "checked_at_utc": args["metadata_checked_at"],
+        },
     }
     assert record["provider"]["provider_call_count"] == 1
     assert record["provider"]["retry_count"] == 0
@@ -165,6 +185,50 @@ def test_fake_provider_runs_brain_toolless_and_writes_private_trace_and_record(t
     rows = [json.loads(line) for line in args["output_path"].read_text().splitlines()]
     assert rows == [record]
     assert "synthetic-test-secret" not in args["output_path"].read_text()
+
+
+def test_brain_timing_excludes_asyncio_run_setup_and_teardown(tmp_path, monkeypatch):
+    import asyncio
+
+    args = _run_args(tmp_path)
+    _patch_provider(monkeypatch, _FakeProvider())
+    original_monotonic_ns = trial.time.monotonic_ns
+    original_asyncio_run = asyncio.run
+    simulated_loop_overhead_ns = [0]
+
+    monkeypatch.setattr(
+        trial.time,
+        "monotonic_ns",
+        lambda: original_monotonic_ns() + simulated_loop_overhead_ns[0],
+    )
+
+    def run_with_loop_overhead(awaitable):
+        simulated_loop_overhead_ns[0] += 1_000_000_000
+        try:
+            return original_asyncio_run(awaitable)
+        finally:
+            simulated_loop_overhead_ns[0] += 1_000_000_000
+
+    monkeypatch.setattr(asyncio, "run", run_with_loop_overhead)
+
+    record = trial.run_trial(**args)
+
+    assert record["timing_ms"]["headless_brain_call"] < 1000
+
+
+def test_accepts_one_trailing_api_base_slash_without_rewriting_config(tmp_path, monkeypatch):
+    configured_api_base = f"{trial.EXPECTED_API_BASE}/"
+    args = _run_args(tmp_path, api_base=configured_api_base)
+    fake = _FakeProvider()
+    constructed_configs = _patch_provider(monkeypatch, fake)
+
+    record = trial.run_trial(**args)
+
+    assert len(constructed_configs) == 1
+    assert constructed_configs[0].llm.api_base == configured_api_base
+    assert "api_base: https://openrouter.ai/api/v1/\n" in args["config_path"].read_text()
+    assert record["route"]["api_base"] == trial.EXPECTED_API_BASE
+    assert fake.request_tools == [[]]
 
 
 def test_tool_call_is_recorded_but_never_dispatched(tmp_path, monkeypatch):
@@ -287,12 +351,38 @@ def test_refuses_changed_route_fallbacks_or_noncanonical_prompt_before_output(tm
 
 
 @pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"metadata_http_status": 503}, "metadata must attest HTTP status 200"),
+        ({"metadata_model_id": "openai/gpt-5"}, "metadata model ID must exactly match"),
+        ({"metadata_endpoint_count": 0}, "endpoint count must be a positive integer"),
+        (
+            {"metadata_checked_at": (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(timespec="seconds").replace("+00:00", "Z")},
+            "older than one hour",
+        ),
+        (
+            {"expected_model": "openai/gpt-5", "metadata_model_id": "openai/gpt-5"},
+            "configured model must exactly match",
+        ),
+    ],
+)
+def test_refuses_unmatched_or_stale_route_metadata_before_output(tmp_path, updates, message):
+    args = _run_args(tmp_path)
+    args.update(updates)
+
+    with pytest.raises(trial.TrialError, match=message):
+        trial.run_trial(**args)
+
+    assert not args["output_path"].exists()
+
+
+@pytest.mark.parametrize(
     "api_base",
     [
         "https://example.invalid/v1",
         "http://openrouter.ai/api/v1",
         "https://openrouter.ai.evil.test/api/v1",
-        "https://openrouter.ai/api/v1/",
+        "https://openrouter.ai/api/v1//",
     ],
 )
 def test_refuses_api_base_outside_exact_pinned_https_route(tmp_path, api_base):
@@ -362,7 +452,7 @@ def test_refuses_non_trial_jsonl_and_output_equal_to_config(tmp_path):
 
     private_config = args["output_path"].parent / "private-config.jsonl"
     private_config.write_text(
-        "llm:\n  provider: custom\n  cloud_model: stealth/space-bunny-alpha\n"
+        f"llm:\n  provider: custom\n  cloud_model: {MODEL_ID}\n"
         "  api_base: https://openrouter.ai/api/v1\n  api_key: synthetic-test-secret\n"
         "  allow_provider_fallbacks: false\n",
         encoding="utf-8",
@@ -383,6 +473,11 @@ def test_cli_missing_inference_attestation_never_enters_trial(tmp_path, capsys):
         "--config", str(args["config_path"]), "--prompt", args["prompt"],
         "--fixture-run-id", args["fixture_run_id"], "--run-id", args["run_id"],
         "--config-id", args["config_id"], "--output", str(args["output_path"]),
+        "--expected-model", args["expected_model"],
+        "--metadata-http-status", str(args["metadata_http_status"]),
+        "--metadata-model-id", args["metadata_model_id"],
+        "--metadata-endpoint-count", str(args["metadata_endpoint_count"]),
+        "--metadata-checked-at", args["metadata_checked_at"],
         "--route-ready-confirmed",
     ])
 
@@ -392,6 +487,6 @@ def test_cli_missing_inference_attestation_never_enters_trial(tmp_path, capsys):
 
     args = _run_args(tmp_path / "second", run_id="run-002")
     args["route_ready_confirmed"] = False
-    with pytest.raises(trial.TrialError, match="serving endpoint"):
+    with pytest.raises(trial.TrialError, match="route metadata attestation"):
         trial.run_trial(**args)
     assert not args["output_path"].exists()

@@ -388,11 +388,11 @@ class UniversalLLMClient:
         # model pinned when configured instead of silently falling back to a
         # different inference provider.
         if "openrouter.ai" in url.lower():
-            if self.provider_only:
-                payload["provider"] = {
-                    "only": self.provider_only,
-                    "allow_fallbacks": self.allow_provider_fallbacks,
-                }
+            if self.provider_only or not self.allow_provider_fallbacks:
+                provider_preferences = payload.setdefault("provider", {})
+                if self.provider_only:
+                    provider_preferences["only"] = self.provider_only
+                provider_preferences["allow_fallbacks"] = self.allow_provider_fallbacks
             effective_think = self.think if think is None else think
             if self.disable_reasoning_for_tool_free and not openai_tools:
                 # A tool-free response should not spend its budget on hidden

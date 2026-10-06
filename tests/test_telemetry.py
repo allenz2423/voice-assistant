@@ -173,7 +173,11 @@ def test_openrouter_request_emits_correlated_content_free_events(tmp_path, monke
     assert result["content"] == "Hello."
     assert sessions[0].payload["max_tokens"] == 384
     assert sessions[0].payload["reasoning"] == {"enabled": False}
-    assert sessions[0].payload["provider"]["require_parameters"] is True
+    assert sessions[0].payload["provider"] == {
+        "only": ["route"],
+        "allow_fallbacks": False,
+        "require_parameters": True,
+    }
     rows = [json.loads(line) for line in (tmp_path / "events.jsonl").read_text().splitlines()]
     assert [row["event"] for row in rows] == ["llm.request_started", "llm.completed"]
     assert {row["trace_id"] for row in rows} == {"trace-provider"}
@@ -235,7 +239,7 @@ def test_openrouter_keeps_reasoning_available_when_tools_are_present(monkeypatch
 
     assert "reasoning_effort" not in payloads[0]
     assert payloads[0]["reasoning"] == {"enabled": True}
-    assert "provider" not in payloads[0]
+    assert payloads[0]["provider"] == {"allow_fallbacks": False}
 
 
 def test_openrouter_uses_configured_effort_only_for_tool_free_calls(monkeypatch):
@@ -287,6 +291,8 @@ def test_openrouter_uses_configured_effort_only_for_tool_free_calls(monkeypatch)
     ))
     assert payloads[0]["reasoning"] == {"effort": "none"}
     assert payloads[0]["provider"]["require_parameters"] is True
+    assert payloads[0]["provider"]["allow_fallbacks"] is False
+    assert "only" not in payloads[0]["provider"]
 
 
 def test_openrouter_timeout_with_missing_usage_returns_fallback_without_logging_crash(monkeypatch):

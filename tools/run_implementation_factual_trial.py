@@ -13,6 +13,7 @@ import argparse
 import asyncio
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import io
@@ -36,10 +37,13 @@ from src.telemetry.events import configure_telemetry, reset_trace_id, set_trace_
 
 FACTUAL_PROMPT = "Compare rigatoni and penne in two short sentences."
 EXPECTED_PROVIDER = "custom"
-EXPECTED_MODEL = "stealth/space-bunny-alpha"
 EXPECTED_API_BASE = "https://openrouter.ai/api/v1"
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
+_SAFE_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:+/-]{0,199}\Z")
+_UTC_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z\Z")
 _MAX_RESPONSE_CHARS = 32_000
+_MAX_METADATA_AGE = timedelta(hours=1)
+_MAX_METADATA_FUTURE_SKEW = timedelta(minutes=5)
 
 
 class TrialError(ValueError):
@@ -164,17 +168,70 @@ def _load_existing_config(config_path: Path):
     return load_config(str(config_path))
 
 
-def _validate_config(config, *, config_id: str) -> dict[str, Any]:
+def _validate_model_id(value: str, name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not _SAFE_MODEL_ID.fullmatch(value)
+        or "/" not in value
+        or "//" in value
+        or value.endswith("/")
+    ):
+        raise TrialError(f"{name} must be a safe namespaced OpenRouter model ID")
+    return value
+
+
+def _validate_metadata_attestation(
+    *,
+    expected_model: str,
+    metadata_http_status: int | None,
+    metadata_model_id: str | None,
+    metadata_endpoint_count: int | None,
+    metadata_checked_at: str | None,
+) -> dict[str, Any]:
+    expected_model = _validate_model_id(expected_model, "expected model")
+    if metadata_http_status != 200:
+        raise TrialError("route metadata must attest HTTP status 200")
+    if metadata_model_id is None or _validate_model_id(metadata_model_id, "metadata model ID") != expected_model:
+        raise TrialError("metadata model ID must exactly match the expected model")
+    if (
+        isinstance(metadata_endpoint_count, bool)
+        or not isinstance(metadata_endpoint_count, int)
+        or metadata_endpoint_count < 1
+    ):
+        raise TrialError("metadata endpoint count must be a positive integer")
+    if not isinstance(metadata_checked_at, str) or not _UTC_TIMESTAMP.fullmatch(metadata_checked_at):
+        raise TrialError("metadata check time must be an ISO 8601 UTC timestamp ending in Z")
+    try:
+        checked_at = datetime.fromisoformat(metadata_checked_at[:-1] + "+00:00")
+    except ValueError as exc:
+        raise TrialError("metadata check time must be an ISO 8601 UTC timestamp ending in Z") from exc
+    if checked_at.tzinfo is None or checked_at.utcoffset() != timedelta(0):
+        raise TrialError("metadata check time must be in UTC")
+    age = datetime.now(timezone.utc) - checked_at
+    if age < -_MAX_METADATA_FUTURE_SKEW:
+        raise TrialError("metadata check time is too far in the future")
+    if age > _MAX_METADATA_AGE:
+        raise TrialError("route metadata is older than one hour; refresh the metadata check")
+    return {
+        "http_status": 200,
+        "model_id": metadata_model_id,
+        "endpoint_count": metadata_endpoint_count,
+        "checked_at_utc": checked_at.isoformat().replace("+00:00", "Z"),
+    }
+
+
+def _validate_config(config, *, config_id: str, expected_model: str) -> dict[str, Any]:
     llm = config.llm
     provider = str(getattr(llm, "provider", "")).lower()
     model = str(getattr(llm, "cloud_model", ""))
     api_base = str(getattr(llm, "api_base", ""))
     fallbacks = getattr(llm, "allow_provider_fallbacks", None)
+    expected_model = _validate_model_id(expected_model, "expected model")
     if provider != EXPECTED_PROVIDER:
         raise TrialError(f"configured provider must remain {EXPECTED_PROVIDER!r}")
-    if model != EXPECTED_MODEL:
-        raise TrialError(f"configured model must remain {EXPECTED_MODEL!r}")
-    if api_base != EXPECTED_API_BASE:
+    if model != expected_model:
+        raise TrialError("configured model must exactly match --expected-model")
+    if api_base not in {EXPECTED_API_BASE, f"{EXPECTED_API_BASE}/"}:
         raise TrialError(f"configured API base must remain pinned to {EXPECTED_API_BASE!r}")
     if fallbacks is not False:
         raise TrialError("provider fallbacks must be explicitly disabled for this matched route")
@@ -603,6 +660,11 @@ def run_trial(
     config_id: str,
     output_path: Path,
     route_ready_confirmed: bool,
+    expected_model: str,
+    metadata_http_status: int | None,
+    metadata_model_id: str | None,
+    metadata_endpoint_count: int | None,
+    metadata_checked_at: str | None,
     confirm_provider_inference: bool,
     brain_builder: Callable[[Any], tuple[Any, _CaptureOnlyTTS]] = _build_brain,
 ) -> dict[str, Any]:
@@ -612,12 +674,22 @@ def run_trial(
     run_id = _validate_id(run_id, "opaque run ID")
     config_id = _validate_id(config_id, "config ID")
     if not route_ready_confirmed:
-        raise TrialError("refusing inference until an operator confirms a serving endpoint for the pinned route")
+        raise TrialError("refusing inference until an operator confirms the supplied route metadata attestation")
+    metadata_attestation = _validate_metadata_attestation(
+        expected_model=expected_model,
+        metadata_http_status=metadata_http_status,
+        metadata_model_id=metadata_model_id,
+        metadata_endpoint_count=metadata_endpoint_count,
+        metadata_checked_at=metadata_checked_at,
+    )
     if not confirm_provider_inference:
         raise TrialError("refusing live provider call without --confirm-provider-inference")
 
     config = _load_existing_config(config_path.expanduser())
-    route = _validate_config(config, config_id=config_id)
+    route = _validate_config(config, config_id=config_id, expected_model=expected_model)
+    if metadata_attestation["model_id"] != route["model"]:
+        raise TrialError("metadata model ID must exactly match the configured model")
+    route["metadata_attestation"] = metadata_attestation
     secret_values = _config_secret_values(config)
     serialized_identity = [
         ("fixture run ID", fixture_run_id), ("opaque run ID", run_id),
@@ -657,13 +729,17 @@ def run_trial(
                 patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
             brain, tts = brain_builder(config)
             provider_capture = brain.llm_client
-            brain_turn_start_ns = time.monotonic_ns()
-            awaitable = brain.process_user_utterance(prompt)
-            try:
-                asyncio.run(awaitable)
-                execution_status = "returned"
-            finally:
-                brain_turn_end_ns = time.monotonic_ns()
+
+            async def measured_brain_turn() -> None:
+                nonlocal brain_turn_start_ns, brain_turn_end_ns
+                brain_turn_start_ns = time.monotonic_ns()
+                try:
+                    await brain.process_user_utterance(prompt)
+                finally:
+                    brain_turn_end_ns = time.monotonic_ns()
+
+            asyncio.run(measured_brain_turn())
+            execution_status = "returned"
     except Exception as exc:
         exception_record = _safe_error(exc, secret_values)
     finally:
@@ -786,9 +862,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--run-id", required=True, help="unique opaque ID; also used as telemetry trace ID")
     parser.add_argument("--config-id", required=True, help="non-secret stable label for this route/config")
     parser.add_argument("--output", required=True, type=Path, help="private .jsonl series file under an existing mode-0700 directory")
+    parser.add_argument("--expected-model", required=True, help="exact configured model ID to run and attest")
+    parser.add_argument("--metadata-http-status", type=int, help="HTTP status from the metadata-only model check; must be 200")
+    parser.add_argument("--metadata-model-id", help="exact model ID returned by the metadata-only check")
+    parser.add_argument("--metadata-endpoint-count", type=int, help="number of serving endpoints in the metadata response")
+    parser.add_argument("--metadata-checked-at", help="metadata check time as an ISO 8601 UTC timestamp ending in Z")
     parser.add_argument(
         "--route-ready-confirmed", action="store_true",
-        help="attest that a recent metadata-only check found a serving endpoint for this exact pinned route",
+        help="confirm the supplied recent metadata status, model ID, endpoint count, and check time",
     )
     parser.add_argument(
         "--confirm-provider-inference", action="store_true",
@@ -804,6 +885,11 @@ def main(argv: list[str] | None = None) -> int:
             config_id=args.config_id,
             output_path=args.output,
             route_ready_confirmed=args.route_ready_confirmed,
+            expected_model=args.expected_model,
+            metadata_http_status=args.metadata_http_status,
+            metadata_model_id=args.metadata_model_id,
+            metadata_endpoint_count=args.metadata_endpoint_count,
+            metadata_checked_at=args.metadata_checked_at,
             confirm_provider_inference=args.confirm_provider_inference,
         )
     except TrialError as exc:
