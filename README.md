@@ -197,6 +197,17 @@ empty, the existing single-user `speaker-profile.npz` remains supported as
 voice embeddings are saved, not enrollment recordings. Restart Adam after
 enrollment to load updated profiles.
 
+## Web dashboard (Sidecar)
+
+Adam includes an opt-in, loopback-only browser interface for text interaction,
+real-time tool activity inspection, and system status monitoring alongside
+normal voice interaction. The Web UI is disabled by default and preserves
+microphone-first verbal confirmation for sensitive actions.
+
+Enable it with `python -m src.main --webui` or set `webui.enabled: true` in
+`config.yaml`. See [docs/webui-sidecar-setup.md](docs/webui-sidecar-setup.md) for
+the interface layout, keyboard controls, security policies, and setup details.
+
 ## Development
 
 Run checks with:

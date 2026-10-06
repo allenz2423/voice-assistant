@@ -3,96 +3,181 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Adam // WebUI Sidecar</title>
+  <title>Adam // Assistant Dashboard</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+  <a href="#chatInput" class="skip-link">Skip to conversation input</a>
+
   <div class="app-container">
-    <!-- Top Header -->
-    <header class="app-header">
+    <!-- Top Application Header -->
+    <header class="app-header" role="banner">
       <div class="brand">
-        <div class="brand-logo">A</div>
+        <div class="brand-logo" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none" class="brand-svg">
+            <path d="M16 3L28 27H21.5L16 15L10.5 27H4L16 3Z" fill="currentColor"/>
+            <circle cx="16" cy="19" r="2.5" fill="var(--plasma-cyan)"/>
+          </svg>
+        </div>
         <div class="brand-info">
           <h1>Adam <span class="tag">Sidecar</span></h1>
-          <p class="subtitle">Voice-First Autonomous Terminal Agent</p>
+          <p class="subtitle">Voice-First Autonomous Desktop Assistant</p>
         </div>
       </div>
 
-      <div class="header-badges">
-        <div id="connBadge" class="badge badge-offline">
-          <span class="indicator-dot"></span>
+      <!-- Header Status Cluster -->
+      <div class="header-badges" role="region" aria-label="System status badges">
+        <div id="connBadge" class="badge badge-offline" role="status" aria-label="Connection status">
+          <span class="indicator-dot" aria-hidden="true"></span>
           <span id="connText">Connecting...</span>
         </div>
-        <div id="stateBadge" class="badge badge-state">
+
+        <div id="stateBadge" class="badge badge-state" role="status" aria-label="Runtime state">
+          <span class="indicator-dot" aria-hidden="true"></span>
           <span id="stateText">IDLE</span>
         </div>
-        <div id="authBadge" class="badge badge-auth badge-auth-off" title="Authentication status (click to configure token)">
-          <span class="indicator-dot"></span>
+
+        <button id="authBadge" type="button" class="badge badge-auth badge-auth-off" title="Authentication status (click to configure token)" aria-haspopup="dialog" aria-expanded="false" aria-label="Authentication settings">
+          <span class="indicator-dot" aria-hidden="true"></span>
           <span id="authText">Auth: Checking...</span>
-        </div>
-        <div class="badge badge-voice">
+        </button>
+
+        <div class="badge badge-voice" title="Adam prioritizes voice interaction; microphone is primary">
+          <svg class="badge-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M8 1a2.5 2.5 0 0 0-2.5 2.5v5A2.5 2.5 0 0 0 8 11a2.5 2.5 0 0 0 2.5-2.5v-5A2.5 2.5 0 0 0 8 1z"/>
+            <path d="M4 7.5a.5.5 0 0 0-1 0A5 5 0 0 0 7.5 12.45V14H6a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1H8.5v-1.55A5 5 0 0 0 13 7.5a.5.5 0 0 0-1 0 4 4 0 0 1-8 0z"/>
+          </svg>
           <span>Voice: Primary</span>
         </div>
-        <div class="badge badge-loopback" title="Bound strictly to loopback">
+
+        <div class="badge badge-loopback" title="Bound strictly to loopback interface">
+          <svg class="badge-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M8 0c-.3 0-.6.1-.8.3L2.2 4.3C1.5 4.9 1 5.8 1 6.8V11c0 3.3 3.5 5 7 5s7-1.7 7-5V6.8c0-1-.5-1.9-1.2-2.5L8.8.3C8.6.1 8.3 0 8 0zm0 1.5l5 4.2c.4.3.7.8.7 1.3V11c0 2.5-2.7 3.8-5.7 3.8S2.3 13.5 2.3 11V7c0-.5.3-1 .7-1.3l5-4.2z"/>
+          </svg>
           <span id="hostText">127.0.0.1</span>
         </div>
       </div>
     </header>
 
+    <!-- Mobile View Switcher (Visible on small screens) -->
+    <nav class="mobile-nav" role="tablist" aria-label="Mobile view switcher">
+      <button
+        type="button"
+        id="mobileTabChat"
+        class="mobile-tab-btn active"
+        role="tab"
+        aria-selected="true"
+        aria-controls="chatSection"
+        tabindex="0"
+        data-tab="chat"
+      >
+        <svg class="tab-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M2 2a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h3v2.5a.5.5 0 0 0 .8.4L9.4 13H14a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2H2z"/>
+        </svg>
+        <span>Conversation</span>
+      </button>
+      <button
+        type="button"
+        id="mobileTabSidebar"
+        class="mobile-tab-btn"
+        role="tab"
+        aria-selected="false"
+        aria-controls="sidebarSection"
+        tabindex="-1"
+        data-tab="sidebar"
+      >
+        <svg class="tab-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+          <path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h11A1.5 1.5 0 0 1 15 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 13.5v-11zM2.5 2a.5.5 0 0 0-.5.5V5h12V2.5a.5.5 0 0 0-.5-.5h-11zm12 4H2v7.5a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5V6z"/>
+        </svg>
+        <span>System &amp; Tools</span>
+      </button>
+    </nav>
+
     <!-- Main Content Area -->
-    <main class="main-layout">
-      <!-- Left Column: Chat Area -->
-      <section class="chat-section">
+    <main class="main-layout" id="mainLayout" data-active-tab="chat">
+      <!-- Left Column: Chat Section -->
+      <section id="chatSection" class="chat-section" role="tabpanel" aria-labelledby="mobileTabChat" aria-label="Conversation and Commands">
         <div class="section-header">
-          <h2>Conversation</h2>
-          <span class="header-note">Uses Adam's normal turn and interruption handling</span>
+          <div class="section-title-wrap">
+            <h2>Conversation</h2>
+            <span class="header-note">Unified daemon turn &amp; microphone interruption model</span>
+          </div>
+          <div class="chat-header-actions">
+            <span class="live-pill" title="Live bidirectional session">Live ReAct</span>
+          </div>
         </div>
 
-        <div id="chatMessages" class="chat-messages">
-          <div class="system-notice">
-            <p>Welcome to Adam's WebUI Sidecar. Ordinary conversation and tool commands are executed through Adam's normal ReAct pipeline. Voice remains the primary interaction channel.</p>
+        <!-- Chat Messages Log -->
+        <div id="chatMessages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions text">
+          <div class="system-notice" role="note">
+            <div class="notice-icon" aria-hidden="true">
+              <svg viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 2.5a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm1.2 8.5H6.8v-1h1.2V7.5H7V6.5h2.2v5.5z"/>
+              </svg>
+            </div>
+            <div class="notice-content">
+              <strong>Adam Assistant Dashboard Active</strong>
+              <p>Ordinary conversation and desktop tool actions execute through Adam's live ReAct pipeline. Microphone voice remains the primary interaction channel with real-time turn interruption.</p>
+            </div>
           </div>
         </div>
 
         <!-- Activity / Status Bar -->
-        <div id="statusBar" class="status-bar hidden">
-          <div class="spinner"></div>
+        <div id="statusBar" class="status-bar hidden" role="status" aria-live="polite">
+          <div class="spinner" aria-hidden="true"></div>
           <span id="statusMessage">Adam is processing request...</span>
         </div>
 
         <!-- Prompt Suggestions -->
-        <div class="quick-prompts">
+        <div class="quick-prompts" role="group" aria-label="Quick prompts">
           <button type="button" class="prompt-chip" data-prompt="What time is it?">What time is it?</button>
           <button type="button" class="prompt-chip" data-prompt="Check system status">Check system status</button>
           <button type="button" class="prompt-chip" data-prompt="What is the weather report?">Weather report</button>
+          <button type="button" class="prompt-chip" data-prompt="List active desktop windows">Active windows</button>
+          <button type="button" class="prompt-chip" data-prompt="Check battery level">Battery status</button>
         </div>
 
         <!-- Chat Input Form -->
-        <form id="chatForm" class="chat-form">
-          <textarea
-            id="chatInput"
-            placeholder="Type a message to Adam... (Enter to send, Shift+Enter for new line)"
-            rows="2"
-            required
-          ></textarea>
-          <button id="sendBtn" type="submit" class="btn btn-primary">
-            <span>Send</span>
-          </button>
+        <form id="chatForm" class="chat-form" aria-label="Chat composer">
+          <div class="composer-container">
+            <label for="chatInput" class="sr-only">Type a message to Adam</label>
+            <textarea
+              id="chatInput"
+              placeholder="Type a message to Adam... (Enter to send, Shift+Enter for new line)"
+              rows="1"
+              required
+            ></textarea>
+            <div class="composer-footer">
+              <span class="keyboard-hint" aria-hidden="true">Press <strong>Enter ↵</strong> to send &bull; <strong>Shift+Enter</strong> for newline</span>
+              <button id="sendBtn" type="submit" class="btn btn-primary" aria-label="Send message">
+                <span>Send</span>
+                <svg class="send-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <path d="M1.5 1.5l13 6.5-13 6.5v-5l8-1.5-8-1.5v-5z"/>
+                </svg>
+              </button>
+            </div>
+          </div>
         </form>
       </section>
 
-      <!-- Right Column: Telemetry & Gapped Features -->
-      <aside class="sidebar-section">
-        <div class="card">
-          <div class="card-header"><h3>Tool Activity</h3></div>
+      <!-- Right Column: Sidebar (Tool Activity, Telemetry, Gapped Features) -->
+      <aside id="sidebarSection" class="sidebar-section" role="tabpanel" aria-labelledby="mobileTabSidebar" aria-label="System telemetry and tool activity">
+        <!-- Live Tool Activity Card -->
+        <div class="card card-tool-activity">
+          <div class="card-header">
+            <h3>Tool Activity</h3>
+            <span class="card-badge">Live Stream</span>
+          </div>
           <div id="toolActivity" class="tool-activity-list" aria-live="polite">
             <p id="toolActivityEmpty" class="tool-activity-empty">Waiting for tool calls.</p>
           </div>
         </div>
+
         <!-- Runtime Telemetry Card -->
-        <div class="card">
+        <div class="card card-telemetry">
           <div class="card-header">
             <h3>Runtime Telemetry</h3>
+            <span class="card-badge">Daemon</span>
           </div>
           <div class="card-body telemetry-grid">
             <div class="telemetry-item">
@@ -101,7 +186,7 @@
             </div>
             <div class="telemetry-item">
               <span class="telemetry-label">LLM Model</span>
-              <span id="telemetryModel" class="telemetry-value">--</span>
+              <span id="telemetryModel" class="telemetry-value" title="">--</span>
             </div>
             <div class="telemetry-item">
               <span class="telemetry-label">Available Tools</span>
@@ -159,11 +244,11 @@
   </div>
 
   <!-- Auth Token Modal -->
-  <div id="authModal" class="modal-overlay hidden">
+  <div id="authModal" class="modal-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="authModalHeading">
     <div class="modal-card">
       <div class="modal-header">
-        <h3>Sidecar Authentication</h3>
-        <button id="closeAuthModalBtn" type="button" class="btn-icon" aria-label="Close">&times;</button>
+        <h3 id="authModalHeading">Sidecar Authentication</h3>
+        <button id="closeAuthModalBtn" type="button" class="btn-icon" aria-label="Close authentication dialog">&times;</button>
       </div>
       <div class="modal-body">
         <p class="modal-desc">If Adam is configured with an authentication token (<code>webui.auth_token</code>), enter it below to authenticate this browser session.</p>
@@ -171,11 +256,11 @@
           <label for="tokenInput">Bearer Token</label>
           <input type="password" id="tokenInput" placeholder="Enter webui.auth_token..." autocomplete="off">
         </div>
-        <div id="authModalStatus" class="auth-modal-status hidden"></div>
+        <div id="authModalStatus" class="auth-modal-status hidden" role="status" aria-live="polite"></div>
       </div>
       <div class="modal-footer">
         <button id="clearTokenBtn" type="button" class="btn btn-secondary">Clear Token</button>
-        <button id="saveTokenBtn" type="button" class="btn btn-primary">Save & Connect</button>
+        <button id="saveTokenBtn" type="button" class="btn btn-primary">Save &amp; Connect</button>
       </div>
     </div>
   </div>

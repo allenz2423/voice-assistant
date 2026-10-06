@@ -9,6 +9,7 @@
   let pendingChatTimeout = null;
   let isSending = false;
   let historyLoaded = false;
+  let lastFocusedElement = null;
   const liveTools = new Map();
   const loadedRevision = new URL(document.currentScript.src).searchParams.get("v");
 
@@ -36,7 +37,7 @@
     return headers;
   }
 
-  // DOM Elements
+  // DOM Elements - Badges & Navigation
   const connBadge = document.getElementById("connBadge");
   const connText = document.getElementById("connText");
   const stateBadge = document.getElementById("stateBadge");
@@ -45,6 +46,14 @@
   const authBadge = document.getElementById("authBadge");
   const authText = document.getElementById("authText");
 
+  // Layout & Sections
+  const mainLayout = document.getElementById("mainLayout");
+  const chatSection = document.getElementById("chatSection");
+  const sidebarSection = document.getElementById("sidebarSection");
+  const mobileTabChat = document.getElementById("mobileTabChat");
+  const mobileTabSidebar = document.getElementById("mobileTabSidebar");
+
+  // Chat Elements
   const chatMessages = document.getElementById("chatMessages");
   const chatForm = document.getElementById("chatForm");
   const chatInput = document.getElementById("chatInput");
@@ -52,7 +61,7 @@
   const statusBar = document.getElementById("statusBar");
   const statusMessage = document.getElementById("statusMessage");
 
-  // Telemetry Elements
+  // Telemetry & Tool Activity Elements
   const telemetryMode = document.getElementById("telemetryMode");
   const telemetryModel = document.getElementById("telemetryModel");
   const telemetryTools = document.getElementById("telemetryTools");
@@ -67,12 +76,12 @@
   const closeAuthModalBtn = document.getElementById("closeAuthModalBtn");
   const authModalStatus = document.getElementById("authModalStatus");
 
-  // Format timestamp
+  // Format timestamp helper
   function formatTime(isoStr) {
     if (!isoStr) return new Date().toLocaleTimeString();
     try {
       const d = new Date(isoStr);
-      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     } catch {
       return new Date().toLocaleTimeString();
     }
@@ -122,10 +131,11 @@
     return row;
   }
 
+  // Show live tool execution events
   function showToolActivity(data) {
     let row = liveTools.get(data.span_id);
     if (!row) {
-      toolActivityEmpty.hidden = true;
+      if (toolActivityEmpty) toolActivityEmpty.hidden = true;
       row = document.createElement("div");
       row.className = "tool-activity-item";
       const badge = document.createElement("span");
@@ -135,28 +145,45 @@
       liveTools.set(data.span_id, row);
       if (liveTools.size > 40) {
         const oldest = liveTools.keys().next().value;
-        liveTools.get(oldest).remove();
+        const oldRow = liveTools.get(oldest);
+        if (oldRow) oldRow.remove();
         liveTools.delete(oldest);
       }
     }
-    const labels = { returned: "Returned", ok: "Returned", failed: "Failed",
-      error: "Failed", invalid_input: "Rejected", timed_out: "Timed out",
-      cancelled: "Cancelled", partial: "Partial", uncertain: "Unconfirmed" };
+    const labels = {
+      returned: "Returned",
+      ok: "Returned",
+      failed: "Failed",
+      error: "Failed",
+      invalid_input: "Rejected",
+      timed_out: "Timed out",
+      cancelled: "Cancelled",
+      partial: "Partial",
+      uncertain: "Unconfirmed",
+    };
     const running = data.phase === "started";
     row.dataset.toolRunning = running ? "true" : "false";
     row.dataset.toolName = data.tool;
     const outcome = running ? "Running" : (labels[data.outcome] || data.outcome || "Finished");
     const duration = !running && data.duration_ms != null ? ` (${data.duration_ms} ms)` : "";
-    row.querySelector(".tool-badge").textContent = `⚡ ${data.tool} · ${outcome}${duration}`;
-    if (isSending) statusMessage.textContent = running
-      ? `Adam is using ${data.tool}…` : "Adam is processing the result…";
+    const badgeEl = row.querySelector(".tool-badge");
+    if (badgeEl) {
+      badgeEl.textContent = `⚡ ${data.tool} · ${outcome}${duration}`;
+    }
+    if (isSending) {
+      statusMessage.textContent = running
+        ? `Adam is using ${data.tool}…`
+        : "Adam is processing the result…";
+    }
     toolActivity.scrollTop = toolActivity.scrollHeight;
   }
 
+  // Show live task retry / recovery progress
   function showTaskProgress(data) {
     if (!isSending) return;
     const count = Number.isInteger(data.attempt) && Number.isInteger(data.max_attempts)
-      ? ` (${data.attempt}/${data.max_attempts})` : "";
+      ? ` (${data.attempt}/${data.max_attempts})`
+      : "";
     if (data.event === "llm.retrying") {
       const reason = data.reason === "429" ? "rate limited the request" : "request failed";
       statusMessage.textContent = `Model ${reason}; retrying${count}…`;
@@ -169,7 +196,7 @@
     }
   }
 
-  // Set connection UI state
+  // Set connection UI badge state
   function setConnectionStatus(connected, mode, extra) {
     if (connected && mode === "daemon") {
       connBadge.className = "badge badge-online";
@@ -183,34 +210,29 @@
     }
   }
 
-  // Set runtime state UI
+  // Set runtime state UI badge & status bar
   function setRuntimeState(state) {
     const s = state || "IDLE";
     stateText.textContent = s;
     if (s === "PROCESSING_REACT") {
-      stateBadge.style.color = "var(--accent-amber)";
-      stateBadge.style.borderColor = "rgba(245, 158, 11, 0.4)";
+      stateBadge.className = "badge badge-state state-processing";
       statusBar.classList.remove("hidden");
       statusMessage.textContent = "Adam is reasoning and executing tools...";
     } else if (s === "AWAITING_CONFIRMATION") {
-      stateBadge.style.color = "var(--accent-red)";
-      stateBadge.style.borderColor = "rgba(239, 68, 68, 0.4)";
+      stateBadge.className = "badge badge-state state-confirm";
       statusBar.classList.remove("hidden");
       statusMessage.textContent = "Adam is awaiting verbal confirmation (via mic)...";
     } else if (s === "ASSISTANT_SPEAKING") {
-      stateBadge.style.color = "var(--accent-blue)";
-      stateBadge.style.borderColor = "rgba(59, 130, 246, 0.4)";
+      stateBadge.className = "badge badge-state state-speaking";
       statusBar.classList.remove("hidden");
       statusMessage.textContent = "Adam is speaking...";
     } else if (s === "DISCONNECTED" || s === "OFFLINE") {
-      stateBadge.style.color = "var(--text-muted)";
-      stateBadge.style.borderColor = "var(--border-color)";
+      stateBadge.className = "badge badge-state state-offline";
       if (!isSending) {
         statusBar.classList.add("hidden");
       }
     } else {
-      stateBadge.style.color = "var(--accent-cyan)";
-      stateBadge.style.borderColor = "rgba(6, 182, 212, 0.4)";
+      stateBadge.className = "badge badge-state state-idle";
       if (!isSending) {
         statusBar.classList.add("hidden");
       }
@@ -226,15 +248,22 @@
         return;
       }
     }
-    if (data.mode) telemetryMode.textContent = data.mode;
-    if (data.model) {
+    if (data.mode && telemetryMode) telemetryMode.textContent = data.mode;
+    if (data.model && telemetryModel) {
       telemetryModel.textContent = data.model;
       telemetryModel.title = data.tool_free_model
-        ? `Short generic chat route: ${data.tool_free_model}` : "";
+        ? `Short generic chat route: ${data.tool_free_model}`
+        : "";
     }
-    if (data.tools_count !== undefined) telemetryTools.textContent = `${data.tools_count} tools`;
-    if (data.host) hostText.textContent = `${data.host}:${data.port || 8765}`;
-    if (data.system_state) setRuntimeState(data.system_state);
+    if (data.tools_count !== undefined && telemetryTools) {
+      telemetryTools.textContent = `${data.tools_count} tools`;
+    }
+    if (data.host && hostText) {
+      hostText.textContent = `${data.host}:${data.port || 8765}`;
+    }
+    if (data.system_state) {
+      setRuntimeState(data.system_state);
+    }
   }
 
   // Update auth status display
@@ -312,8 +341,49 @@
     }
   }
 
-  // Modal helpers
+  // Focus trap & keyboard management for modal dialog
+  function getModalFocusableElements() {
+    return Array.from(
+      authModal.querySelectorAll(
+        'button:not([disabled]), input:not([disabled]), [tabindex]:not([tabindex="-1"])'
+      )
+    );
+  }
+
+  function handleModalKeyDown(e) {
+    if (authModal.classList.contains("hidden")) return;
+
+    if (e.key === "Escape") {
+      e.preventDefault();
+      closeAuthModal();
+      return;
+    }
+
+    if (e.key === "Tab") {
+      const focusables = getModalFocusableElements();
+      if (focusables.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+
+      if (e.shiftKey) {
+        if (document.activeElement === first || !authModal.contains(document.activeElement)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (document.activeElement === last || !authModal.contains(document.activeElement)) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
+    }
+  }
+
   function openAuthModal(msg) {
+    lastFocusedElement = document.activeElement;
     tokenInput.value = getStoredToken();
     if (msg) {
       authModalStatus.textContent = msg;
@@ -322,12 +392,19 @@
     } else {
       authModalStatus.classList.add("hidden");
     }
+    authBadge.setAttribute("aria-expanded", "true");
     authModal.classList.remove("hidden");
+    document.addEventListener("keydown", handleModalKeyDown);
     tokenInput.focus();
   }
 
   function closeAuthModal() {
     authModal.classList.add("hidden");
+    authBadge.setAttribute("aria-expanded", "false");
+    document.removeEventListener("keydown", handleModalKeyDown);
+    if (lastFocusedElement && typeof lastFocusedElement.focus === "function") {
+      lastFocusedElement.focus();
+    }
   }
 
   // Initialize WebSocket connection
@@ -439,8 +516,10 @@
       wsConnecting = false;
       for (const row of liveTools.values()) {
         if (row.dataset.toolRunning === "true") {
-          row.querySelector(".tool-badge").textContent =
-            `⚡ ${row.dataset.toolName} · Connection lost (outcome unknown)`;
+          const badgeEl = row.querySelector(".tool-badge");
+          if (badgeEl) {
+            badgeEl.textContent = `⚡ ${row.dataset.toolName} · Connection lost (outcome unknown)`;
+          }
           row.dataset.toolRunning = "false";
         }
       }
@@ -512,7 +591,56 @@
     }
   }
 
-  // Event Listeners
+  // Mobile View Switcher - Accessible Tablist Implementation
+  function switchMobileTab(targetTab) {
+    const isChat = targetTab === "chat";
+
+    if (mobileTabChat) {
+      mobileTabChat.classList.toggle("active", isChat);
+      mobileTabChat.setAttribute("aria-selected", isChat ? "true" : "false");
+      mobileTabChat.tabIndex = isChat ? 0 : -1;
+    }
+
+    if (mobileTabSidebar) {
+      mobileTabSidebar.classList.toggle("active", !isChat);
+      mobileTabSidebar.setAttribute("aria-selected", !isChat ? "true" : "false");
+      mobileTabSidebar.tabIndex = !isChat ? 0 : -1;
+    }
+
+    if (mainLayout) {
+      mainLayout.dataset.activeTab = isChat ? "chat" : "sidebar";
+    }
+  }
+
+  if (mobileTabChat && mobileTabSidebar) {
+    const tabs = [mobileTabChat, mobileTabSidebar];
+
+    mobileTabChat.addEventListener("click", () => switchMobileTab("chat"));
+    mobileTabSidebar.addEventListener("click", () => switchMobileTab("sidebar"));
+
+    tabs.forEach((tab, index) => {
+      tab.addEventListener("keydown", (e) => {
+        let newIndex = null;
+        if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+          newIndex = (index + 1) % tabs.length;
+        } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+          newIndex = (index - 1 + tabs.length) % tabs.length;
+        } else if (e.key === "Home") {
+          newIndex = 0;
+        } else if (e.key === "End") {
+          newIndex = tabs.length - 1;
+        }
+        if (newIndex !== null) {
+          e.preventDefault();
+          const target = tabs[newIndex];
+          target.focus();
+          switchMobileTab(target.dataset.tab);
+        }
+      });
+    });
+  }
+
+  // Event Listeners - Chat Form
   chatForm.addEventListener("submit", (e) => {
     e.preventDefault();
     const text = chatInput.value.trim();
@@ -538,10 +666,10 @@
   // Auto-resize textarea
   chatInput.addEventListener("input", () => {
     chatInput.style.height = "auto";
-    chatInput.style.height = `${Math.min(chatInput.scrollHeight, 120)}px`;
+    chatInput.style.height = `${Math.min(chatInput.scrollHeight, 140)}px`;
   });
 
-  // Auth modal handlers
+  // Auth modal handlers - Rely on native click for button triggers
   authBadge.addEventListener("click", () => {
     openAuthModal();
   });
@@ -593,7 +721,8 @@
     connectWebSocket(true);
   });
 
-  // Initial startup
+  // Initial startup sequence
+  switchMobileTab("chat");
   checkAuthStatus();
   fetchStatus();
   loadHistory();

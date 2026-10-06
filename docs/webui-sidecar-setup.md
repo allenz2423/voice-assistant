@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Adam WebUI Sidecar is an **opt-in**, lightweight browser interface for Adam. It provides real-time conversation history, two-way text interaction wired to Adam's ReAct execution engine, and honest runtime telemetry.
+The Adam WebUI Sidecar is an **opt-in**, lightweight browser dashboard for Adam. It provides real-time conversation history, two-way text interaction wired to Adam's ReAct execution engine, live tool execution telemetry, and runtime status monitoring.
 
 Per the Interaction UX principles defined in `docs/proposed-codebase-fixes.md`:
 1. **Voice is the primary default:** Adam remains voice-activated and voice-first. The WebUI listener is **disabled by default**.
@@ -73,19 +73,72 @@ The standalone sidecar serves the UI in disconnected mode (`DisconnectedBridge`)
 
 ---
 
-## Security & Authentication
+## Interface Layout & User Experience
+
+The dashboard interface uses a desktop-first, KDE Plasma Breeze Dark-inspired aesthetic with full responsive adaptability, accessible keyboard workflows, and real-time execution feedback.
+
+### 1. Desktop Two-Panel Layout
+On viewports wider than 860px, the dashboard displays a unified side-by-side workstation layout:
+- **Primary Panel (Left):** Conversation history log, active turn status indicator, prompt suggestion chips, and the expandable message composer.
+- **System Sidebar (Right):** Live tool execution telemetry, runtime configuration snapshot (mode, model routing, available tool count, loopback binding), and explicit callouts for currently unavailable runtime capabilities (long-running task checkpoints and remote approvals).
+
+### 2. Mobile Responsive Layout & Tabs
+On small viewports (≤ 860px), the dashboard automatically switches to a single-column layout with an accessible top tab bar:
+- **Conversation Tab:** Full-width view of conversation history, quick prompts, turn status, and pinned message composer.
+- **System & Tools Tab:** Full-width view of live tool activity, runtime telemetry, and runtime limitation cards.
+- **Accessible Tab Semantics:** Built with WAI-ARIA `role="tablist"`, `role="tab"`, and `role="tabpanel"` semantics. Supports keyboard navigation with `ArrowLeft`, `ArrowRight`, `Home`, and `End` keys to switch tabs with automatic focus management. Resizing between mobile and desktop automatically synchronizes panel visibility.
+
+### 3. Message Composer & Keyboard Controls
+- **Send Message:** Press **`Enter`** (without Shift) or activate the **Send** button to submit the message to Adam's daemon turn executor.
+- **Newline Entry:** Press **`Shift + Enter`** to insert a line break into the message textarea without submitting.
+- **Auto-Expanding Textarea:** The composer automatically grows to fit multi-line inputs up to 140px high before scrolling.
+- **Quick Prompts:** Interactive prompt chips allow one-click submission of common queries (e.g., system status, time, active desktop windows).
+- **In-Flight Disconnect Handling:** If disconnected when submitting a turn, the message is safely queued in the client while attempting automatic reconnection before reporting failure.
+
+### 4. Authentication Dialog
+- **Modal Trigger:** The header `Auth` badge serves as an accessible button indicating the current state (`Auth: Active`, `Auth: Required`, or `Auth: Off (Loopback)`). Activating it via click or keyboard opens the configuration dialog.
+- **Keyboard Focus Trap:** While the modal is open, keyboard focus is trapped within the dialog's interactive elements (`Tab` and `Shift + Tab` cycle focus without leaking to background elements).
+- **Escape Dismissal:** Pressing **`Escape`** closes the dialog and restores focus to the trigger button.
+- **Token Storage:** Tokens are stored locally in the browser's `localStorage`. The frontend exchanges the Bearer token via loopback HTTP `POST /api/auth/session` to set a one-hour, HttpOnly, Strict-SameSite cookie scoped to `/api/ws`.
+
+### 5. Live Status Badges & Tool Feed
+- **Header Status Cluster:** Live indicator badges show connection health (`Connected (Daemon)`, `Connected (Loopback)`, or `Disconnected`), runtime state (`IDLE`, `PROCESSING_REACT`, `AWAITING_CONFIRMATION`, `ASSISTANT_SPEAKING`), authentication state, voice priority, and loopback binding.
+- **Activity Status Bar:** Displays animated spinner and contextual descriptions during turns, including model rate-limit backoff retries (`429`), tool recovery attempts, and model completion recoveries.
+- **Live Tool Stream:** Displays tool calls in real time as they start and complete. Each entry reports tool name, active execution status, outcome (`Returned`, `Failed`, `Rejected`, `Timed out`, `Cancelled`, `Partial`, or `Unconfirmed`), and execution duration in milliseconds.
+
+### 6. Voice Confirmation Limit
+- **Microphone Exclusivity:** The WebUI cannot approve actions or bypass confirmation requirements. When Adam plans a sensitive tool execution requiring user confirmation, the system transitions to `AWAITING_CONFIRMATION`.
+- **Turn Refusal:** While awaiting confirmation, the WebUI displays an urgent status warning and rejects incoming text turns with a `busy` status, directing the user to speak their confirmation through the microphone.
+
+---
+
+## Security Policies & Route Contract
 
 ### Loopback-Only Policy
-The sidecar server checks incoming requests using loopback middleware. Remote connections are rejected with `403 Forbidden`. If an insecure non-loopback host is configured without an explicit protected transport design, server startup raises an error.
+The sidecar server checks incoming requests using loopback middleware. Remote connections are rejected with `403 Forbidden`. If an insecure non-loopback host is configured without an explicit protected transport design, server startup raises an error. It strictly rejects DNS-rebinding Host headers and cross-origin requests.
 
 ### Token Authentication
 If `webui.auth_token` is configured:
 - Unauthenticated requests to `/api/status`, `/api/history`, and `/api/chat` return `401 Unauthorized`.
+- The discovery route `/api/auth/status` remains accessible unauthenticated to report whether token authentication is required.
 - The browser frontend prompts for the token via the **Auth Token Modal**.
 - Tokens are stored locally in the browser's `localStorage` and sent with:
-  - HTTP header: `Authorization: Bearer <token>`
-  - An authenticated session exchange that sets a one-hour, HttpOnly, Strict-SameSite cookie scoped to `/api/ws`.
+  - HTTP request header: `Authorization: Bearer <token>`
+  - A loopback HTTP session exchange (`POST /api/auth/session`) that sets a one-hour, HttpOnly, Strict-SameSite cookie scoped to `/api/ws`.
 - The Auth badge in the UI displays `Auth: Active` when authenticated or `Auth: Required` when authentication is needed.
+
+### Existing HTTP & WebSocket Routes
+The WebUI operates entirely within existing endpoints; **no new routes, external network assets, remote fonts, or deployment requirements are introduced**:
+
+| Route | Method | Description |
+|---|---|---|
+| `/` | `GET` | Serves dashboard HTML with cache-busted, SHA-256 versioned static assets. |
+| `/api/status` | `GET` | Snapshot of runtime status, mode, tool count, host binding, and feature availability. |
+| `/api/auth/status` | `GET` | Checks if token authentication is required and whether the current session is authenticated. |
+| `/api/auth/session` | `POST` / `DELETE` | Exchanges a Bearer token for a one-hour HttpOnly, Strict-SameSite cookie scoped to `/api/ws`, or clears it. |
+| `/api/history` | `GET` | Active session conversation history (system desktop headers stripped from display). |
+| `/api/chat` | `POST` | Direct HTTP endpoint for conversational turn execution (requires Bearer token when auth is configured). |
+| `/api/ws` | `GET` (WebSocket) | Bidirectional WebSocket stream for turns, heartbeats, runtime state, and live tool telemetry. |
 
 ---
 
