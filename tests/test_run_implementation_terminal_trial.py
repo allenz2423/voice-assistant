@@ -307,6 +307,45 @@ def test_post_write_absolute_cat_readback_is_safe_and_preserves_objective_pass(t
     assert record["dispatch_policy"]["refused_dispatch_count"] == 0
 
 
+def test_post_write_fixture_scoped_cd_cat_readback_is_safe(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    fixture = trial._validate_fixture(args["fixture_dir"])
+    write_command = trial._expected_relative_command(fixture["fixture_dir"])
+    read_command = trial._expected_relative_answer_read_command(fixture["fixture_dir"])
+    fake = _FakeProvider([write_command, read_command])
+    _patch_provider(monkeypatch, fake)
+
+    record = trial.run_trial(**args)
+
+    assert fake.calls == 3
+    assert record["oracle"]["status"] == "pass"
+    assert record["dispatch_trace"][1]["arguments"]["command"] == read_command
+    assert record["dispatch_trace"][1]["dispatch_kind"] == "answer_readback"
+    assert record["dispatch_trace"][1]["status"] == "returned"
+    assert record["dispatch_trace"][1]["result"] == "3\n"
+    assert record["dispatch_trace"][1]["readback_matches_expected_bytes"] is True
+    assert record["dispatch_policy"]["successful_fixture_write_count"] == 1
+    assert record["dispatch_policy"]["successful_answer_readback_count"] == 1
+    assert record["dispatch_policy"]["refused_dispatch_count"] == 0
+
+
+def test_bare_cat_answer_path_is_refused_without_grounded_fixture_directory(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    fixture = trial._validate_fixture(args["fixture_dir"])
+    write_command = trial._expected_relative_command(fixture["fixture_dir"])
+    fake = _FakeProvider([write_command, "cat answer.txt"])
+    _patch_provider(monkeypatch, fake)
+
+    record = trial.run_trial(**args)
+
+    assert record["oracle"]["status"] == "pass"
+    assert record["dispatch_trace"][1]["status"] == "refused"
+    assert record["dispatch_trace"][1]["refused_without_side_effect"] is True
+    assert "exactly match" in record["dispatch_trace"][1]["reason"]
+    assert record["dispatch_policy"]["refused_dispatch_count"] == 1
+    assert (fixture["answer_path"]).read_bytes() == b"3\n"
+
+
 def test_unsafe_post_write_command_is_refused_and_tracked_without_changing_file_oracle(tmp_path, monkeypatch):
     args = _args(tmp_path)
     fixture = trial._validate_fixture(args["fixture_dir"])

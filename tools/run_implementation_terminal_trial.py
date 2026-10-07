@@ -299,6 +299,10 @@ def _expected_answer_read_command(answer_path: Path) -> str:
     return f"cat {shlex.quote(str(answer_path))}"
 
 
+def _expected_relative_answer_read_command(fixture_dir: Path) -> str:
+    return f"cd {shlex.quote(str(fixture_dir))} && cat answer.txt"
+
+
 def _write_answer(answer_path: Path, content: bytes) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -360,7 +364,10 @@ def _build_brain(config, fixture: dict[str, Any], secrets: list[str]):
     command = _expected_command(fixture["source_path"], fixture["answer_path"])
     relative_command = _expected_relative_command(fixture["fixture_dir"])
     allowed_commands = {command, relative_command}
-    read_answer_command = _expected_answer_read_command(fixture["answer_path"])
+    read_answer_commands = {
+        _expected_answer_read_command(fixture["answer_path"]),
+        _expected_relative_answer_read_command(fixture["fixture_dir"]),
+    }
     with patch("src.llm.brain.CustomToolManager", return_value=_NoCustomTools()), \
             patch("src.llm.brain.SkillManager", _NoSkills):
         brain = AdamBrain(
@@ -403,7 +410,7 @@ def _build_brain(config, fixture: dict[str, Any], secrets: list[str]):
             entry["reason"] = "command must be a string"
             entry["refused_without_side_effect"] = True
             raise TrialError("T1 runner refused a non-string command")
-        if terminal_command == read_answer_command:
+        if terminal_command in read_answer_commands:
             if successful_write_count != 1:
                 entry["status"] = "refused"
                 entry["reason"] = "answer.txt readback is permitted only after the fixture write"
