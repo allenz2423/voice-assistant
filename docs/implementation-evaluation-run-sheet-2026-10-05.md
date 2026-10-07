@@ -164,6 +164,37 @@ uv run --no-sync python -m tools.run_implementation_terminal_trial \
   --confirm-provider-inference
 ```
 
+### Headless D1 document capture
+
+For one provider-backed D1 sample, generate a fresh owner-private fixture and let the runner take the exact `prompts.document`, `paths.document_file`, and `oracles.document` from its `expected.json`. The exact prompt is `In "<absolute document.txt path>", change DRAFT to FINAL and save it. Leave every other character unchanged.` The independent pass oracle is that the saved file's raw bytes equal `oracles.document.final_text` exactly (`STATUS: FINAL\nOWNER: Adam\n`), preserving the owner line and final newline. The runner checks the starting bytes and oracle before inference and checks final bytes and `expected.json` integrity after the Brain call; it does not score the final answer as proof of the file state.
+
+The runner exposes only `read_file` and `write_file` schemas for the exact generated `document.txt` path. Model reads are optional and bounded to two dispatches; the runner permits at most one write, and accepts only `overwrite=true` with content exactly equal to the generated final text. Fixture reads and the atomic file replacement use guarded in-process directory-descriptor handlers: the runner opens the fixture path component by component without following symlinks, uses `O_NOFOLLOW` for fixture entries, and replaces only `document.txt` relative to the pinned directory descriptor. It does not delegate these operations to Adam's normal filesystem handlers. Other paths, symlinks, and disallowed write content are refused without following or modifying them; an unexpected starting state is rejected before inference.
+
+The private record retains the normalized answer, provider/tool trace, and allowlisted request/retry/usage/cost telemetry, including missing-accounting reasons, for manual review. Keep the record and event log private. Prose remains `manual_review_required`, even when the objective byte oracle passes. This headless capture measures the D1 Brain and guarded file-state path. It does not measure broad tool selection, a visible editor or GUI save/reopen flow, request-end-to-verified-state time, voice latency, audible acknowledgment, or laptop resource use; treat those as separate evidence.
+
+Before each provider-backed sample, perform a fresh external metadata-only check for the intended model. The runner requires an existing regular, non-symlink config owned by the current user and private to that user (0600 or stricter), provider `custom`, API base `https://openrouter.ai/api/v1`, the exact configured model ID, provider fallbacks disabled, and an operator-reported HTTP 200 response with a positive endpoint count and UTC check time no more than one hour old. It validates the supplied attestation but does not fetch or cryptographically verify metadata. Route readiness and live inference require separate flags. Use a new fixture and run ID for every sample, keep fixture and output directories owner-only (0700 or stricter), and keep the config and output/event files owner-only (0600 or stricter). The fixture directory is the runner's only task input; do not substitute a prompt or path.
+
+```bash
+umask 077
+python tools/create_implementation_fixtures.py \
+  --output-root /path/to/private/implementation-fixtures \
+  --run-id <fresh-fixture-id>
+mkdir -m 700 /path/to/private/d1-runs
+uv run --no-sync python -m tools.run_implementation_document_trial \
+  --fixture-dir /path/to/private/implementation-fixtures/<fresh-fixture-id> \
+  --config /path/to/existing/protected/config.yaml \
+  --run-id <unique-opaque-run-id> \
+  --config-id <non-secret-stable-route-label> \
+  --output /path/to/private/d1-runs/runs.jsonl \
+  --expected-model <exact-provider-model-id> \
+  --metadata-http-status 200 \
+  --metadata-model-id <exact-provider-model-id> \
+  --metadata-endpoint-count <positive-count> \
+  --metadata-checked-at <fresh-ISO-8601-UTC-time-ending-in-Z> \
+  --route-ready-confirmed \
+  --confirm-provider-inference
+```
+
 ### Headless M1 memory capture
 
 For one provider-backed M1 sample, generate a fresh fixture today and select exactly one of `day`, `week`, `year`, or `timezone`; the runner loads that prompt and its oracle directly from `expected.json`. Use a new opaque run ID for each invocation and an existing owner-only output directory. The runner validates the generated date, IANA timezone, three record texts, and four exact prompts; seeds only those records into a new explicit-path `MemoryManager` with embeddings disabled; runs one fresh, tool-less `AdamBrain`; captures TTS text without playback; and removes the temporary store after the turn. Keep the operator-reported metadata check and live inference as separate confirmations, using the same protected-config, exact `custom` route, pinned OpenRouter API base, and fallbacks-off requirements described above. The record retains the retrieved context and normalized answer but always remains `outcome: not_scored` / `manual_review_required`; review the answer against the selected M1 oracle independently. The runner does not score success from substring matches, start Adam's service, access a microphone, or open desktop/browser tools. Its tests mock the provider and make no live inference.
