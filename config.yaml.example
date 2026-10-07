@@ -118,6 +118,7 @@ llm:
   api_key: ""               # Optional API key for cloud/custom providers
   provider_only: []          # OpenRouter only: pin to a provider slug, e.g. ["relace"]
   allow_provider_fallbacks: true
+  experimental_factual_comparison_review: false # Experimental; adds one bounded review call to standalone comparisons
   tool_free_model: ""        # Optional model for short, generic, tool-free requests
   tool_free_provider_only: []
   tool_free_allow_provider_fallbacks: true

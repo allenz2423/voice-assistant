@@ -54,6 +54,7 @@ def _run_args(
     run_id: str = "run-001",
     fallback: bool = False,
     api_base: str = trial.EXPECTED_API_BASE,
+    experimental_review: bool = False,
 ):
     tmp_path.mkdir(parents=True, exist_ok=True)
     output_dir = tmp_path / "private"
@@ -62,7 +63,11 @@ def _run_args(
     else:
         output_dir.chmod(0o700)
     return {
-        "config_path": _config_file(tmp_path, fallbacks=fallback, api_base=api_base),
+        "config_path": _config_file(
+            tmp_path,
+            fallbacks=fallback,
+            api_base=api_base,
+        ),
         "prompt": trial.FACTUAL_PROMPT,
         "fixture_run_id": "f1-series-001",
         "run_id": run_id,
@@ -75,6 +80,7 @@ def _run_args(
         "metadata_endpoint_count": 31,
         "metadata_checked_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         "confirm_provider_inference": True,
+        "experimental_factual_comparison_review": experimental_review,
     }
 
 
@@ -91,8 +97,9 @@ class _FakeProvider:
         from src.telemetry.events import emit_event
 
         self.request_tools.append(tools)
+        span_id = f"provider-span-{len(self.request_tools)}"
         emit_event(
-            "llm.request_started", span_id="provider-span-1", status="started",
+            "llm.request_started", span_id=span_id, status="started",
             provider="custom", model=self.model, component="provider",
         )
         attributes = {"accounting_status": "available"}
@@ -104,7 +111,7 @@ class _FakeProvider:
                 "currency": "credits",
             }
         emit_event(
-            "llm.completed", span_id="provider-span-1", status="ok",
+            "llm.completed", span_id=span_id, status="ok",
             provider="custom", model=self.model, component="provider",
             attributes=attributes,
         )
@@ -158,6 +165,7 @@ def test_script_path_help_works_from_outside_repository(tmp_path):
 
     assert result.returncode == 0
     assert "usage: run_implementation_factual_trial.py" in result.stdout
+    assert "--experimental-factual-comparison-review" in result.stdout
     assert result.stderr == ""
 
 
@@ -189,6 +197,7 @@ def test_fake_provider_runs_brain_toolless_and_writes_private_trace_and_record(t
     assert constructed_configs[0].llm.provider == "custom"
     assert constructed_configs[0].llm.cloud_model == MODEL_ID
     assert constructed_configs[0].llm.tool_free_model == ""
+    assert constructed_configs[0].llm.experimental_factual_comparison_review is False
     assert constructed_configs[0].computer_control.enabled is False
     assert constructed_configs[0].computer_vision.enabled is False
     assert constructed_configs[0].browser_navigation.enabled is False
@@ -210,6 +219,7 @@ def test_fake_provider_runs_brain_toolless_and_writes_private_trace_and_record(t
         },
     }
     assert record["provider"]["provider_call_count"] == 1
+    assert record["experimental_factual_comparison_review"] is False
     assert record["provider"]["retry_count"] == 0
     assert record["provider"]["http_429_response_count"] == 0
     assert record["provider"]["usage"] == {
@@ -230,6 +240,60 @@ def test_fake_provider_runs_brain_toolless_and_writes_private_trace_and_record(t
     rows = [json.loads(line) for line in args["output_path"].read_text().splitlines()]
     assert rows == [record]
     assert "synthetic-test-secret" not in args["output_path"].read_text()
+
+
+def test_opt_in_comparison_review_records_both_provider_calls(tmp_path, monkeypatch):
+    args = _run_args(tmp_path, experimental_review=True)
+    fake = _FakeProvider()
+    constructed_configs = _patch_provider(monkeypatch, fake)
+    protected_config_text = args["config_path"].read_text(encoding="utf-8")
+
+    record = trial.run_trial(**args)
+
+    assert fake.request_tools == [[], []]
+    assert record["provider"]["provider_call_count"] == 2
+    assert len(record["normalized_provider_responses"]) == 2
+    assert record["brain_response_text"] == record["normalized_provider_responses"][1]["content"]
+    assert record["provider"]["usage"]["input_tokens"] == 256
+    assert record["provider"]["usage"]["output_tokens"] == 48
+    assert record["provider"]["usage"]["reported_cost"] == 0.002
+    assert constructed_configs[0].llm.experimental_factual_comparison_review is True
+    assert record["experimental_factual_comparison_review"] is True
+    assert args["config_path"].read_text(encoding="utf-8") == protected_config_text
+
+
+@pytest.mark.parametrize("enable_flag", [False, True])
+def test_cli_exposes_per_run_experimental_opt_in(monkeypatch, enable_flag):
+    captured = {}
+
+    def fake_run_trial(**kwargs):
+        captured.update(kwargs)
+        return {
+            "private_output_paths": {"record": "/private/run.jsonl"},
+            "brain_execution_status": "returned",
+        }
+
+    monkeypatch.setattr(trial, "run_trial", fake_run_trial)
+    argv = [
+        "--config", "/private/config.yaml",
+        "--prompt", trial.FACTUAL_PROMPT,
+        "--fixture-run-id", "series-1",
+        "--run-id", "run-1",
+        "--config-id", "route-1",
+        "--output", "/private/run.jsonl",
+        "--expected-model", MODEL_ID,
+        "--metadata-http-status", "200",
+        "--metadata-model-id", MODEL_ID,
+        "--metadata-endpoint-count", "3",
+        "--metadata-checked-at", "2026-10-06T12:00:00Z",
+        "--route-ready-confirmed",
+        "--confirm-provider-inference",
+    ]
+    if enable_flag:
+        argv.append("--experimental-factual-comparison-review")
+
+    assert trial.main(argv) == 0
+    assert captured["experimental_factual_comparison_review"] is enable_flag
 
 
 def test_brain_timing_excludes_asyncio_run_setup_and_teardown(tmp_path, monkeypatch):

@@ -32,6 +32,9 @@ from src.llm.brain import (
     _desktop_tool_evidence_for_final_answer,
     _is_dedicated_system_status_request,
     _is_browser_app,
+    _is_explicit_short_comparison_request,
+    _has_two_short_sentence_shape,
+    _should_review_short_comparison,
     _should_use_compact_conversation_prompt,
     _can_route_to_tool_free_model,
 )
@@ -104,6 +107,195 @@ def test_compact_conversation_prompt_defaults_to_short_plain_comparisons():
     assert "state the main difference first" in COMPACT_CONVERSATION_SYSTEM_PROMPT
     assert "avoid tables and lists unless requested" in COMPACT_CONVERSATION_SYSTEM_PROMPT
     assert "When the user asks for detail, examples, or a list, provide them" in COMPACT_CONVERSATION_SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize("prompt", [
+    "Compare rigatoni and penne in two short sentences.",
+    "Compare penguins and birds in two short sentences.",
+    "Compare iron and copper in two short sentences.",
+])
+def test_experimental_comparison_trigger_is_entity_agnostic_and_covers_f1(prompt):
+    assert _is_explicit_short_comparison_request(prompt)
+    assert _should_review_short_comparison(prompt, enabled=True)
+
+
+def test_experimental_comparison_trigger_does_not_rely_on_plain_chat_classifier():
+    prompt = "Compare rigatoni and penne in two short sentences."
+    assert not _can_answer_without_tools(prompt)
+    assert _should_review_short_comparison(prompt, enabled=True)
+
+
+@pytest.mark.parametrize("prompt", [
+    "Compare rigatoni and penne in two short sentences using this source.",
+    "Compare rigatoni and penne in two short sentences, and search the web.",
+    "Compare my notes and your notes in two short sentences.",
+    "Compare rigatoni and penne in two short sentences, then write the answer to a file.",
+])
+def test_experimental_comparison_trigger_excludes_source_action_and_personal_context(prompt):
+    assert not _is_explicit_short_comparison_request(prompt)
+    assert not _should_review_short_comparison(prompt, enabled=True)
+
+
+@pytest.mark.parametrize("context", [
+    {"memory_context": "A prior user fact."},
+    {"skill_context": "Specialized guidance."},
+    {"has_image": True},
+    {"needs_desktop_context": True},
+    {"has_task_evidence": True},
+    {"has_prior_context": True},
+    {"tools_executed": True},
+])
+def test_experimental_comparison_review_requires_clean_standalone_turn(context):
+    assert not _should_review_short_comparison(
+        "Compare rigatoni and penne in two short sentences.",
+        enabled=True,
+        **context,
+    )
+
+
+def test_experimental_comparison_review_is_disabled_by_default():
+    from src.config import LLMConfig
+
+    assert LLMConfig().experimental_factual_comparison_review is False
+
+
+@pytest.mark.parametrize("answer", [
+    "Rigatoni is a ridged tube; penne has angled ends. Both are pasta.",
+    "Penguins are birds, but many other birds can fly. Iron conducts electricity, and copper does too.",
+    "Iron conducts electricity. Copper conducts heat.",
+])
+def test_review_output_validator_accepts_two_short_sentence_spans(answer):
+    assert _has_two_short_sentence_shape(answer)
+
+
+@pytest.mark.parametrize("answer", [
+    "Rigatoni is a ridged tube.",
+    "Rigatoni is a ridged tube. Penne has angled ends. Both are pasta.",
+    "Rigatoni is a ridged tube Penne has angled ends.",
+    "Iron conducts electricity. .",
+    (
+        "Rigatoni is a ridged tube with a long and compacted shape that can hold sauce in many different "
+        "ways across a wide variety of dishes while remaining sturdy during cooking and serving to large "
+        "families. Penne has angled ends."
+    ),
+])
+def test_review_output_validator_rejects_wrong_count_empty_span_or_long_answer(answer):
+    assert not _has_two_short_sentence_shape(answer)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("review_result, expected_text", [
+    (
+        {"content": "Rigatoni is a ridged tube; penne has angled ends. Both are pasta.", "tool_calls": []},
+        "Rigatoni is a ridged tube; penne has angled ends. Both are pasta.",
+    ),
+    ({"content": "", "tool_calls": []}, "Draft answer."),
+    ({"content": "", "provider_error": True, "tool_calls": []}, "Draft answer."),
+    ({"content": "Unexpected tool request.", "tool_calls": [{"id": "review-tool"}]}, "Draft answer."),
+    ({"content": "Rigatoni is a ridged tube.", "tool_calls": []}, "Draft answer."),
+    (
+        {"content": "Rigatoni is ridged. Penne has angled ends. Both are pasta.", "tool_calls": []},
+        "Draft answer.",
+    ),
+    ({"content": "Iron conducts electricity. .", "tool_calls": []}, "Draft answer."),
+    (RuntimeError("synthetic review failure"), "Draft answer."),
+])
+async def test_experimental_comparison_review_is_bounded_and_preserves_draft_on_failure(
+    review_result, expected_text,
+):
+    class SilentTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        def __init__(self):
+            self.spoken = []
+
+        async def speak_async(self, text):
+            self.spoken.append(text)
+
+    class Model:
+        provider = "custom"
+
+        def __init__(self):
+            self.calls = []
+
+        async def chat(self, messages, tools=None, max_tokens=None, **_kwargs):
+            self.calls.append({
+                "messages": [dict(message) for message in messages],
+                "tools": tools,
+                "max_tokens": max_tokens,
+            })
+            if len(self.calls) == 1:
+                return {"content": "Draft answer.", "tool_calls": []}
+            if isinstance(review_result, Exception):
+                raise review_result
+            return review_result
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+        experimental_factual_comparison_review=True,
+    ))
+    tts = SilentTTS()
+    brain = AdamBrain(config, None, None, None, tts)
+    model = Model()
+    brain.llm_client = model
+    brain.skill_manager.get_matched_skill_context = lambda _query: None
+    tool_schema = SimpleNamespace(name="search_web")
+    brain.get_tools = lambda: [tool_schema]
+
+    with patch(
+        "src.llm.brain.get_open_windows_prompt_context",
+        return_value="Open window: Mozilla Firefox.",
+    ):
+        await brain.process_user_utterance("Compare rigatoni and penne in two short sentences.")
+
+    assert len(model.calls) == 2
+    assert model.calls[0]["max_tokens"] is None
+    assert model.calls[1]["max_tokens"] == 192
+    assert model.calls[0]["tools"] == [tool_schema]
+    assert model.calls[1]["tools"] == model.calls[0]["tools"]
+    assert "Mozilla Firefox" in model.calls[0]["messages"][-1]["content"]
+    assert "Draft answer." in model.calls[1]["messages"][1]["content"]
+    assert tts.spoken == [expected_text]
+
+
+@pytest.mark.asyncio
+async def test_comparison_review_does_not_change_tool_bearing_request_route():
+    class SilentTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        async def speak_async(self, _text):
+            pass
+
+    class Model:
+        async def chat(self, messages, tools=None, max_tokens=None, **_kwargs):
+            self.calls = getattr(self, "calls", [])
+            self.calls.append({"tools": tools, "max_tokens": max_tokens})
+            return {"content": "A source-backed comparison.", "tool_calls": []}
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+        experimental_factual_comparison_review=True,
+    ))
+    brain = AdamBrain(config, None, None, None, SilentTTS())
+    model = Model()
+    brain.llm_client = model
+    brain.skill_manager.get_matched_skill_context = lambda _query: None
+    tool_schema = SimpleNamespace(name="search_web")
+    brain.get_tools = lambda: [tool_schema]
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
+        await brain.process_user_utterance(
+            "Compare rigatoni and penne in two short sentences, and search the web for sources."
+        )
+
+    assert len(model.calls) == 1
+    assert model.calls[0]["tools"] == [tool_schema]
 
 
 def test_optional_tool_free_model_route_accepts_only_standalone_generic_chat():

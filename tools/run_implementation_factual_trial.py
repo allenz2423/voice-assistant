@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 from collections import Counter
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
@@ -686,6 +687,7 @@ def run_trial(
     metadata_endpoint_count: int | None,
     metadata_checked_at: str | None,
     confirm_provider_inference: bool,
+    experimental_factual_comparison_review: bool = False,
     brain_builder: Callable[[Any], tuple[Any, _CaptureOnlyTTS]] = _build_brain,
 ) -> dict[str, Any]:
     if prompt != FACTUAL_PROMPT:
@@ -705,7 +707,12 @@ def run_trial(
     if not confirm_provider_inference:
         raise TrialError("refusing live provider call without --confirm-provider-inference")
 
-    config = _load_existing_config(config_path.expanduser())
+    config = copy.deepcopy(_load_existing_config(config_path.expanduser()))
+    # The experiment is selected per run in this private copy; never write the
+    # operator's protected config back to disk.
+    config.llm.experimental_factual_comparison_review = bool(
+        experimental_factual_comparison_review
+    )
     route = _validate_config(config, config_id=config_id, expected_model=expected_model)
     if metadata_attestation["model_id"] != route["model"]:
         raise TrialError("metadata model ID must exactly match the configured model")
@@ -797,6 +804,9 @@ def run_trial(
         "app": "AdamBrain headless F1 text run",
         "build": _git_commit(),
         "route": route,
+        "experimental_factual_comparison_review": bool(
+            experimental_factual_comparison_review
+        ),
         "scenario": "F1",
         "phase": "cold",
         "phase_scope": "fresh headless Brain process; no daemon, microphone, TTS playback, or desktop",
@@ -895,6 +905,10 @@ def main(argv: list[str] | None = None) -> int:
         "--confirm-provider-inference", action="store_true",
         help="explicitly authorize one live provider-backed F1 turn",
     )
+    parser.add_argument(
+        "--experimental-factual-comparison-review", action="store_true",
+        help="opt in to the experimental bounded comparison review for this run only",
+    )
     args = parser.parse_args(argv)
     try:
         record = run_trial(
@@ -911,6 +925,9 @@ def main(argv: list[str] | None = None) -> int:
             metadata_endpoint_count=args.metadata_endpoint_count,
             metadata_checked_at=args.metadata_checked_at,
             confirm_provider_inference=args.confirm_provider_inference,
+            experimental_factual_comparison_review=(
+                args.experimental_factual_comparison_review
+            ),
         )
     except TrialError as exc:
         print(f"F1 trial refused: {exc}", file=sys.stderr)

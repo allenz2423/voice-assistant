@@ -899,6 +899,83 @@ def _can_answer_without_tools(user_text: str) -> bool:
     return bool(ordinary_conversation)
 
 
+_EXPLICIT_SHORT_COMPARISON_RE = re.compile(
+    r"^\s*compare\s+(?P<left>[^.!?\n]{1,160}?)\s+and\s+"
+    r"(?P<right>[^.!?\n]{1,160}?)\s+in\s+two\s+short\s+sentences[.!]?\s*$",
+    re.IGNORECASE,
+)
+_FACTUAL_COMPARISON_REVIEW_MAX_TOKENS = 192
+_COMPARISON_CONTEXT_CUE_RE = re.compile(
+    r"\b(?:my|mine|our|ours|your|yours|former|latter|above|previous|same|"
+    r"source|sources|citation|citations|cite|according\s+to|based\s+on|"
+    r"from|using|web|website|webpage|page|article|report|file|document|screen|"
+    r"latest|current|currently|today|yesterday|tomorrow|now|recent|"
+    r"search|look\s+up|browse|fetch|open|read|find|check|inspect|"
+    r"write|create|send|set|change|launch|click|type|run|execute|download|install)\b|"
+    r"https?://|[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}",
+    re.IGNORECASE,
+)
+
+
+def _is_explicit_short_comparison_request(user_text: str) -> bool:
+    """Match a narrow, entity-agnostic two-item comparison form for the experiment."""
+    text = str(user_text or "").strip()
+    return bool(
+        _EXPLICIT_SHORT_COMPARISON_RE.fullmatch(text)
+        and not _COMPARISON_CONTEXT_CUE_RE.search(text)
+    )
+
+
+def _should_review_short_comparison(
+    user_text: str,
+    *,
+    enabled: bool,
+    memory_context: str | None = None,
+    skill_context: str | None = None,
+    has_image: bool = False,
+    needs_desktop_context: bool = False,
+    has_task_evidence: bool = False,
+    has_prior_context: bool = False,
+    tools_executed: bool = False,
+) -> bool:
+    """Gate the experimental review to clean, standalone comparison turns."""
+    return bool(
+        enabled
+        and _is_explicit_short_comparison_request(user_text)
+        and not memory_context
+        and not skill_context
+        and not has_image
+        and not needs_desktop_context
+        and not has_task_evidence
+        and not has_prior_context
+        and not tools_executed
+    )
+
+
+_COMPARISON_WORD_RE = re.compile(r"\b[\w]+(?:['’][\w]+)?\b")
+
+
+def _has_two_short_sentence_shape(text: str, *, max_words_per_sentence: int = 30) -> bool:
+    """Check two nonempty punctuation-terminated spans and a short word count."""
+    candidate = str(text or "").strip()
+    if not candidate:
+        return False
+    endings = list(re.finditer(r"[.!?]+(?:[\"')\]]*)?(?=\s|$)", candidate))
+    if len(endings) != 2 or candidate[endings[-1].end():].strip():
+        return False
+
+    sentence_spans = [
+        (0, endings[0].end()),
+        (endings[0].end(), endings[1].end()),
+    ]
+    for start, end in sentence_spans:
+        sentence = candidate[start:end].strip()
+        words = _COMPARISON_WORD_RE.findall(sentence)
+        if not sentence or not words or len(words) > max_words_per_sentence:
+            return False
+    return True
+
+
 def _available_tools_for_capability_refusal(
     user_text: str, response_text: str, available_tools: list,
 ) -> list[str]:
@@ -2023,6 +2100,64 @@ class AdamBrain:
         except Exception as exc:
             print(f"[IdeaRouter] Calendar notification failed ({type(exc).__name__}).", flush=True)
 
+    async def _review_short_factual_comparison(
+        self,
+        user_text: str,
+        draft: str,
+        available_tools: list,
+    ) -> str:
+        """Use one bounded primary-model pass to catch broad comparison claims."""
+        review_prompt = (
+            "Review this short factual comparison for concrete accuracy problems. Check whether each trait "
+            "applies to every member or only some subtypes, whether the compared properties are like-for-like, "
+            "and whether a recommendation is stated as exclusive without support. Correct a specific factual "
+            "overstatement, but do not add claims beyond reliable general knowledge. Preserve the user's requested "
+            "format and brevity. If you find no concrete flaw, keep the draft unchanged. Return only the final answer."
+        )
+        review_messages = [
+            {"role": "system", "content": review_prompt},
+            {
+                "role": "user",
+                "content": f"Request: {user_text}\n\nDraft answer:\n{draft}",
+            },
+        ]
+        try:
+            with timed_stage("brain.factual_comparison_review"):
+                response = await self._await_with_progress(
+                    self.llm_client.chat(
+                        review_messages,
+                        tools=available_tools,
+                        max_tokens=_FACTUAL_COMPARISON_REVIEW_MAX_TOKENS,
+                    )
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            print(
+                f"[LLM] Factual comparison review failed ({type(exc).__name__}); keeping the original answer.",
+                flush=True,
+            )
+            return draft
+
+        if not isinstance(response, dict) or response.get("provider_error"):
+            return draft
+        # Preserve broad tool availability on the review request, but never
+        # dispatch a new action during this one-call, text-only review stage.
+        if response.get("tool_calls"):
+            print("[LLM] Factual comparison review requested a tool; keeping the original answer.", flush=True)
+            return draft
+        revised = response.get("content")
+        if not isinstance(revised, str) or not revised.strip():
+            return draft
+        revised = revised.strip()
+        if not _has_two_short_sentence_shape(revised):
+            print(
+                "[LLM] Factual comparison review returned malformed sentence structure; keeping the original answer.",
+                flush=True,
+            )
+            return draft
+        return revised
+
     async def process_user_utterance(self, user_text: str, memory_context: str | None = None):
         """Processes a transcribed user prompt through the autonomous ReAct cycle."""
         # The WebUI needs the actual current-turn boundary after history trimming.
@@ -2628,6 +2763,41 @@ class AdamBrain:
             if (
                 content and not tool_calls and not has_speech_tool and not turn_completed_with_speech
             ):
+                prior_context_messages = self.messages[:getattr(self, "_turn_message_start", 1)]
+                has_prior_context = any(
+                    message.get("role") in {"user", "assistant", "tool"}
+                    for message in prior_context_messages
+                )
+                review_enabled = bool(
+                    getattr(
+                        getattr(self.config, "llm", None),
+                        "experimental_factual_comparison_review",
+                        False,
+                    )
+                )
+                if _should_review_short_comparison(
+                    user_text,
+                    enabled=review_enabled,
+                    memory_context=memory_context,
+                    skill_context=skill_context,
+                    has_image=has_image,
+                    needs_desktop_context=needs_desktop_context,
+                    has_task_evidence=bool(
+                        initial_browser_observation
+                        or initial_desktop_observation
+                        or initial_desktop_screenshot
+                    ),
+                    has_prior_context=has_prior_context,
+                    tools_executed=bool(all_executed_tool_calls),
+                ):
+                    content = await self._review_short_factual_comparison(
+                        user_text,
+                        str(content),
+                        available_tools,
+                    )
+                    if self._is_interrupted or getattr(self.tts, "pending_barge_in_text", None):
+                        print("[Adam] Interrupted during factual comparison review. Halting turn.", flush=True)
+                        break
                 if any(message.get("images") for message in self.messages) and not response.get("provider_error"):
                     content = _format_visual_spoken_answer(content)
                 readback_summary = _summarize_desktop_readback_if_generic(
