@@ -1082,6 +1082,8 @@ def test_wayland_window_drag_holds_detected_modifier(monkeypatch):
 
 
 def test_hyprland_drag_uses_real_relative_motion_and_corrects_acceleration(monkeypatch):
+    # This branch consults os.environ directly to confirm that Hyprland is active.
+    monkeypatch.setenv("HYPRLAND_INSTANCE_SIGNATURE", "instance")
     commands = []
     cursor_states = iter([
         {"x": 100, "y": 100},   # Exact compositor-positioned drag start.

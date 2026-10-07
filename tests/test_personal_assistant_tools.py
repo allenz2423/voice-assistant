@@ -165,13 +165,21 @@ def test_docker_container_status():
     assert isinstance(res, str)
     assert len(res) > 5
 
-def test_get_open_windows_prompt_context():
-    from src.tools.desktop import get_open_windows_prompt_context
-    state = get_open_windows_prompt_context()
+def test_get_open_windows_prompt_context(monkeypatch):
+    from types import SimpleNamespace
+    from src.tools import desktop
+
+    context = "Desktop State:\nWorkspace: 2 | Focused Window: Browser"
+    environment_refreshes = []
+    backend = SimpleNamespace(get_open_windows_prompt_context=lambda: context)
+    monkeypatch.setattr(desktop, "ensure_gui_environment", lambda: environment_refreshes.append(True))
+    monkeypatch.setattr(desktop, "get_active_backend", lambda: backend)
+
+    state = desktop.get_open_windows_prompt_context()
+
     assert isinstance(state, str)
-    if state.startswith("No open desktop windows found"):
-        pytest.skip("The current Hyprland session has no open windows to describe.")
-    assert "Workspace" in state or "Desktop State" in state
+    assert state == context
+    assert environment_refreshes == [True]
 
 def test_resolve_application_entry_aliases():
     from src.tools.desktop import _resolve_application_entry, _scan_desktop_entries

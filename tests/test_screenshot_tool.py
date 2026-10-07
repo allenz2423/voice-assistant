@@ -1,5 +1,5 @@
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import PropertyMock, patch
 from io import BytesIO
 
 import pytest
@@ -108,6 +108,8 @@ async def test_screenshot_tool_attaches_image_to_followup_turn():
     brain.llm_client = DummyClient()
 
     with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Test desktop"), patch.object(
+        type(brain.computer_controller), "available", new_callable=PropertyMock, return_value=True,
+    ), patch.object(
         brain.computer_controller, "run",
         return_value=SimpleNamespace(screenshot=PNG_FIXTURE, message="Snapshot ID: test-snapshot"),
     ):

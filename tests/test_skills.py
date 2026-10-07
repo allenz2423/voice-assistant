@@ -18,6 +18,21 @@ from src.tools.desktop import (
 def skill_mgr():
     return SkillManager()
 
+
+@pytest.fixture(autouse=True)
+def isolate_desktop_detection_environment(monkeypatch):
+    for name in (
+        "XDG_CURRENT_DESKTOP",
+        "DESKTOP_SESSION",
+        "GDMSESSION",
+        "HYPRLAND_INSTANCE_SIGNATURE",
+        "SWAYSOCK",
+        "I3SOCK",
+        "NIRI_SOCKET",
+        "KDE_SESSION_VERSION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
 def test_skills_discovery_and_content(skill_mgr):
     skills = skill_mgr.list_skills()
     skill_ids = [s["id"] for s in skills]
