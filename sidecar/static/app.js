@@ -1,8 +1,9 @@
-// Adam WebUI Sidecar Client Script
+// Adam WebUI Sidecar Client Script - Revamped Desktop Interface
 
 (function () {
   let ws = null;
   let reconnectTimer = null;
+  let heartbeatTimer = null;
   let wsConnecting = false;
   let wsGeneration = 0;
   let pendingChatMessage = null;
@@ -60,6 +61,8 @@
   const sendBtn = document.getElementById("sendBtn");
   const statusBar = document.getElementById("statusBar");
   const statusMessage = document.getElementById("statusMessage");
+  const clearChatBtn = document.getElementById("clearChatBtn");
+  const scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
 
   // Telemetry & Tool Activity Elements
   const telemetryMode = document.getElementById("telemetryMode");
@@ -67,6 +70,10 @@
   const telemetryTools = document.getElementById("telemetryTools");
   const toolActivity = document.getElementById("toolActivity");
   const toolActivityEmpty = document.getElementById("toolActivityEmpty");
+
+  // Meeting Controls Elements
+  const meetingStartBtn = document.getElementById("meetingStartBtn");
+  const meetingStopBtn = document.getElementById("meetingStopBtn");
 
   // Auth Modal Elements
   const authModal = document.getElementById("authModal");
@@ -87,8 +94,123 @@
     }
   }
 
+  // Safe HTML Escaping & Markdown-like Formatter
+  function escapeHtml(str) {
+    if (!str) return "";
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function copyToClipboard(text, triggerEl) {
+    if (!text) return;
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).catch(() => {});
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); } catch {}
+      document.body.removeChild(ta);
+    }
+
+    if (triggerEl) {
+      const originalHtml = triggerEl.innerHTML;
+      triggerEl.textContent = "Copied!";
+      setTimeout(() => {
+        triggerEl.innerHTML = originalHtml;
+      }, 1500);
+    }
+  }
+
+  function renderFormattedMessage(rawText) {
+    if (!rawText) return "";
+    const escaped = escapeHtml(rawText);
+
+    // Extract code blocks first to protect their content
+    const codeBlocks = [];
+    let processed = escaped.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+      const id = codeBlocks.length;
+      codeBlocks.push({ lang, code });
+      return `@@CODE_BLOCK_${id}@@`;
+    });
+
+    // Inline code
+    processed = processed.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+
+    // Bold & Italics
+    processed = processed.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    processed = processed.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+
+    // Blockquotes (lines starting with &gt; )
+    processed = processed.replace(/^&gt;\s+(.*)$/gm, "<blockquote>$1</blockquote>");
+
+    // Bullet points (lines starting with - or *)
+    processed = processed.replace(/^[-*]\s+(.*)$/gm, "<li>$1</li>");
+    processed = processed.replace(/(<li>.*<\/li>\n?)+/g, "<ul>$&</ul>");
+
+    // Numbered lists (lines starting with 1. )
+    processed = processed.replace(/^\d+\.\s+(.*)$/gm, "<li>$1</li>");
+    processed = processed.replace(/(<li>.*<\/li>\n?)+/g, "<ol>$&</ol>");
+
+    // Paragraphs and breaks
+    processed = processed.replace(/\n{2,}/g, "</p><p>");
+    processed = processed.replace(/\n/g, "<br>");
+    processed = `<p>${processed}</p>`;
+
+    // Clean up empty tags
+    processed = processed.replace(/<p><\/p>/g, "");
+    processed = processed.replace(/<p>(<ul|<ol|<blockquote)/g, "$1");
+    processed = processed.replace(/(<\/ul>|<\/ol>|<\/blockquote>)<\/p>/g, "$1");
+
+    // Re-insert code blocks
+    processed = processed.replace(/@@CODE_BLOCK_(\d+)@@/g, (match, idx) => {
+      const block = codeBlocks[Number(idx)];
+      if (!block) return "";
+      const rawCode = block.code.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#039;/g, "'");
+      return `<pre><code>${block.code}</code></pre>`;
+    });
+
+    return processed;
+  }
+
+  // Scroll detection
+  function isUserScrolledNearBottom() {
+    const threshold = 120;
+    const pos = chatMessages.scrollTop + chatMessages.clientHeight;
+    return chatMessages.scrollHeight - pos <= threshold;
+  }
+
+  function updateScrollButton() {
+    if (scrollToBottomBtn) {
+      if (isUserScrolledNearBottom()) {
+        scrollToBottomBtn.classList.add("hidden");
+      } else {
+        scrollToBottomBtn.classList.remove("hidden");
+      }
+    }
+  }
+
+  if (chatMessages) {
+    chatMessages.addEventListener("scroll", updateScrollButton, { passive: true });
+  }
+
+  if (scrollToBottomBtn) {
+    scrollToBottomBtn.addEventListener("click", () => {
+      chatMessages.scrollTo({ top: chatMessages.scrollHeight, behavior: "smooth" });
+      scrollToBottomBtn.classList.add("hidden");
+    });
+  }
+
   // Append a message to the chat container
   function appendMessage(role, content, toolCalls, timestamp) {
+    const wasNearBottom = isUserScrolledNearBottom();
     const row = document.createElement("div");
     row.className = `message-row message-${role}`;
 
@@ -110,8 +232,33 @@
     if (content) {
       const body = document.createElement("div");
       body.className = "message-body";
-      body.textContent = content;
+      if (role === "assistant") {
+        body.innerHTML = renderFormattedMessage(content);
+      } else {
+        body.textContent = content;
+      }
       row.appendChild(body);
+
+      // Assistant action bar (Copy message)
+      if (role === "assistant") {
+        const actions = document.createElement("div");
+        actions.className = "message-actions";
+
+        const copyBtn = document.createElement("button");
+        copyBtn.type = "button";
+        copyBtn.className = "btn-msg-action";
+        copyBtn.title = "Copy message text";
+        copyBtn.innerHTML = `
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+            <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+          </svg>
+          <span>Copy</span>
+        `;
+        copyBtn.addEventListener("click", () => copyToClipboard(content, copyBtn));
+        actions.appendChild(copyBtn);
+        row.appendChild(actions);
+      }
     }
 
     if (toolCalls && toolCalls.length > 0) {
@@ -127,7 +274,12 @@
     }
 
     chatMessages.appendChild(row);
-    chatMessages.scrollTop = chatMessages.scrollHeight;
+
+    if (wasNearBottom || role === "user") {
+      chatMessages.scrollTop = chatMessages.scrollHeight;
+    } else {
+      updateScrollButton();
+    }
     return row;
   }
 
@@ -419,6 +571,11 @@
       ws = null;
     }
 
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+
     const token = getStoredToken();
     if (token) {
       try {
@@ -460,6 +617,16 @@
         clearInterval(reconnectTimer);
         reconnectTimer = null;
       }
+
+      // Keep protocol heartbeat alive
+      heartbeatTimer = setInterval(() => {
+        if (ws === socket && socket.readyState === WebSocket.OPEN) {
+          try {
+            socket.send(JSON.stringify({ type: "ping" }));
+          } catch {}
+        }
+      }, 25000);
+
       fetchStatus();
       loadHistory();
       checkAuthStatus();
@@ -479,7 +646,10 @@
       if (ws !== socket || generation !== wsGeneration) return;
       try {
         const data = JSON.parse(event.data);
-        if (data.type === "status") {
+        if (data.type === "pong") {
+          // Heartbeat ack
+          return;
+        } else if (data.type === "status") {
           updateTelemetry(data);
           setConnectionStatus(data.connected, data.mode, data.connected ? null : "Disconnected (No Live Daemon)");
         } else if (data.type === "state") {
@@ -514,6 +684,11 @@
     socket.onclose = (event) => {
       if (ws !== socket || generation !== wsGeneration) return;
       wsConnecting = false;
+      if (heartbeatTimer) {
+        clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+      }
+
       for (const row of liveTools.values()) {
         if (row.dataset.toolRunning === "true") {
           const badgeEl = row.querySelector(".tool-badge");
@@ -655,13 +830,35 @@
     }
   });
 
-  // Prompt chips
+  // Prompt chips & Meeting mode controls
   document.querySelectorAll(".prompt-chip").forEach((btn) => {
     btn.addEventListener("click", () => {
       const prompt = btn.getAttribute("data-prompt");
       if (prompt) sendMessage(prompt);
     });
   });
+
+  if (meetingStartBtn) {
+    meetingStartBtn.addEventListener("click", () => {
+      sendMessage("meeting mode on");
+    });
+  }
+
+  if (meetingStopBtn) {
+    meetingStopBtn.addEventListener("click", () => {
+      sendMessage("meeting mode off");
+    });
+  }
+
+  // Clear Chat View button
+  if (clearChatBtn) {
+    clearChatBtn.addEventListener("click", () => {
+      // Remove all message rows, leaving the initial system notice intact
+      const rows = chatMessages.querySelectorAll(".message-row");
+      rows.forEach((r) => r.remove());
+      updateScrollButton();
+    });
+  }
 
   // Auto-resize textarea
   chatInput.addEventListener("input", () => {

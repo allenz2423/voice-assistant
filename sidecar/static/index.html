@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#16191f">
+  <meta name="description" content="Adam - Voice-First Autonomous Linux Desktop Assistant Web Interface">
   <title>Adam // Assistant Dashboard</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -26,7 +28,7 @@
       </div>
 
       <!-- Header Status Cluster -->
-      <div class="header-badges" role="region" aria-label="System status badges">
+      <div class="header-badges" role="region" aria-label="System status indicators">
         <div id="connBadge" class="badge badge-offline" role="status" aria-label="Connection status">
           <span class="indicator-dot" aria-hidden="true"></span>
           <span id="connText">Connecting...</span>
@@ -42,7 +44,7 @@
           <span id="authText">Auth: Checking...</span>
         </button>
 
-        <div class="badge badge-voice" title="Adam prioritizes voice interaction; microphone is primary">
+        <div class="badge badge-voice" title="Adam prioritizes voice interaction with microphone barge-in">
           <svg class="badge-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
             <path d="M8 1a2.5 2.5 0 0 0-2.5 2.5v5A2.5 2.5 0 0 0 8 11a2.5 2.5 0 0 0 2.5-2.5v-5A2.5 2.5 0 0 0 8 1z"/>
             <path d="M4 7.5a.5.5 0 0 0-1 0A5 5 0 0 0 7.5 12.45V14H6a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1H8.5v-1.55A5 5 0 0 0 13 7.5a.5.5 0 0 0-1 0 4 4 0 0 1-8 0z"/>
@@ -89,7 +91,7 @@
         <svg class="tab-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
           <path d="M1 2.5A1.5 1.5 0 0 1 2.5 1h11A1.5 1.5 0 0 1 15 2.5v11a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 13.5v-11zM2.5 2a.5.5 0 0 0-.5.5V5h12V2.5a.5.5 0 0 0-.5-.5h-11zm12 4H2v7.5a.5.5 0 0 0 .5.5h11a.5.5 0 0 0 .5-.5V6z"/>
         </svg>
-        <span>System &amp; Tools</span>
+        <span>System &amp; Controls</span>
       </button>
     </nav>
 
@@ -103,23 +105,41 @@
             <span class="header-note">Unified daemon turn &amp; microphone interruption model</span>
           </div>
           <div class="chat-header-actions">
-            <span class="live-pill" title="Live bidirectional session">Live ReAct</span>
+            <button type="button" id="clearChatBtn" class="btn btn-ghost" title="Clear displayed messages from view" aria-label="Clear chat view">
+              <svg class="btn-icon-svg" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
+                <path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>
+              </svg>
+              <span>Clear View</span>
+            </button>
+            <span class="live-pill" title="Live bidirectional session via WebSocket">Live ReAct</span>
           </div>
         </div>
 
-        <!-- Chat Messages Log -->
-        <div id="chatMessages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions text">
-          <div class="system-notice" role="note">
-            <div class="notice-icon" aria-hidden="true">
-              <svg viewBox="0 0 16 16" fill="currentColor">
-                <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 2.5a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm1.2 8.5H6.8v-1h1.2V7.5H7V6.5h2.2v5.5z"/>
-              </svg>
-            </div>
-            <div class="notice-content">
-              <strong>Adam Assistant Dashboard Active</strong>
-              <p>Ordinary conversation and desktop tool actions execute through Adam's live ReAct pipeline. Microphone voice remains the primary interaction channel with real-time turn interruption.</p>
+        <!-- Chat Messages Container -->
+        <div class="chat-messages-wrapper">
+          <div id="chatMessages" class="chat-messages" role="log" aria-live="polite" aria-relevant="additions text">
+            <!-- Welcome / Architecture Notice -->
+            <div class="system-notice" role="note">
+              <div class="notice-icon" aria-hidden="true">
+                <svg viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 2.5a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm1.2 8.5H6.8v-1h1.2V7.5H7V6.5h2.2v5.5z"/>
+                </svg>
+              </div>
+              <div class="notice-content">
+                <strong>Adam Assistant Active</strong>
+                <p>Conversation and desktop tools execute through Adam's live ReAct engine. Microphone audio remains the primary interaction channel with real-time barge-in interruption. Meeting mode provides continuous recording with speaker diarization.</p>
+              </div>
             </div>
           </div>
+
+          <!-- Jump to latest floating button -->
+          <button type="button" id="scrollToBottomBtn" class="scroll-bottom-btn hidden" aria-label="Scroll to latest messages">
+            <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path fill-rule="evenodd" d="M8 1a.5.5 0 0 1 .5.5v11.793l3.146-3.147a.5.5 0 0 1 .708.708l-4 4a.5.5 0 0 1-.708 0l-4-4a.5.5 0 0 1 .708-.708L7.5 13.293V1.5A.5.5 0 0 1 8 1z"/>
+            </svg>
+            <span>Latest</span>
+          </button>
         </div>
 
         <!-- Activity / Status Bar -->
@@ -128,13 +148,22 @@
           <span id="statusMessage">Adam is processing request...</span>
         </div>
 
-        <!-- Prompt Suggestions -->
-        <div class="quick-prompts" role="group" aria-label="Quick prompts">
-          <button type="button" class="prompt-chip" data-prompt="What time is it?">What time is it?</button>
-          <button type="button" class="prompt-chip" data-prompt="Check system status">Check system status</button>
-          <button type="button" class="prompt-chip" data-prompt="What is the weather report?">Weather report</button>
-          <button type="button" class="prompt-chip" data-prompt="List active desktop windows">Active windows</button>
-          <button type="button" class="prompt-chip" data-prompt="Check battery level">Battery status</button>
+        <!-- Quick Actions & Meeting Controls Bar -->
+        <div class="quick-prompts-container" role="region" aria-label="Quick actions and controls">
+          <div class="quick-prompts-label" aria-hidden="true">Suggestions &amp; Controls:</div>
+          <div class="quick-prompts" role="group">
+            <button type="button" class="prompt-chip chip-action" data-prompt="meeting mode on" title="Start continuous meeting recording and speaker diarization">
+              <span class="chip-icon" aria-hidden="true">▶</span> Meeting mode on
+            </button>
+            <button type="button" class="prompt-chip chip-action" data-prompt="meeting mode off" title="Stop meeting recording and save transcript">
+              <span class="chip-icon" aria-hidden="true">⏹</span> Meeting mode off
+            </button>
+            <button type="button" class="prompt-chip" data-prompt="Check system status">Check system status</button>
+            <button type="button" class="prompt-chip" data-prompt="List active desktop windows">Active windows</button>
+            <button type="button" class="prompt-chip" data-prompt="What time is it?">What time is it?</button>
+            <button type="button" class="prompt-chip" data-prompt="What is the weather report?">Weather report</button>
+            <button type="button" class="prompt-chip" data-prompt="Check battery level">Battery level</button>
+          </div>
         </div>
 
         <!-- Chat Input Form -->
@@ -143,7 +172,7 @@
             <label for="chatInput" class="sr-only">Type a message to Adam</label>
             <textarea
               id="chatInput"
-              placeholder="Type a message to Adam... (Enter to send, Shift+Enter for new line)"
+              placeholder="Type a message to Adam... (Enter to send, Shift+Enter for newline)"
               rows="1"
               required
             ></textarea>
@@ -160,12 +189,47 @@
         </form>
       </section>
 
-      <!-- Right Column: Sidebar (Tool Activity, Telemetry, Gapped Features) -->
-      <aside id="sidebarSection" class="sidebar-section" role="tabpanel" aria-labelledby="mobileTabSidebar" aria-label="System telemetry and tool activity">
+      <!-- Right Column: Sidebar (Controls, Tools, Telemetry, Architecture) -->
+      <aside id="sidebarSection" class="sidebar-section" role="tabpanel" aria-labelledby="mobileTabSidebar" aria-label="System controls, telemetry, and tool activity">
+        <!-- Meeting Mode Controls Card -->
+        <div class="card card-meeting-controls">
+          <div class="card-header">
+            <div class="card-title-group">
+              <svg class="card-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M6 12.5a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 0-1h-3a.5.5 0 0 0-.5.5z"/>
+                <path d="M3 8.062C3 5.12 5.252 2.75 8 2.75s5 2.37 5 5.312c0 2.762-1.977 5.032-4.5 5.289v1.149h1.5a.5.5 0 0 1 0 1h-4a.5.5 0 0 1 0-1H7v-1.15C4.477 13.094 3 10.824 3 8.062zm5-4.312C5.8 3.75 4 5.684 4 8.062c0 2.217 1.517 4.07 3.5 4.288V7.5a.5.5 0 0 1 1 0v4.85c1.983-.218 3.5-2.071 3.5-4.288 0-2.378-1.8-4.312-4-4.312z"/>
+              </svg>
+              <h3>Meeting Mode</h3>
+            </div>
+            <span class="card-badge badge-control">Continuous</span>
+          </div>
+          <div class="card-body">
+            <p class="meeting-desc">Continuous ambient capture with speaker diarization. Meeting speech is transcribed to session logs without routing through the LLM turn loop.</p>
+            <div class="meeting-btn-group">
+              <button type="button" id="meetingStartBtn" class="btn btn-control btn-start" title="Start continuous meeting recording">
+                <span class="btn-icon-dot dot-green" aria-hidden="true"></span>
+                <span>Start Meeting</span>
+              </button>
+              <button type="button" id="meetingStopBtn" class="btn btn-control btn-stop" title="Stop meeting recording and save transcript">
+                <span class="btn-icon-dot dot-red" aria-hidden="true"></span>
+                <span>Stop Meeting</span>
+              </button>
+            </div>
+            <div class="meeting-status-note">
+              <span>Status updates and file paths appear directly in conversation history.</span>
+            </div>
+          </div>
+        </div>
+
         <!-- Live Tool Activity Card -->
         <div class="card card-tool-activity">
           <div class="card-header">
-            <h3>Tool Activity</h3>
+            <div class="card-title-group">
+              <svg class="card-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M1 0 0 1l2.2 3.081a1 1 0 0 0 .815.419h.07a1 1 0 0 1 .708.293l2.675 2.675-2.617 2.654A3.003 3.003 0 0 0 0 13a3 3 0 1 0 5.878-.851l2.654-2.617.968.968-.305.914a1 1 0 0 0 .242 1.023l3.27 3.27a.997.997 0 0 0 1.414 0l1.586-1.586a.997.997 0 0 0 0-1.414l-3.27-3.27a1 1 0 0 0-1.023-.242L10.5 9.5l-.969-.969L12.185 5.88A3.003 3.003 0 0 0 13 0a3 3 0 1 0-2.851 5.878L7.495 8.524 4.82 5.85a1 1 0 0 1-.293-.707v-.07a1 1 0 0 0-.419-.814L1 0zm2.146 3.146a.5.5 0 0 1 .708 0l1 1a.5.5 0 0 1-.708.708l-1-1a.5.5 0 0 1 0-.708z"/>
+              </svg>
+              <h3>Tool Activity</h3>
+            </div>
             <span class="card-badge">Live Stream</span>
           </div>
           <div id="toolActivity" class="tool-activity-list" aria-live="polite">
@@ -176,7 +240,12 @@
         <!-- Runtime Telemetry Card -->
         <div class="card card-telemetry">
           <div class="card-header">
-            <h3>Runtime Telemetry</h3>
+            <div class="card-title-group">
+              <svg class="card-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M0 2a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V2zm5.5 10a.5.5 0 0 0 .5.5h5a.5.5 0 0 0 0-1H6a.5.5 0 0 0-.5.5zm-3-4a.5.5 0 0 0 .5.5h8a.5.5 0 0 0 0-1H3a.5.5 0 0 0-.5.5zm0-3a.5.5 0 0 0 .5.5h10a.5.5 0 0 0 0-1H3a.5.5 0 0 0-.5.5z"/>
+              </svg>
+              <h3>Runtime Telemetry</h3>
+            </div>
             <span class="card-badge">Daemon</span>
           </div>
           <div class="card-body telemetry-grid">
@@ -202,12 +271,18 @@
         <!-- Long-Running Tasks Card (Planned Feature - P3 Gate) -->
         <div class="card card-unavailable">
           <div class="card-header">
-            <h3>Long-Running Tasks</h3>
+            <div class="card-title-group">
+              <svg class="card-icon icon-amber" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                <path d="M7.002 11a1 1 0 1 1 2 0 1 1 0 0 1-2 0zM7.1 4.995a.905.905 0 1 1 1.8 0l-.35 3.507a.552.552 0 0 1-1.1 0L7.1 4.995z"/>
+              </svg>
+              <h3>Long-Running Tasks</h3>
+            </div>
             <span class="gap-tag">UNAVAILABLE (P3 GATE)</span>
           </div>
           <div class="card-body">
             <div class="gap-callout">
-              <strong>Runtime Gap:</strong> Adam currently executes bounded turn-by-turn ReAct loops. A durable task checkpoint store, milestone tracking, and task recovery are part of the Priority P3 gate in <code>docs/proposed-codebase-fixes.md</code> and have not yet been implemented in the runtime.
+              <strong>Runtime Boundary:</strong> Adam executes bounded turn-by-turn ReAct loops. Durable task checkpointing, milestone recovery, and pause/resume APIs are part of the Priority P3 roadmap in <code>docs/proposed-codebase-fixes.md</code> and have not yet been implemented in the runtime.
             </div>
             <div class="empty-state">
               <p>No active long-running tasks.</p>
@@ -223,12 +298,17 @@
         <!-- Approvals Card (Planned Feature - P4 Gate) -->
         <div class="card card-unavailable">
           <div class="card-header">
-            <h3>Remote Approvals</h3>
+            <div class="card-title-group">
+              <svg class="card-icon icon-amber" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path d="M5.072.56C6.157.265 7.31 0 8 0s1.843.265 2.928.56c1.11.3 2.229.655 2.887.87a1.54 1.54 0 0 1 1.044 1.262c.596 4.477-.787 7.795-2.465 9.99a11.775 11.775 0 0 1-2.517 2.453 7.159 7.159 0 0 1-1.048.625c-.28.132-.581.24-.829.24s-.548-.108-.829-.24a7.158 7.158 0 0 1-1.048-.625 11.777 11.777 0 0 1-2.517-2.453C1.928 10.487.545 7.169 1.141 2.692A1.54 1.54 0 0 1 2.185 1.43 62.456 62.456 0 0 1 5.072.56z"/>
+              </svg>
+              <h3>Remote Approvals</h3>
+            </div>
             <span class="gap-tag">UNAVAILABLE (P4 GATE)</span>
           </div>
           <div class="card-body">
             <div class="gap-callout">
-              <strong>Runtime Gap:</strong> Verbal confirmation via microphone is Adam's only active confirmation path. Multi-channel remote approval API is not yet implemented in the runtime. Sensitive actions require voice confirmation.
+              <strong>Runtime Boundary:</strong> Verbal confirmation via microphone is Adam's only active confirmation path. Multi-channel remote approval API is not yet implemented. Sensitive actions require microphone voice confirmation.
             </div>
             <div class="empty-state">
               <p>No remote approvals pending.</p>
