@@ -8,6 +8,8 @@ from unittest.mock import patch
 from src.llm.brain import (
     AdamBrain,
     COMPACT_CONVERSATION_SYSTEM_PROMPT,
+    MEMORY_RECALL_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
     _can_direct_dispatch_system_status,
     _can_answer_without_tools,
     _desktop_no_progress_repeats,
@@ -104,6 +106,64 @@ def test_compact_conversation_prompt_defaults_to_short_plain_comparisons():
     assert "state the main difference first" in COMPACT_CONVERSATION_SYSTEM_PROMPT
     assert "avoid tables and lists unless requested" in COMPACT_CONVERSATION_SYSTEM_PROMPT
     assert "When the user asks for detail, examples, or a list, provide them" in COMPACT_CONVERSATION_SYSTEM_PROMPT
+
+
+def test_variant_calibration_stays_on_full_prompt_and_external_context_routes():
+    calibration = (
+        "For comparisons, distinguish category-wide traits from variant-specific traits "
+        "and qualify claims that apply only to particular variants."
+    )
+    assert calibration in SYSTEM_PROMPT
+    assert calibration not in COMPACT_CONVERSATION_SYSTEM_PROMPT
+    assert calibration not in MEMORY_RECALL_SYSTEM_PROMPT
+
+    f1_prompt = "Compare rigatoni and penne in two short sentences."
+    assert not _should_use_compact_conversation_prompt(f1_prompt)
+    assert not _should_use_compact_conversation_prompt(
+        "Read the report in my Downloads folder and check today's weather."
+    )
+    assert not _should_use_compact_conversation_prompt(
+        "What did I work on last week?",
+        memory_context="I worked on the migration last week.",
+    )
+
+
+@pytest.mark.asyncio
+async def test_exact_f1_prompt_uses_full_system_prompt_with_variant_calibration(monkeypatch):
+    class SilentTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        async def speak_async(self, _text):
+            pass
+
+    class Memory:
+        def retrieve_context(self, _query):
+            return None
+
+    class Model:
+        async def chat(self, messages, tools=None, **_kwargs):
+            self.messages = messages
+            self.tools = tools
+            return {"content": "They differ in shape and can hold sauce differently.", "tool_calls": []}
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+    ))
+    brain = AdamBrain(config, None, None, None, SilentTTS(), memory_mgr=Memory())
+    model = Model()
+    brain.llm_client = model
+    brain.skill_manager.get_matched_skill_context = lambda _query: None
+    monkeypatch.setattr("src.llm.brain.get_open_windows_prompt_context", lambda: "")
+
+    await brain.process_user_utterance("Compare rigatoni and penne in two short sentences.")
+
+    system_message = model.messages[0]["content"]
+    assert system_message.startswith(SYSTEM_PROMPT)
+    assert "For comparisons, distinguish category-wide traits from variant-specific traits" in system_message
+    assert model.tools
 
 
 def test_optional_tool_free_model_route_accepts_only_standalone_generic_chat():
