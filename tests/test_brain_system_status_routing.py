@@ -8,6 +8,8 @@ from unittest.mock import patch
 from src.llm.brain import (
     AdamBrain,
     COMPACT_CONVERSATION_SYSTEM_PROMPT,
+    MEMORY_RECALL_SYSTEM_PROMPT,
+    SYSTEM_PROMPT,
     _can_direct_dispatch_system_status,
     _can_answer_without_tools,
     _desktop_no_progress_repeats,
@@ -34,6 +36,13 @@ from src.llm.brain import (
     _is_browser_app,
     _should_use_compact_conversation_prompt,
     _can_route_to_tool_free_model,
+)
+from tools.run_implementation_factual_trial import FACTUAL_PROMPT
+
+
+VARIANT_COMPARISON_GUIDANCE = (
+    "When comparing categories with variants, do not state a variant-specific trait as universal; "
+    "name the variant when needed. Describe recommended pairings as possible fits, not exclusive rules."
 )
 
 
@@ -104,6 +113,58 @@ def test_compact_conversation_prompt_defaults_to_short_plain_comparisons():
     assert "state the main difference first" in COMPACT_CONVERSATION_SYSTEM_PROMPT
     assert "avoid tables and lists unless requested" in COMPACT_CONVERSATION_SYSTEM_PROMPT
     assert "When the user asks for detail, examples, or a list, provide them" in COMPACT_CONVERSATION_SYSTEM_PROMPT
+
+
+@pytest.mark.asyncio
+async def test_exact_f1_prompt_uses_full_prompt_with_generic_variant_guidance():
+    class SilentTTS:
+        engine = "silent"
+        pending_barge_in_text = None
+
+        async def speak_async(self, text):
+            self.last_text = text
+
+    class Memory:
+        def retrieve_context(self, _query):
+            return None
+
+    class Model:
+        def __init__(self):
+            self.messages = None
+            self.tools = None
+
+        async def chat(self, messages, tools=None, **_kwargs):
+            self.messages = messages
+            self.tools = tools
+            return {"content": "A concise comparison.", "tool_calls": []}
+
+    assert FACTUAL_PROMPT == "Compare rigatoni and penne in two short sentences."
+    assert not _should_use_compact_conversation_prompt(FACTUAL_PROMPT)
+    assert VARIANT_COMPARISON_GUIDANCE in SYSTEM_PROMPT
+    assert VARIANT_COMPARISON_GUIDANCE not in COMPACT_CONVERSATION_SYSTEM_PROMPT
+    assert VARIANT_COMPARISON_GUIDANCE not in MEMORY_RECALL_SYSTEM_PROMPT
+
+    config = SimpleNamespace(llm=SimpleNamespace(
+        provider="custom", local_model="test", cloud_model="test",
+        ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
+        api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
+    ))
+    tts = SilentTTS()
+    brain = AdamBrain(config, None, None, None, tts, memory_mgr=Memory())
+    model = Model()
+    brain.llm_client = model
+    brain.tool_free_llm_client = None
+    brain.get_tools = lambda: []
+    brain.skill_manager.get_matched_skill_context = lambda _query: None
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value=""):
+        await brain.process_user_utterance(FACTUAL_PROMPT)
+
+    assert model.messages[0]["role"] == "system"
+    assert model.messages[0]["content"].startswith(SYSTEM_PROMPT)
+    assert VARIANT_COMPARISON_GUIDANCE in model.messages[0]["content"]
+    assert model.tools == []
+    assert tts.last_text == "A concise comparison."
 
 
 def test_optional_tool_free_model_route_accepts_only_standalone_generic_chat():
