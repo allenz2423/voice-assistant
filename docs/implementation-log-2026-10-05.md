@@ -570,3 +570,9 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - The user reported a host crash and switch to KDE. Root resumed the bounded Web UI review with `/home/incoming/.local/bin/agy --continue --mode accept-edits --print`; the process exited **0**. `agy` reported no edits and reported that `git diff --check`, `node -c sidecar/static/app.js`, and `uv run pytest tests/test_sidecar.py -v` passed, with **25/25** sidecar tests.
 - Independent workspace inspection found no tracked UI diff; untracked files remain in the checkout. The current blockers are the lack of live browser visual validation, no laptop access per the user, and unavailable Playwright for B1.
 - Next eligible work is a headless Loop 1/5 M1 dated-recall trial using the exact day, week, year, and timezone prompts in the generated fixture's `expected.json`; the runner is in progress.
+
+## Checkpoint 63 — prepare headless M1 dated-recall trials
+
+- Added `tools/run_implementation_memory_trial.py`, its focused tests, and the run-sheet procedure for one fixture-backed M1 prompt per run. The owner reported **8 mocked focused tests passed**. My independent read-only review found no actionable findings. Results remain `not_scored` / `manual_review_required` for independent answer review.
+- No live provider inference, laptop, microphone, or desktop was used. The M1 live exploratory outcome remains unmeasured. Next, run fresh headless trials for day, week, year, and timezone with independent oracle review after the route metadata gate is confirmed.
+- `git diff --check` passed.

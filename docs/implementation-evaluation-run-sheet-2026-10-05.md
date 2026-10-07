@@ -110,6 +110,32 @@ uv run --no-sync python -m tools.run_implementation_file_status_trial \
 
 The fixture path is the runner's only task input; do not substitute a prompt or another file. Preserve the generated fixture unchanged for the trial. Do not enable service startup, microphone capture, desktop control, or TTS playback for this headless run.
 
+### Headless M1 memory capture
+
+For one provider-backed M1 sample, generate a fresh fixture today and select exactly one of `day`, `week`, `year`, or `timezone`; the runner loads that prompt and its oracle directly from `expected.json`. Use a new opaque run ID for each invocation and an existing owner-only output directory. The runner validates the generated date, IANA timezone, three record texts, and four exact prompts; seeds only those records into a new explicit-path `MemoryManager` with embeddings disabled; runs one fresh, tool-less `AdamBrain`; captures TTS text without playback; and removes the temporary store after the turn. Keep the operator-reported metadata check and live inference as separate confirmations, using the same protected-config, exact `custom` route, pinned OpenRouter API base, and fallbacks-off requirements described above. The record retains the retrieved context and normalized answer but always remains `outcome: not_scored` / `manual_review_required`; review the answer against the selected M1 oracle independently. The runner does not score success from substring matches, start Adam's service, access a microphone, or open desktop/browser tools. Its tests mock the provider and make no live inference.
+
+```bash
+umask 077
+python tools/create_implementation_fixtures.py \
+  --output-root /tmp/adam-implementation-fixtures \
+  --run-id <fresh-fixture-id>
+mkdir -m 700 /tmp/adam-m1-<series-id>
+uv run --no-sync python -m tools.run_implementation_memory_trial \
+  --fixture-dir /tmp/adam-implementation-fixtures/<fresh-fixture-id> \
+  --prompt-id day \
+  --config /path/to/existing/protected/config.yaml \
+  --run-id <unique-opaque-run-id> \
+  --config-id <non-secret-stable-route-label> \
+  --output /tmp/adam-m1-<series-id>/runs.jsonl \
+  --expected-model <exact-provider-model-id> \
+  --metadata-http-status 200 \
+  --metadata-model-id <exact-provider-model-id> \
+  --metadata-endpoint-count <positive-count> \
+  --metadata-checked-at <fresh-ISO-8601-UTC-time-ending-in-Z> \
+  --route-ready-confirmed \
+  --confirm-provider-inference
+```
+
 ## GUI capture proof
 
 Use a disposable Xvfb session for settings/browser trials when available. Before any provider-backed screenshot call, capture and locally inspect the intended window only. Record the X server/display, window ID, exact title, owning PID, window bounds, crop bounds, and image width/height. Confirm with the local image viewer that no desktop, other window, notification, account name, or unrelated content is visible. Also confirm capture identity is stable immediately before and after the screenshot. If any identity or crop field is missing or ambiguous, mark the trial `scope_blocked` and do not upload an image. A loopback HTML fixture contains no user data, but does not waive the window-scope proof.
