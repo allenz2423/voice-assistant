@@ -110,6 +110,33 @@ uv run --no-sync python -m tools.run_implementation_file_status_trial \
 
 The fixture path is the runner's only task input; do not substitute a prompt or another file. Preserve the generated fixture unchanged for the trial. Do not enable service startup, microphone capture, desktop control, or TTS playback for this headless run.
 
+### Headless F3 system-status capture
+
+Generate a fresh owner-private fixture and use its exact `prompts.system_status` text: “According to a fresh system status check, how many logical CPU cores does this system have and what percentage of memory is in use?” The F3 runner requires the generated fixture directory and prompt, disables memory, skills, custom tools, desktop, browser, secondary tool-free routing, and playback, and offers only `get_system_status`. It allows one empty-object dispatch and at most two logical calls to the primary provider. Immediately around the dispatch it records timestamped logical CPU count plus raw `/proc/meminfo` `MemTotal` and `MemAvailable` KiB values, and derives contemporaneous memory use; the tool's full result, normalized provider answer, and allowlisted request/retry/usage telemetry stay in the private run record and companion event file. The snapshot comparison is evidence for review only: every run remains `manual_review_required`, even when the readback aligns with both snapshots. This is a headless Brain call and does not measure user request-end timing, independent task completion, or audible acknowledgment.
+
+Before each provider-backed run, perform a fresh external metadata-only check for the exact configured model and supply its HTTP 200 status, exact model ID, positive endpoint count, and UTC timestamp. The runner validates that operator-reported attestation and requires the protected config, `custom`, the pinned OpenRouter API base, and fallbacks disabled; it does not fetch or cryptographically verify metadata itself. Route confirmation and live inference are separate required flags. Use a new fixture ID and run ID, and keep fixture and output directories owner-only (0700 or stricter); the config and output/event files must be owner-only (0600 or stricter). The runner records provider-reported token and cost totals when complete and records reasons when accounting is unavailable. Retain all attempts, errors, and retry evidence; independently review the answer and do not promote the F3 result to an automatic pass.
+
+```bash
+umask 077
+python tools/create_implementation_fixtures.py \
+  --output-root /path/to/private/implementation-fixtures \
+  --run-id <fresh-fixture-id>
+mkdir -m 700 /path/to/private/f3-runs
+uv run --no-sync python -m tools.run_implementation_system_status_trial \
+  --fixture-dir /path/to/private/implementation-fixtures/<fresh-fixture-id> \
+  --config /path/to/existing/protected/config.yaml \
+  --run-id <unique-opaque-run-id> \
+  --config-id <non-secret-stable-route-label> \
+  --output /path/to/private/f3-runs/runs.jsonl \
+  --expected-model <exact-provider-model-id> \
+  --metadata-http-status 200 \
+  --metadata-model-id <exact-provider-model-id> \
+  --metadata-endpoint-count <positive-count> \
+  --metadata-checked-at <fresh-ISO-8601-UTC-time-ending-in-Z> \
+  --route-ready-confirmed \
+  --confirm-provider-inference
+```
+
 ### Headless M1 memory capture
 
 For one provider-backed M1 sample, generate a fresh fixture today and select exactly one of `day`, `week`, `year`, or `timezone`; the runner loads that prompt and its oracle directly from `expected.json`. Use a new opaque run ID for each invocation and an existing owner-only output directory. The runner validates the generated date, IANA timezone, three record texts, and four exact prompts; seeds only those records into a new explicit-path `MemoryManager` with embeddings disabled; runs one fresh, tool-less `AdamBrain`; captures TTS text without playback; and removes the temporary store after the turn. Keep the operator-reported metadata check and live inference as separate confirmations, using the same protected-config, exact `custom` route, pinned OpenRouter API base, and fallbacks-off requirements described above. The record retains the retrieved context and normalized answer but always remains `outcome: not_scored` / `manual_review_required`; review the answer against the selected M1 oracle independently. The runner does not score success from substring matches, start Adam's service, access a microphone, or open desktop/browser tools. Its tests mock the provider and make no live inference.
