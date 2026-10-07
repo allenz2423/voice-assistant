@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -67,25 +68,41 @@ def _args(tmp_path: Path, *, fixture: Path | None = None, run_id: str = "t1-run-
 class _FakeProvider:
     provider = "custom"
 
-    def __init__(self, command: str, *, duplicate_calls: bool = False, final_answer: str = "Done.") -> None:
-        self.command = command
+    def __init__(self, command: str | list[str], *, duplicate_calls: bool = False,
+                 batch_calls: bool = False, final_answer: str = "Done.") -> None:
+        self.commands = [command] if isinstance(command, str) else list(command)
         self.duplicate_calls = duplicate_calls
+        self.batch_calls = batch_calls
         self.final_answer = final_answer
         self.calls = 0
         self.request_tools: list[list[str]] = []
 
+    @staticmethod
+    def _tool_call(command: str, call_id: str) -> dict:
+        return {
+            "id": call_id,
+            "function": {"name": "run_bash_command", "arguments": {"command": command}},
+        }
+
     async def chat(self, messages, tools=None, max_tokens=None, think=None):
         self.calls += 1
         self.request_tools.append([tool.name for tool in tools or []])
-        if self.calls == 1:
-            tool_call = {
-                "id": "t1-terminal-1",
-                "function": {"name": "run_bash_command", "arguments": {"command": self.command}},
-            }
+        if self.batch_calls and self.calls == 1:
             return {
                 "role": "assistant",
                 "content": "",
-                "tool_calls": [tool_call, dict(tool_call, id="t1-terminal-2")] if self.duplicate_calls else [tool_call],
+                "tool_calls": [
+                    self._tool_call(command, f"t1-terminal-{index}")
+                    for index, command in enumerate(self.commands, 1)
+                ],
+            }
+        if self.calls <= len(self.commands):
+            tool_call = self._tool_call(self.commands[self.calls - 1], f"t1-terminal-{self.calls}")
+            return {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [tool_call, dict(tool_call, id="t1-terminal-duplicate")]
+                if self.duplicate_calls and self.calls == 1 else [tool_call],
             }
         return {"role": "assistant", "content": self.final_answer, "tool_calls": []}
 
@@ -143,6 +160,7 @@ def test_exact_fixture_terminal_operation_writes_exact_oracle_and_preserves_sour
     assert "source.txt" in offered_tool.description
     assert "answer.txt" in offered_tool.description
     assert "ITEM:" in offered_tool.description
+    assert "only the exact generated command" not in offered_tool.description
     assert record["prompt"] == expected["prompts"]["terminal"]
     assert record["oracle"]["status"] == "pass"
     assert record["oracle"]["answer_file_matches_exact_bytes"] is True
@@ -193,7 +211,118 @@ def test_duplicate_dispatch_attempts_do_not_overwrite_answer_and_fail_oracle(tmp
     assert record["dispatch_trace"][0]["status"] == "returned"
     assert record["dispatch_trace"][1]["status"] == "refused"
     assert record["oracle"]["status"] == "fail"
-    assert "more than one" in record["oracle"]["objective_evidence_reasons"][-1]
+    assert "another terminal operation" in record["oracle"]["objective_evidence_reasons"][-1]
+
+
+def test_relative_cd_grep_form_is_accepted_and_interpreted_in_process(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    fixture = trial._validate_fixture(args["fixture_dir"])
+    command = trial._expected_relative_command(fixture["fixture_dir"])
+    fake = _FakeProvider(command)
+    _patch_provider(monkeypatch, fake)
+
+    record = trial.run_trial(**args)
+
+    assert record["oracle"]["status"] == "pass"
+    assert record["oracle"]["successful_terminal_dispatch_count"] == 1
+    assert record["dispatch_trace"][0]["arguments"]["command"] == command
+    assert record["dispatch_trace"][0]["interpreted_in_process"] is True
+    assert record["dispatch_trace"][0]["shell_started"] is False
+    assert (fixture["answer_path"]).read_bytes() == b"3\n"
+
+
+def test_refused_benign_spelling_does_not_consume_success_slot_before_correction(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    fixture = trial._validate_fixture(args["fixture_dir"])
+    benign_unrecognized = (
+        f"grep -c '^ITEM:' '{fixture['source_path']}' > '{fixture['answer_path']}'"
+    )
+    corrected = trial._expected_relative_command(fixture["fixture_dir"])
+    fake = _FakeProvider([benign_unrecognized, benign_unrecognized, corrected])
+    _patch_provider(monkeypatch, fake)
+
+    record = trial.run_trial(**args)
+
+    assert fake.calls == 4
+    assert len(record["dispatch_trace"]) == 3
+    assert record["dispatch_trace"][0]["status"] == "refused"
+    assert record["dispatch_trace"][0]["refused_without_side_effect"] is True
+    assert record["dispatch_trace"][1]["status"] == "refused"
+    assert record["dispatch_trace"][1]["refused_without_side_effect"] is True
+    assert record["dispatch_trace"][2]["status"] == "returned"
+    assert record["oracle"]["status"] == "pass"
+    assert record["oracle"]["successful_terminal_dispatch_count"] == 1
+    assert record["oracle"]["refused_terminal_dispatch_count"] == 2
+    assert record["oracle"]["terminal_tool_call_attempt_count"] == 3
+    assert record["telemetry"]["logical_primary_client_chat_call_limit"] == 4
+    assert (fixture["answer_path"]).read_bytes() == b"3\n"
+
+
+def test_path_escape_is_refused_without_writing_outside_fixture(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    fixture = trial._validate_fixture(args["fixture_dir"])
+    escaped_answer = fixture["fixture_dir"].parent / "outside-answer.txt"
+    command = (
+        f"cd {shlex.quote(str(fixture['fixture_dir']))} && "
+        "grep -c '^ITEM:' source.txt > ../outside-answer.txt"
+    )
+    _patch_provider(monkeypatch, _FakeProvider(command))
+
+    record = trial.run_trial(**args)
+
+    assert not escaped_answer.exists()
+    assert not fixture["answer_path"].exists()
+    assert record["dispatch_trace"][0]["status"] == "refused"
+    assert record["dispatch_trace"][0]["refused_without_side_effect"] is True
+    assert record["oracle"]["status"] == "fail"
+
+
+def test_batch_over_attempt_limit_is_stopped_before_any_tool_dispatch(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    fixture = trial._validate_fixture(args["fixture_dir"])
+    command = trial._expected_relative_command(fixture["fixture_dir"])
+    fake = _FakeProvider([command, command, command, command], batch_calls=True)
+    _patch_provider(monkeypatch, fake)
+
+    record = trial.run_trial(**args)
+
+    assert record["oracle"]["terminal_tool_call_attempt_count"] == 4
+    assert record["oracle"]["terminal_tool_call_attempt_limit"] == 3
+    assert record["oracle"]["status"] == "fail"
+    assert record["dispatch_trace"] == []
+    assert not fixture["answer_path"].exists()
+
+
+def test_cli_returns_failure_when_brain_returns_but_objective_oracle_fails(monkeypatch, capsys):
+    monkeypatch.setattr(trial, "run_trial", lambda **_kwargs: {
+        "run_id": "t1-cli-failed-oracle",
+        "fixture_id": "t1-fixture-cli",
+        "scenario": "T1",
+        "oracle": {"status": "fail"},
+        "brain_execution_status": "returned",
+        "telemetry": {"logical_primary_client_chat_calls": 2},
+        "private_output_paths": {"record": "/private/runs.jsonl", "events": "/private/events.jsonl"},
+    })
+
+    exit_status = trial.main([
+        "--fixture-dir", "/private/t1-fixture",
+        "--config", "/private/config.yaml",
+        "--run-id", "t1-cli-run",
+        "--config-id", "route-v1",
+        "--output", "/private/runs.jsonl",
+        "--expected-model", MODEL_ID,
+        "--metadata-http-status", "200",
+        "--metadata-model-id", MODEL_ID,
+        "--metadata-endpoint-count", "1",
+        "--metadata-checked-at", "2026-10-06T12:00:00Z",
+        "--route-ready-confirmed",
+        "--confirm-provider-inference",
+    ])
+
+    assert exit_status == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["brain_execution_status"] == "returned"
+    assert printed["outcome"] == "fail"
 
 
 def test_changed_source_or_existing_answer_is_refused_before_provider_construction(tmp_path, monkeypatch):

@@ -49,8 +49,9 @@ from src.llm.tools import CanonicalTool
 from src.telemetry.events import configure_telemetry, reset_trace_id, set_trace_id
 
 FIXTURE_VERSION = 4
-MAX_TOOL_DISPATCHES = 1
-MAX_LOGICAL_CHAT_CALLS = 2
+MAX_SUCCESSFUL_TOOL_DISPATCHES = 1
+MAX_TOOL_DISPATCH_ATTEMPTS = 3
+MAX_LOGICAL_CHAT_CALLS = 4
 MAX_RESPONSE_CHARS = 16_000
 MAX_TOOL_TRACE_CHARS = 8_192
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,79}\Z")
@@ -105,13 +106,15 @@ class _CapturingClient:
         self.secrets = secrets
         self.responses: list[dict[str, Any]] = []
         self.requests: list[dict[str, Any]] = []
+        self.tool_call_suggestions = 0
+        self.tool_call_limit_exceeded = False
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)
 
     async def chat(self, messages: list[dict], tools=None, max_tokens=None, think=None) -> dict:
         if len(self.requests) >= MAX_LOGICAL_CHAT_CALLS:
-            raise TrialError("T1 runner stopped after its two logical primary chat-call bound")
+            raise TrialError("T1 runner stopped after its four logical primary chat-call bound")
         offered = list(tools or [])
         names = [getattr(tool, "name", None) for tool in offered]
         allowed = names == ["run_bash_command"] if not self.requests else names in (["run_bash_command"], [])
@@ -129,6 +132,9 @@ class _CapturingClient:
         calls = []
         raw_calls = response.get("tool_calls")
         if isinstance(raw_calls, list):
+            self.tool_call_suggestions += len(raw_calls)
+            if self.tool_call_suggestions > MAX_TOOL_DISPATCH_ATTEMPTS:
+                self.tool_call_limit_exceeded = True
             for call in raw_calls[:8]:
                 function = call.get("function") if isinstance(call, dict) else None
                 function = function if isinstance(function, dict) else {}
@@ -152,6 +158,8 @@ class _CapturingClient:
             "tool_calls": calls,
             "provider_error": response.get("provider_error") is True,
         })
+        if self.tool_call_limit_exceeded:
+            raise TrialError("T1 runner stopped before dispatch after the three terminal tool-call attempt limit")
         return response
 
 
@@ -283,6 +291,10 @@ def _expected_command(source_path: Path, answer_path: Path) -> str:
     return f"grep -c '^ITEM:' {shlex.quote(str(source_path))} > {shlex.quote(str(answer_path))}"
 
 
+def _expected_relative_command(fixture_dir: Path) -> str:
+    return f"cd {shlex.quote(str(fixture_dir))} && grep -c '^ITEM:' source.txt > answer.txt"
+
+
 def _write_answer(answer_path: Path, content: bytes) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -342,6 +354,8 @@ def _build_brain(config, fixture: dict[str, Any], secrets: list[str]):
         config.browser_navigation.enabled = False
     tts = _CaptureOnlyTTS()
     command = _expected_command(fixture["source_path"], fixture["answer_path"])
+    relative_command = _expected_relative_command(fixture["fixture_dir"])
+    allowed_commands = {command, relative_command}
     with patch("src.llm.brain.CustomToolManager", return_value=_NoCustomTools()), \
             patch("src.llm.brain.SkillManager", _NoSkills):
         brain = AdamBrain(
@@ -354,17 +368,26 @@ def _build_brain(config, fixture: dict[str, Any], secrets: list[str]):
     brain.llm_client = _CapturingClient(brain.llm_client, secrets)
     dispatch_trace: list[dict[str, Any]] = []
     dispatch_lock = asyncio.Lock()
+    dispatch_attempt_count = 0
+    successful_dispatch_count = 0
 
     async def restricted_execute_locked(name: str, args: dict) -> str:
+        nonlocal dispatch_attempt_count, successful_dispatch_count
+        dispatch_attempt_count += 1
         entry: dict[str, Any] = {
             "tool_name": str(name)[:100],
             "arguments": f2._private_value(args, secrets, string_limit=2_000),
+            "attempt_number": dispatch_attempt_count,
         }
         dispatch_trace.append(entry)
-        if len(dispatch_trace) > MAX_TOOL_DISPATCHES:
+        if dispatch_attempt_count > MAX_TOOL_DISPATCH_ATTEMPTS:
             entry["status"] = "refused"
-            entry["reason"] = "dispatch limit reached"
-            raise TrialError("T1 runner permits only one terminal dispatch")
+            entry["reason"] = "total terminal tool-call attempt limit reached"
+            raise TrialError("T1 runner permits at most three terminal tool-call attempts")
+        if successful_dispatch_count >= MAX_SUCCESSFUL_TOOL_DISPATCHES:
+            entry["status"] = "refused"
+            entry["reason"] = "one successful terminal dispatch has already been used"
+            raise TrialError("T1 runner permits only one successful terminal dispatch")
         if name != "run_bash_command":
             entry["status"] = "refused"
             entry["reason"] = "only run_bash_command is permitted"
@@ -373,10 +396,11 @@ def _build_brain(config, fixture: dict[str, Any], secrets: list[str]):
             entry["status"] = "refused"
             entry["reason"] = "arguments must contain only command"
             raise TrialError("T1 runner refused unexpected terminal arguments")
-        if not isinstance(args.get("command"), str) or args["command"] != command:
+        if not isinstance(args.get("command"), str) or args["command"] not in allowed_commands:
             entry["status"] = "refused"
-            entry["reason"] = "command did not exactly match the generated fixture operation"
-            raise TrialError("T1 runner refused a command outside the exact fixture operation")
+            entry["reason"] = "command did not exactly match an allowed generated-fixture command form"
+            entry["refused_without_side_effect"] = True
+            raise TrialError("T1 runner refused a command outside the allowed fixture command forms")
         source_now = _read_owned_regular(fixture["source_path"], max_bytes=16_384)
         if _snapshot(source_now) != fixture["source_before"]:
             entry["status"] = "refused"
@@ -407,6 +431,7 @@ def _build_brain(config, fixture: dict[str, Any], secrets: list[str]):
         entry["answer_bytes_written"] = len(result_bytes)
         entry["answer_sha256"] = hashlib.sha256(result_bytes).hexdigest()
         entry["source_sha256_at_dispatch"] = hashlib.sha256(source_now).hexdigest()
+        successful_dispatch_count += 1
         return result_text
 
     async def restricted_execute(name: str, args: dict) -> str:
@@ -581,9 +606,17 @@ def run_trial(
     answer_matches = answer_after_bytes == fixture["oracle_answer_bytes"]
     source_unchanged = source_after == fixture["source_before"]
     dispatch_trace = getattr(brain, "_t1_dispatch_trace", []) if brain is not None else []
-    terminal_returned = any(
+    successful_dispatch_count = sum(
         entry.get("tool_name") == "run_bash_command" and entry.get("status") == "returned"
         for entry in dispatch_trace
+    )
+    terminal_returned = successful_dispatch_count == 1
+    duplicate_success_attempt = any(
+        entry.get("reason") == "one successful terminal dispatch has already been used"
+        for entry in dispatch_trace
+    )
+    tool_call_limit_exceeded = bool(
+        getattr(client_capture, "tool_call_limit_exceeded", False)
     )
     final_answer = None
     if brain is not None:
@@ -595,9 +628,11 @@ def run_trial(
     safe_answer, answer_truncated = f2._scrub_text(final_answer or "", secrets, limit=MAX_RESPONSE_CHARS)
     objective_reasons = []
     if not terminal_returned:
-        objective_reasons.append("no permitted terminal operation returned successfully")
-    if len(dispatch_trace) != 1:
-        objective_reasons.append("the model attempted more than one terminal dispatch")
+        objective_reasons.append("exactly one permitted terminal operation must return successfully")
+    if duplicate_success_attempt:
+        objective_reasons.append("the model attempted another terminal operation after the successful write")
+    if tool_call_limit_exceeded:
+        objective_reasons.append("the model exceeded the total terminal tool-call attempt limit")
     if not answer_matches:
         objective_reasons.append("answer.txt bytes did not exactly match the generated answer oracle")
     if not source_unchanged:
@@ -643,6 +678,10 @@ def run_trial(
             "objective_evidence_reasons": objective_reasons,
             "answer_review_status": answer_review_status,
             "terminal_dispatch_returned": terminal_returned,
+            "successful_terminal_dispatch_count": successful_dispatch_count,
+            "terminal_tool_call_attempt_count": getattr(client_capture, "tool_call_suggestions", 0),
+            "terminal_tool_call_attempt_limit": MAX_TOOL_DISPATCH_ATTEMPTS,
+            "refused_terminal_dispatch_count": sum(entry.get("status") == "refused" for entry in dispatch_trace),
             "answer_file_matches_exact_bytes": answer_matches,
             "source_unchanged": source_unchanged,
             "fixture_metadata_unchanged": fixture_metadata_unchanged,
@@ -686,6 +725,8 @@ def run_trial(
             "matching_trace_id": run_id,
             "logical_primary_client_chat_calls": len(client_capture.requests) if isinstance(client_capture, _CapturingClient) else 0,
             "logical_primary_client_chat_call_limit": MAX_LOGICAL_CHAT_CALLS,
+            "terminal_tool_call_attempt_count": getattr(client_capture, "tool_call_suggestions", 0),
+            "terminal_tool_call_attempt_limit": MAX_TOOL_DISPATCH_ATTEMPTS,
             **attempt_summary,
             "attempt_scope_note": "HTTP attempts and retry events are Adam client telemetry; provider-side routing or retries are not observable.",
         },
@@ -744,7 +785,10 @@ def main(argv: list[str] | None = None) -> int:
         "logical_primary_client_chat_calls": record["telemetry"]["logical_primary_client_chat_calls"],
         "private_output_paths": record["private_output_paths"],
     }, ensure_ascii=False))
-    return 0 if record["brain_execution_status"] == "returned" else 1
+    return 0 if (
+        record["brain_execution_status"] == "returned"
+        and record["oracle"]["status"] == "pass"
+    ) else 1
 
 
 if __name__ == "__main__":
