@@ -137,6 +137,33 @@ uv run --no-sync python -m tools.run_implementation_system_status_trial \
   --confirm-provider-inference
 ```
 
+### Headless T1 terminal capture
+
+For a provider-backed T1 sample, generate a fresh owner-private fixture and use its exact `prompts.terminal` text and `oracles.terminal` values. The runner requires `answer.txt` to be absent, checks the source SHA-256 and independently recomputes the `ITEM:` line count before inference, and offers only one `run_bash_command` schema. The tool description names `source.txt`, `answer.txt`, and the requested operation generically; it does not disclose the ready-made command or absolute paths, so the model must construct the command from the task and fixture path. The runner accepts only the exact generated `grep -c '^ITEM:' <source.txt> > <answer.txt>` command, permits one dispatch, and interprets that operation in process without starting a shell. The private record checks that `answer.txt` equals the oracle bytes exactly and that `source.txt` remains unchanged; any extra dispatch or mismatch fails the objective oracle. The natural-language response is retained for review. This measures model tool selection/command construction and the resulting fixture state, not general terminal or shell execution.
+
+Before each provider-backed run, perform a fresh external metadata-only check for the exact configured model and supply its HTTP 200 status, exact model ID, positive endpoint count, and UTC timestamp. The runner validates that operator-reported attestation and requires an existing owner-only config, `custom`, the pinned OpenRouter API base, and provider fallbacks disabled; it does not fetch or cryptographically verify metadata itself. Route confirmation and live inference are separate required flags. Use a new fixture ID and run ID, keep the fixture and output directories owner-only (0700 or stricter), and keep the config and output/event files owner-only (0600 or stricter). The runner captures TTS text without playback, disables memory, skills, custom tools, desktop, browser, and secondary tool-free routing, and records the exact answer bytes, source hash, provider responses, tool trace, and allowlisted request/retry telemetry in private files.
+
+```bash
+umask 077
+python tools/create_implementation_fixtures.py \
+  --output-root /path/to/private/implementation-fixtures \
+  --run-id <fresh-fixture-id>
+mkdir -m 700 /path/to/private/t1-runs
+uv run --no-sync python -m tools.run_implementation_terminal_trial \
+  --fixture-dir /path/to/private/implementation-fixtures/<fresh-fixture-id> \
+  --config /path/to/existing/protected/config.yaml \
+  --run-id <unique-opaque-run-id> \
+  --config-id <non-secret-stable-route-label> \
+  --output /path/to/private/t1-runs/runs.jsonl \
+  --expected-model <exact-provider-model-id> \
+  --metadata-http-status 200 \
+  --metadata-model-id <exact-provider-model-id> \
+  --metadata-endpoint-count <positive-count> \
+  --metadata-checked-at <fresh-ISO-8601-UTC-time-ending-in-Z> \
+  --route-ready-confirmed \
+  --confirm-provider-inference
+```
+
 ### Headless M1 memory capture
 
 For one provider-backed M1 sample, generate a fresh fixture today and select exactly one of `day`, `week`, `year`, or `timezone`; the runner loads that prompt and its oracle directly from `expected.json`. Use a new opaque run ID for each invocation and an existing owner-only output directory. The runner validates the generated date, IANA timezone, three record texts, and four exact prompts; seeds only those records into a new explicit-path `MemoryManager` with embeddings disabled; runs one fresh, tool-less `AdamBrain`; captures TTS text without playback; and removes the temporary store after the turn. Keep the operator-reported metadata check and live inference as separate confirmations, using the same protected-config, exact `custom` route, pinned OpenRouter API base, and fallbacks-off requirements described above. The record retains the retrieved context and normalized answer but always remains `outcome: not_scored` / `manual_review_required`; review the answer against the selected M1 oracle independently. The runner does not score success from substring matches, start Adam's service, access a microphone, or open desktop/browser tools. Its tests mock the provider and make no live inference.
