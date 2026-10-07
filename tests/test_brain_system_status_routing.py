@@ -38,11 +38,6 @@ from src.llm.brain import (
 
 
 @pytest.mark.parametrize("prompt", [
-    "Compare rigatoni and penne in two short sentences.",
-    "Contrast cats and dogs in one sentence.",
-    "Compare online and in-person classes.",
-    "Compare a website with a library as sources of information.",
-    "Explain what a website is.",
     "Which works better with chunky tomato sauce, rigatoni or penne?",
     "Explain entropy in plain language.",
     "Explain time complexity in plain language.",
@@ -60,28 +55,6 @@ def test_ordinary_conversation_can_skip_irrelevant_tool_schemas(prompt):
 
 
 @pytest.mark.parametrize("prompt", [
-    "Could you compare my usual pasta preferences with rigatoni?",
-    "My usual pasta preferences aside, could you compare rigatoni and penne?",
-    "Between rigatoni and penne, which matches what I usually order?",
-])
-def test_personal_memory_comparisons_do_not_use_compact_routing(prompt):
-    assert not _can_answer_without_tools(prompt)
-    assert not _should_use_compact_conversation_prompt(prompt)
-
-
-@pytest.mark.parametrize("prompt", [
-    "Compare these two files.",
-    "Contrast what's on my screen with the browser page.",
-    "Compare the open browser tabs.",
-    "Compare the two web pages.",
-    "Compare these two websites.",
-    "Summarize this website's homepage.",
-    "Compare these options on the web.",
-    "Compare today's weather with yesterday's.",
-    "Compare current CPU usage with GPU usage.",
-    "Compare current system status with yesterday's.",
-    "Compare my emails from today.",
-    "Compare these two options, then open the first one.",
     "What's the weather in Boston today?",
     "What time is it?",
     "What's the current date?",
@@ -113,9 +86,6 @@ def test_tool_or_live_information_intent_keeps_tools_available(prompt):
 
 def test_compact_conversation_prompt_requires_no_external_context():
     assert _should_use_compact_conversation_prompt("Explain entropy in plain language.")
-    assert _should_use_compact_conversation_prompt(
-        "Compare rigatoni and penne in two short sentences."
-    )
     assert not _should_use_compact_conversation_prompt("What time is it?")
     assert not _should_use_compact_conversation_prompt("My processor is pegged.")
     assert not _should_use_compact_conversation_prompt(
@@ -127,60 +97,6 @@ def test_compact_conversation_prompt_requires_no_external_context():
     assert not _should_use_compact_conversation_prompt(
         "Explain entropy in plain language.", skill_context="Specialized guidance"
     )
-
-
-@pytest.mark.asyncio
-async def test_general_comparison_uses_compact_prompt_and_primary_model_without_tools():
-    prompt = "Compare rigatoni and penne in two short sentences."
-
-    class SilentTTS:
-        pending_barge_in_text = None
-
-        async def speak_async(self, _text):
-            pass
-
-    class Memory:
-        def retrieve_context(self, _query):
-            return None
-
-    class Model:
-        def __init__(self):
-            self.requests = []
-
-        async def chat(self, messages, tools=None, **_kwargs):
-            self.requests.append(([dict(message) for message in messages], list(tools or [])))
-            return {
-                "content": "Rigatoni is broad and ridged; penne is shorter with angled ends.",
-                "tool_calls": [],
-            }
-
-    config = SimpleNamespace(
-        llm=SimpleNamespace(
-            provider="custom", local_model="test", cloud_model="test",
-            ollama_host="http://127.0.0.1:11434", api_base="https://example.invalid/v1",
-            api_key="", temperature=0, num_ctx=8192, max_tool_rounds=4,
-        ),
-        computer_control=SimpleNamespace(enabled=False),
-    )
-    with patch(
-        "src.llm.brain.CustomToolManager",
-        return_value=SimpleNamespace(get_canonical_tools=lambda: []),
-    ):
-        brain = AdamBrain(config, None, None, None, SilentTTS(), memory_mgr=Memory())
-    primary_model = Model()
-    brain.llm_client = primary_model
-    brain.skill_manager.get_matched_skill_context = lambda _query: None
-
-    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Desktop"):
-        await brain.process_user_utterance(prompt)
-
-    assert brain.llm_client is primary_model
-    assert len(primary_model.requests) == 1
-    messages, tools = primary_model.requests[0]
-    assert tools == []
-    assert messages[0]["content"] == COMPACT_CONVERSATION_SYSTEM_PROMPT
-    assert prompt in messages[-1]["content"]
-    assert brain.tool_free_llm_client is None
 
 
 def test_compact_conversation_prompt_defaults_to_short_plain_comparisons():

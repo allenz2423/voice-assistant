@@ -358,7 +358,8 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
                 "click Save note, and tell me the saved text."
             ),
             "browser_template": (
-                "Among overdue invoices at <LOCAL_REPORT_URL>, which supplier has the largest total? "
+                "In Adam's isolated browser, with the report at <LOCAL_REPORT_URL> already open, "
+                "find which supplier has the largest total among overdue invoices. "
                 "Give the supplier, invoice IDs, and total."
             ),
             "terminal": prompt_terminal,

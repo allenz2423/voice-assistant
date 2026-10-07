@@ -157,6 +157,31 @@ def test_implementation_fixture_oracles_are_independently_observable(tmp_path):
     assert set(memory["prompts"]) == {"day", "week", "year", "timezone"}
 
 
+def test_b1_prompt_routes_through_adams_isolated_browser_prefetch(tmp_path):
+    from src.llm.brain import (
+        _explicit_adam_browser_request,
+        _is_read_only_adam_browser_request,
+    )
+
+    fixture = create_fixtures(tmp_path, "b1-browser-prompt-test")
+    expected = json.loads((fixture / "expected.json").read_text(encoding="utf-8"))
+    prompt_template = expected["prompts"]["browser_template"]
+    assert "<LOCAL_REPORT_URL>" in prompt_template
+
+    prompt = prompt_template.replace(
+        "<LOCAL_REPORT_URL>", "http://127.0.0.1:8765/invoice-report.html"
+    )
+    assert prompt == (
+        "In Adam's isolated browser, with the report at "
+        "http://127.0.0.1:8765/invoice-report.html already open, "
+        "find which supplier has the largest total among overdue invoices. "
+        "Give the supplier, invoice IDs, and total."
+    )
+    assert _explicit_adam_browser_request(prompt)
+    assert _is_read_only_adam_browser_request(prompt)
+    assert expected["oracles"]["invoices"]["row_count"] == 56
+
+
 def test_generated_memory_fixture_retrieves_exact_day_week_year_and_zone(tmp_path):
     from src.memory.embedder import MemoryEmbedder
     from src.memory.manager import MemoryManager
