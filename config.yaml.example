@@ -18,11 +18,11 @@ wake:
 
 stt:
   provider: "local"        # "local" | "openai" | "openrouter" | "custom"
-  model_size: "qwen3-asr-1.7b" # "qwen3-asr-1.7b", "distil-large-v3", or "base.en"
+  model_size: "small.en" # Faster-Whisper small.en is the portable CPU default
   language: ""             # Qwen3-ASR auto-detects; transcribe.cpp currently rejects explicit language hints
-  device: "Vulkan0"         # Dedicated GPU 0 (GTX 1080 Ti) via Vulkan / CUDA
-  device_index: 0
-  compute_type: "int8_float32" # Pascal CC 6.1 optimized
+  device: "cpu"
+  device_index: -1
+  compute_type: "int8"
   cloud_model: "gpt-transcribe"
   cloud_url: "https://api.openai.com/v1/audio/transcriptions"
   api_key: ""
@@ -59,7 +59,7 @@ idea_routing:
 
 browser_navigation:
   enabled: false # Optional Playwright control in Adam's isolated browser profile; normal browsing uses your default browser
-  browser: "default" # "default" follows desktop.default_browser; or choose "chromium" / "firefox"
+  browser: "chromium" # Playwright-managed Chromium; uses Adam's separate browser profile
   profile_path: "~/.local/share/adam/browser-navigation"
   timeout_seconds: 15.0
   headless: false # Set true to keep it invisible and release it after read-only turns
@@ -102,7 +102,7 @@ tts:
   model_path: "assets/voices/kokoro/kokoro-v1.0.onnx"
   voices_path: "assets/voices/kokoro/voices-v1.0.bin"
   voice: "af_nicole"             # Natural studio-quality voice matching wake word 'Hey Adam'
-  device_id: 0                 # Dedicated GPU 0 (GTX 1080 Ti via CUDA)
+  device_id: -1                 # CPU; choose an explicit CUDA device only when wanted
   speed: 1.1
   sample_rate: 24000
   cloud_model: "gpt-4o-mini-tts"
@@ -139,7 +139,7 @@ execution:
 # Desktop application & window aliases (user-customizable)
 desktop:
   # Default browser executable or application name (e.g. "microsoft-edge-stable", "firefox", "google-chrome-stable")
-  default_browser: "microsoft-edge-stable"
+  default_browser: "chromium"
 
   # Aliases used when launching applications (e.g. "open discord", "open cyberpunk")
   application_aliases:

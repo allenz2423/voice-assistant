@@ -17,12 +17,14 @@ Configures:
 - Systemd background user service
 """
 
+import getpass
+import importlib.util
 import os
 import re
-import sys
-import subprocess
-import getpass
 import shutil
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 # Ensure repo root is on sys.path
@@ -1027,12 +1029,138 @@ def configure_idea_routing():
 # Step 11: Existing Browser
 # ------------------------------------------------------------------------------
 def configure_browser_navigation():
-    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 11: Use Your Existing Browser ---{CLR_RESET}")
-    update_config_value("enabled", "false", section="browser_navigation")
+    print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 11: Browser Navigation ---{CLR_RESET}")
+    current_enabled = get_current_config_value(
+        "enabled", "false", section="browser_navigation"
+    ).lower() in ("true", "yes", "1")
+    requested_default = os.environ.get("ADAM_BROWSER_NAVIGATION_DEFAULT") == "1"
+    default_enabled = current_enabled or requested_default
+    if not prompt_yes_no(
+        "Enable safe browser navigation in Adam's separate browser profile?",
+        default_yes=default_enabled,
+    ):
+        update_config_value("enabled", "false", section="browser_navigation")
+        print(f"{CLR_YELLOW}Separate-profile browser navigation remains disabled.{CLR_RESET}")
+        return
+
+    if not ensure_browser_navigation_ready():
+        update_config_value("enabled", "false", section="browser_navigation")
+        return
+
+    # Do not change profile_path. Its default is a dedicated Adam profile,
+    # separate from the user's regular browser data.
+    update_config_value("enabled", "true", section="browser_navigation")
+    profile_path = Path(
+        get_current_config_value(
+            "profile_path", "~/.local/share/adam/browser-navigation", section="browser_navigation"
+        )
+    ).expanduser()
     print(
-        f"{CLR_GREEN}Adam will use the configured default browser and its existing profile through desktop tools. "
-        f"The separate Playwright browser is disabled.{CLR_RESET}"
+        f"{CLR_GREEN}Browser navigation is ready. Adam will use its separate profile at "
+        f"{profile_path}.{CLR_RESET}"
     )
+
+
+def browser_navigation_target() -> tuple[str, bool, str]:
+    """Return (Playwright engine, needs managed browser, readiness detail)."""
+    requested = get_current_config_value("browser", "default", section="browser_navigation").lower()
+    configured_default = get_current_config_value(
+        "default_browser", "chromium", section="desktop"
+    ).lower()
+    browser_name = configured_default if requested == "default" else requested
+
+    if "firefox" in browser_name or "mozilla" in browser_name:
+        return "firefox", True, "Playwright's Firefox build"
+    if not any(token in browser_name for token in ("chrom", "edge", "msedge", "chrome", "brave", "vivaldi", "zen", "opera")):
+        return "", False, f"unsupported browser {browser_name!r}; choose Chromium or Firefox"
+
+    if requested == "chromium" or browser_name in ("chromium", "chromium-browser"):
+        return "chromium", True, "Playwright's Chromium build"
+
+    candidates: tuple[str, ...]
+    if "edge" in browser_name or "msedge" in browser_name:
+        candidates = (browser_name, "microsoft-edge", "msedge")
+        if any(shutil.which(candidate) for candidate in candidates):
+            return "chromium", False, "configured Edge browser executable"
+        return "", False, "the configured Edge browser is not installed; install it or choose browser_navigation.browser: chromium"
+    elif "google-chrome" in browser_name or browser_name == "chrome":
+        candidates = (browser_name, "google-chrome", "google-chrome-stable", "chrome")
+        if any(shutil.which(candidate) for candidate in candidates):
+            return "chromium", False, "configured Chrome browser executable"
+        return "", False, "the configured Chrome browser is not installed; install it or choose browser_navigation.browser: chromium"
+    elif "brave" in browser_name:
+        candidates = (browser_name, "brave-browser", "brave")
+    elif "vivaldi" in browser_name:
+        candidates = (browser_name, "vivaldi-stable", "vivaldi")
+    elif "zen" in browser_name:
+        candidates = (browser_name, "zen", "zen-browser")
+    elif "opera" in browser_name:
+        candidates = (browser_name, "opera")
+    else:
+        candidates = (browser_name,)
+
+    if any(shutil.which(candidate) for candidate in candidates):
+        return "chromium", False, "configured Chromium browser executable"
+    # BrowserNavigator falls back to Playwright's bundled Chromium for these
+    # Chromium-family names when no branded executable is found.
+    return "chromium", True, "Playwright's Chromium build"
+
+
+def ensure_browser_navigation_ready() -> bool:
+    """Prepare browser-control only after the user opts into the feature."""
+    engine, needs_managed_browser, detail = browser_navigation_target()
+    if not engine:
+        print(f"{CLR_YELLOW}Browser navigation was not enabled: {detail}.{CLR_RESET}")
+        print("Set browser_navigation.browser to 'chromium' or 'firefox' and rerun setup.")
+        return False
+
+    if importlib.util.find_spec("playwright") is None:
+        if os.environ.get("ADAM_SKIP_PYTHON") == "1":
+            print(f"{CLR_YELLOW}Playwright is not installed and --skip-python-deps prevents installing it.{CLR_RESET}")
+            print("After setup, run: uv pip install --python .venv/bin/python 'playwright>=1.50.0'")
+            print("Then rerun ./setup.sh --browser-navigation to finish browser setup.")
+            return False
+        uv = shutil.which("uv")
+        if not uv:
+            print(f"{CLR_YELLOW}Playwright is missing and uv is unavailable; browser navigation remains disabled.{CLR_RESET}")
+            print("Install Playwright into .venv, then rerun ./setup.sh --browser-navigation.")
+            return False
+        try:
+            subprocess.run(
+                [uv, "pip", "install", "--python", str(PROJECT_DIR / ".venv" / "bin" / "python"), "playwright>=1.50.0"],
+                cwd=PROJECT_DIR,
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"{CLR_YELLOW}Could not install Playwright ({exc}); browser navigation remains disabled.{CLR_RESET}")
+            print("After installing Playwright, rerun ./setup.sh --browser-navigation.")
+            return False
+        if importlib.util.find_spec("playwright") is None:
+            print(f"{CLR_YELLOW}Playwright still cannot be imported; browser navigation remains disabled.{CLR_RESET}")
+            return False
+
+    if needs_managed_browser:
+        if os.environ.get("ADAM_SKIP_PYTHON") == "1":
+            print(f"{CLR_YELLOW}The {detail} is not guaranteed to be installed and --skip-python-deps was selected.{CLR_RESET}")
+            print(f"After setup, run: uv run --no-sync playwright install {engine}")
+            print("Then rerun ./setup.sh --browser-navigation to enable the feature.")
+            return False
+        uv = shutil.which("uv")
+        if not uv:
+            print(f"{CLR_YELLOW}uv is unavailable, so {detail} could not be prepared.{CLR_RESET}")
+            print(f"Install it with 'playwright install {engine}', then rerun setup.")
+            return False
+        try:
+            subprocess.run(
+                [uv, "run", "--no-sync", "playwright", "install", engine],
+                cwd=PROJECT_DIR,
+                check=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            print(f"{CLR_YELLOW}Could not prepare {detail} ({exc}); browser navigation remains disabled.{CLR_RESET}")
+            print(f"After installing it with 'uv run --no-sync playwright install {engine}', rerun setup.")
+            return False
+    return True
 
 
 # ------------------------------------------------------------------------------
@@ -1241,33 +1369,205 @@ def ensure_torchaudio() -> bool:
     return False
 
 
+def systemd_user_manager_available() -> bool:
+    if not shutil.which("systemctl") or not Path("/run/systemd/system").exists():
+        return False
+    try:
+        return subprocess.run(
+            ["systemctl", "--user", "show-environment"], capture_output=True
+        ).returncode == 0
+    except OSError:
+        return False
+
+
+def _run_user_systemctl(*args: str):
+    command = ["systemctl", "--user", *args]
+    try:
+        return subprocess.run(command, capture_output=True, text=True)
+    except OSError as exc:
+        return subprocess.CompletedProcess(command, 127, "", str(exc))
+
+
+def _report_systemctl_failure(action: str, result) -> None:
+    detail = (result.stderr or result.stdout or "no error details").strip()
+    print(f"{CLR_RED}Could not {action} ({detail}).{CLR_RESET}")
+
+
+def _unit_path_value_is_safe(value: str) -> bool:
+    # Keep values unambiguous in systemd's assignment and ExecStart syntaxes.
+    return bool(re.fullmatch(r"[A-Za-z0-9_./+-]+", value))
+
+
+def render_systemd_unit() -> str | None:
+    template_path = PROJECT_DIR / "systemd" / "adam.service.template"
+    if not template_path.is_file():
+        print(f"{CLR_YELLOW}Systemd template is missing: {template_path}{CLR_RESET}")
+        return None
+
+    project_dir = str(PROJECT_DIR.resolve())
+    home_dir = str(Path.home().resolve())
+    if not _unit_path_value_is_safe(project_dir) or not _unit_path_value_is_safe(home_dir):
+        print(
+            f"{CLR_YELLOW}The project or home path contains characters this service template "
+            f"cannot safely represent; leaving the unit unchanged.{CLR_RESET}"
+        )
+        return None
+    try:
+        template = template_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"{CLR_YELLOW}Could not read systemd template ({exc}); leaving the unit unchanged.{CLR_RESET}")
+        return None
+    rendered = template.replace("{{PROJECT_DIR}}", project_dir).replace("{{HOME}}", home_dir)
+    if "{{PROJECT_DIR}}" in rendered or "{{HOME}}" in rendered:
+        print(f"{CLR_YELLOW}Systemd template has unresolved path placeholders; leaving the unit unchanged.{CLR_RESET}")
+        return None
+    return rendered
+
+
+def _atomic_write_text(destination: Path, content: str, mode: int = 0o644) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_path, mode)
+        os.replace(temporary_path, destination)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def backup_existing_unit(unit_path: Path) -> Path | None:
+    index = 0
+    while True:
+        suffix = ".backup" if index == 0 else f".backup.{index}"
+        backup_path = unit_path.with_name(unit_path.name + suffix)
+        if not backup_path.exists():
+            break
+        index += 1
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{backup_path.name}.", dir=backup_path.parent)
+    os.close(fd)
+    temporary_path = Path(temporary_name)
+    try:
+        shutil.copy2(unit_path, temporary_path)
+        os.replace(temporary_path, backup_path)
+    except OSError as exc:
+        print(f"{CLR_RED}Could not back up the existing unit ({exc}); it was not replaced.{CLR_RESET}")
+        return None
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return backup_path
+
+
+def _configured_tts_asset_paths() -> list[Path]:
+    paths = []
+    for key, default in (
+        ("model_path", "assets/voices/kokoro/kokoro-v1.0.onnx"),
+        ("voices_path", "assets/voices/kokoro/voices-v1.0.bin"),
+    ):
+        value = Path(get_current_config_value(key, default, section="tts")).expanduser()
+        paths.append(value if value.is_absolute() else PROJECT_DIR / value)
+    return paths
+
+
 def configure_systemd():
     print(f"\n{CLR_BLUE}{CLR_BOLD}--- Step 14: Systemd User Service ---{CLR_RESET}")
     if os.environ.get("ADAM_SKIP_SERVICE") == "1":
         print(f"{CLR_YELLOW}Service setup skipped by setup option.{CLR_RESET}")
         return
-    if (
-        not shutil.which("systemctl")
-        or not Path("/run/systemd/system").exists()
-        or subprocess.run(["systemctl", "--user", "show-environment"], capture_output=True).returncode != 0
-    ):
+    if not systemd_user_manager_available():
         print(f"{CLR_YELLOW}This Linux system does not use systemd; start Adam with 'uv run python -m src.main' or use your init system.{CLR_RESET}")
         return
-    legacy_kev_state = subprocess.run(
-        ["systemctl", "--user", "is-enabled", "adam-kev.service"], capture_output=True, text=True
-    )
-    if legacy_kev_state.returncode == 0:
-        print(f"{CLR_CYAN}Disabling the retired local Kev service; desktop decisions now use Jev over OpenRouter.{CLR_RESET}")
-        subprocess.run(["systemctl", "--user", "disable", "--now", "adam-kev.service"], capture_output=True)
-    if prompt_yes_no("Enable and start Adam as an automatic background service (adam.service)?", default_yes=True):
-        if not ensure_onnxruntime() or not ensure_torchaudio():
+
+    if not prompt_yes_no(
+        "Install and enable Adam as a background user service (adam.service)?",
+        default_yes=False,
+    ):
+        print(f"{CLR_YELLOW}Service setup skipped. You can start Adam manually with 'uv run python -m src.main'.{CLR_RESET}")
+        return
+
+    legacy_active = _run_user_systemctl("is-active", "adam-kev.service")
+    legacy_enabled = _run_user_systemctl("is-enabled", "adam-kev.service")
+    if legacy_active.returncode == 0 or legacy_enabled.returncode == 0:
+        print(f"{CLR_CYAN}A retired adam-kev.service is active or enabled.{CLR_RESET}")
+        if prompt_yes_no("Stop and disable adam-kev.service?", default_yes=False):
+            result = _run_user_systemctl("disable", "--now", "adam-kev.service")
+            if result.returncode != 0:
+                _report_systemctl_failure("stop and disable adam-kev.service", result)
+                return
+            print(f"{CLR_GREEN}adam-kev.service was stopped and disabled.{CLR_RESET}")
+        else:
+            print(f"{CLR_YELLOW}Leaving adam-kev.service unchanged as requested.{CLR_RESET}")
+
+    if get_current_config_value("engine", "kokoro", section="tts").lower() == "kokoro":
+        missing_assets = [path for path in _configured_tts_asset_paths() if not path.is_file()]
+        if missing_assets:
+            print(f"{CLR_YELLOW}Adam was not enabled because Kokoro assets are missing:{CLR_RESET}")
+            for asset in missing_assets:
+                print(f"  - {asset}")
+            print("Rerun ./setup.sh and allow the model downloads, then enable the service.")
             return
-        print(f"{CLR_CYAN}Enabling and starting adam.service...{CLR_RESET}")
-        subprocess.run(["systemctl", "--user", "daemon-reload"])
-        subprocess.run(["systemctl", "--user", "enable", "--now", "adam.service"])
-        print(f"{CLR_GREEN}adam.service is active!{CLR_RESET}")
+
+    if not ensure_onnxruntime() or not ensure_torchaudio():
+        return
+
+    service_dir = Path.home() / ".config" / "systemd" / "user"
+    service_path = service_dir / "adam.service"
+    if service_path.is_symlink() or (service_path.exists() and not service_path.is_file()):
+        print(f"{CLR_YELLOW}{service_path} is not a regular unit file; leaving it unchanged.{CLR_RESET}")
+        return
+
+    unit_exists = service_path.is_file()
+    should_write = not unit_exists
+    if unit_exists:
+        if prompt_yes_no(
+            "Replace the existing adam.service? A backup will be kept beside it.",
+            default_yes=False,
+        ):
+            rendered = render_systemd_unit()
+            if rendered is None:
+                return
+            backup_path = backup_existing_unit(service_path)
+            if backup_path is None:
+                return
+            print(f"{CLR_CYAN}Backed up the previous unit to {backup_path}.{CLR_RESET}")
+            try:
+                _atomic_write_text(service_path, rendered)
+            except OSError as exc:
+                print(f"{CLR_RED}Could not replace adam.service ({exc}). The backup is available at {backup_path}.{CLR_RESET}")
+                return
+            should_write = True
+        else:
+            print(f"{CLR_CYAN}Keeping the existing adam.service unchanged and using it.{CLR_RESET}")
     else:
-        print(f"{CLR_YELLOW}You can start the daemon manually anytime with:{CLR_RESET} systemctl --user start adam.service")
+        rendered = render_systemd_unit()
+        if rendered is None:
+            return
+        try:
+            _atomic_write_text(service_path, rendered)
+        except OSError as exc:
+            print(f"{CLR_RED}Could not install adam.service ({exc}).{CLR_RESET}")
+            return
+        print(f"{CLR_GREEN}Installed {service_path}.{CLR_RESET}")
+
+    if should_write:
+        result = _run_user_systemctl("daemon-reload")
+        if result.returncode != 0:
+            _report_systemctl_failure("reload the user service manager", result)
+            return
+
+    print(f"{CLR_CYAN}Enabling and starting adam.service...{CLR_RESET}")
+    result = _run_user_systemctl("enable", "--now", "adam.service")
+    if result.returncode != 0:
+        _report_systemctl_failure("enable and start adam.service", result)
+        return
+    status = _run_user_systemctl("is-active", "adam.service")
+    if status.returncode == 0:
+        print(f"{CLR_GREEN}adam.service is active.{CLR_RESET}")
+    else:
+        print(f"{CLR_YELLOW}adam.service was enabled, but systemd did not report it active. Check: journalctl --user -u adam.service -n 50{CLR_RESET}")
 
 
 # ------------------------------------------------------------------------------

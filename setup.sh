@@ -1,804 +1,762 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# Adam / Adam Voice Assistant - Universal Linux Setup Script
-# Supports: Debian/Ubuntu, Fedora/RHEL, openSUSE, Arch, Gentoo, Alpine, Void, Solus
-# ==============================================================================
+set -Eeuo pipefail
 
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Color helpers
-CLR_RESET="\033[0m"
-CLR_INFO="\033[1;34m"
-CLR_SUCCESS="\033[1;32m"
-CLR_WARN="\033[1;33m"
-CLR_ERR="\033[1;31m"
-CLR_BOLD="\033[1m"
-CLR_CYAN="\033[1;36m"
-
-log_info()    { echo -e "${CLR_INFO}[INFO]${CLR_RESET} $*"; }
-log_success() { echo -e "${CLR_SUCCESS}[OK]${CLR_RESET} $*"; }
-log_warn()    { echo -e "${CLR_WARN}[WARN]${CLR_RESET} $*"; }
-log_err()     { echo -e "${CLR_ERR}[ERROR]${CLR_RESET} $*" >&2; }
-
-# Default configuration flags
 ASSUME_YES=false
+DRY_RUN=false
 SKIP_SYS_PKGS=false
+SKIP_PYTHON=false
 SKIP_MODELS=false
 SKIP_OLLAMA=false
 SKIP_SERVICE=false
-SKIP_PYTHON=false
 SKIP_SPEAKER_VERIFICATION=false
 SKIP_ENROLLMENT=false
 CPU_ONLY=false
 FORCE_NVIDIA_RUNTIME=false
 ENABLE_IDEA_ROUTING=false
 ENABLE_BROWSER_NAVIGATION=false
+ENABLE_DIARIZATION=false
+ENABLE_OMNIPARSER=false
 DISABLE_COMPUTER_CONTROL=false
-RUNTIME_EXTRA="runtime-cpu"
+INSTALL_DESKTOP_TOOLS=false
+RUNTIME_EXTRA=runtime-cpu
+DISTRO_ID=unknown
+DISTRO_NAME=Linux
+DISTRO_LIKE=""
+PKG_MANAGER=""
+CORE_PKGS=()
+DESKTOP_PKGS=()
+TEMP_FILES=()
+SYSTEMD_RUNTIME_DIR="${ADAM_SYSTEMD_RUNTIME_DIR:-/run/systemd/system}"
+CONFIG_FILE="$SCRIPT_DIR/config.yaml"
 
-print_usage() {
-    cat <<EOF
+cleanup() {
+    local path
+    if ((${#TEMP_FILES[@]})); then
+        for path in "${TEMP_FILES[@]}"; do
+            [[ -n "$path" ]] && rm -f -- "$path"
+        done
+    fi
+    return 0
+}
+trap cleanup EXIT
+
+usage() {
+    cat <<'EOF'
+Adam setup
+
 Usage: ./setup.sh [OPTIONS]
 
-Interactive setup wizard for the Adam / Adam Voice Assistant.
-Detects Linux distribution, installs dependencies, sets up Python virtualenv,
-downloads neural models, and interactively configures audio, wake word, speech,
-speaker verification, optional Nemotron diarization, and the user service.
-It can also enable local MiniLM idea routing for wake-free tool calls and calendar review.
-
-Nemotron diarization uses NVIDIA's official Transformers model runtime. The wizard
-lets you choose CPU or a specific CUDA GPU, installs the optional runtime, and can
-download the model before starting the service. Meeting transcripts preserve mixed
-audio and add speaker labels; they do not isolate or filter speakers.
+Interactive mode installs dependencies and runs the configuration wizard.
+Use --yes for a noninteractive bootstrap: it configures the requested flags,
+installs dependencies and models, and never enables or starts a service.
 
 Options:
-  -y, --yes            Non-interactive / unattended mode (accept all defaults)
-  --skip-sys-pkgs      Skip system package manager installation
-  --skip-python-deps   Do not run uv sync (use an existing prepared environment)
-  --skip-models        Skip downloading Kokoro TTS and Silero VAD neural models
-  --skip-ollama        Skip the prompt to pull a local Ollama model
-  --skip-speaker-verification  Do not install speaker verification or enroll a voice
-  --skip-enrollment    Install speaker verification but skip microphone enrollment
-  --cpu-only           Use CPU runtime packages and avoid CUDA libraries
-  --nvidia-runtime     Install ONNX Runtime and CUDA support for NVIDIA GPUs
-  --idea-routing      Enable local wake-free command matching and background calendar review
-  --browser-navigation Enable safe browser navigation through a separate Adam profile
-  --disable-computer-control Disable screenshot-guided mouse and keyboard control
-  --skip-service       Skip creating and enabling systemd user service
-  -h, --help           Show this help message and exit
+  -y, --yes                    Noninteractive bootstrap; no service start
+      --dry-run                Print the plan without running commands or writing files
+      --skip-sys-pkgs           Do not call a system package manager
+      --skip-python-deps        Use an already prepared .venv; do not run uv sync
+      --skip-models             Skip Kokoro model and voice downloads
+      --skip-ollama             Do not offer to install/pull Ollama in the wizard
+      --skip-speaker-verification
+                                Disable speaker verification and omit its extra
+      --skip-enrollment         Skip microphone enrollment in the wizard
+      --cpu-only                Use CPU runtime packages
+      --nvidia-runtime          Use NVIDIA runtime packages
+      --idea-routing            Enable local idea routing and install its extra
+      --browser-navigation      Enable isolated browser navigation and install its extra
+      --diarization             Enable Nemotron diarization and install its extra
+      --omniparser              Enable OmniParser screenshot grounding and install runtime
+      --disable-computer-control
+                                Disable screenshot-guided desktop control in config
+      --install-desktop-tools   Also install optional X11/Wayland desktop packages
+      --skip-service            Skip systemd user-service setup
+  -h, --help                    Show this help and exit
 
-Supported Linux Distributions:
-  - Debian / Ubuntu / Linux Mint / Pop!_OS (apt)
-  - Fedora / RHEL / Rocky / Alma / CentOS (dnf)
-  - openSUSE Leap / Tumbleweed (zypper)
-  - Gentoo Linux (emerge)
-  - Arch Linux / CachyOS / Manjaro (pacman)
-  - Alpine Linux (apk; Python ML wheels may be limited by musl), Void (xbps), Solus (eopkg)
-  - NixOS is recognized; install system packages declaratively with Nix
+Requirements:
+  Run as a regular user. Install Astral uv before starting setup:
+  https://docs.astral.sh/uv/getting-started/installation/
+
+System package support: Debian/Ubuntu, Fedora/RHEL, openSUSE, Arch, Gentoo,
+Alpine, Void and Solus. NixOS users should install dependencies declaratively
+and pass --skip-sys-pkgs.
 EOF
 }
 
-# Parse command line options
-while [[ $# -gt 0 ]]; do
+log_info() { printf '[INFO] %s\n' "$*"; }
+log_ok() { printf '[ OK ] %s\n' "$*"; }
+log_warn() { printf '[WARN] %s\n' "$*" >&2; }
+log_error() { printf '[ERROR] %s\n' "$*" >&2; }
+
+while (($#)); do
     case "$1" in
-        -y|--yes)
-            ASSUME_YES=true
-            shift
-            ;;
-        --skip-sys-pkgs)
-            SKIP_SYS_PKGS=true
-            shift
-            ;;
-        --skip-python-deps)
-            SKIP_PYTHON=true
-            shift
-            ;;
-        --skip-models)
-            SKIP_MODELS=true
-            shift
-            ;;
-        --skip-ollama)
-            SKIP_OLLAMA=true
-            shift
-            ;;
-        --skip-speaker-verification)
-            SKIP_SPEAKER_VERIFICATION=true
-            shift
-            ;;
-        --skip-enrollment)
-            SKIP_ENROLLMENT=true
-            shift
-            ;;
-        --cpu-only)
-            CPU_ONLY=true
-            shift
-            ;;
-        --nvidia-runtime)
-            FORCE_NVIDIA_RUNTIME=true
-            shift
-            ;;
-        --idea-routing)
-            ENABLE_IDEA_ROUTING=true
-            shift
-            ;;
-        --browser-navigation)
-            ENABLE_BROWSER_NAVIGATION=true
-            shift
-            ;;
-        --disable-computer-control)
-            DISABLE_COMPUTER_CONTROL=true
-            shift
-            ;;
-        --skip-service)
-            SKIP_SERVICE=true
-            shift
-            ;;
-        -h|--help)
-            print_usage
-            exit 0
-            ;;
-        *)
-            log_err "Unknown option: $1"
-            print_usage
-            exit 1
-            ;;
+        -h|--help) usage; exit 0 ;;
+        --dry-run) DRY_RUN=true ;;
+        -y|--yes) ASSUME_YES=true ;;
+        --skip-sys-pkgs) SKIP_SYS_PKGS=true ;;
+        --skip-python-deps) SKIP_PYTHON=true ;;
+        --skip-models) SKIP_MODELS=true ;;
+        --skip-ollama) SKIP_OLLAMA=true ;;
+        --skip-service) SKIP_SERVICE=true ;;
+        --skip-speaker-verification) SKIP_SPEAKER_VERIFICATION=true ;;
+        --skip-enrollment) SKIP_ENROLLMENT=true ;;
+        --cpu-only) CPU_ONLY=true ;;
+        --nvidia-runtime) FORCE_NVIDIA_RUNTIME=true ;;
+        --idea-routing) ENABLE_IDEA_ROUTING=true ;;
+        --browser-navigation) ENABLE_BROWSER_NAVIGATION=true ;;
+        --diarization|--nemotron-diarization) ENABLE_DIARIZATION=true ;;
+        --omniparser) ENABLE_OMNIPARSER=true ;;
+        --disable-computer-control) DISABLE_COMPUTER_CONTROL=true ;;
+        --install-desktop-tools) INSTALL_DESKTOP_TOOLS=true ;;
+        *) log_error "Unknown option: $1"; usage >&2; exit 2 ;;
     esac
+    shift
 done
 
 if [[ "$CPU_ONLY" == true && "$FORCE_NVIDIA_RUNTIME" == true ]]; then
-    log_err "--cpu-only and --nvidia-runtime cannot be used together."
+    log_error "--cpu-only and --nvidia-runtime cannot be used together."
     exit 2
 fi
-
-# Ensure not running directly as root
-if [[ $EUID -eq 0 ]]; then
-    log_warn "Running setup.sh as root is NOT recommended."
-    log_warn "The assistant runs as a systemd user service with user-specific audio sinks."
-    if [[ "$ASSUME_YES" != true ]]; then
-        read -r -p "Are you sure you want to continue as root? [y/N] " confirm
-        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
-            log_err "Setup aborted."
-            exit 1
-        fi
-    fi
+if [[ "$DISABLE_COMPUTER_CONTROL" == true && "$INSTALL_DESKTOP_TOOLS" == true ]]; then
+    log_error "--disable-computer-control and --install-desktop-tools cannot be used together."
+    exit 2
 fi
-
-# Detect privilege escalation tool (sudo or doas)
-SUDO=""
-if [[ $EUID -ne 0 ]]; then
-    if command -v sudo &>/dev/null; then
-        SUDO="sudo"
-    elif command -v doas &>/dev/null; then
-        SUDO="doas"
-    else
-        log_warn "Neither 'sudo' nor 'doas' found. System package installation might fail if root rights are required."
-    fi
+if [[ "$DISABLE_COMPUTER_CONTROL" == true && "$ENABLE_OMNIPARSER" == true ]]; then
+    log_error "--disable-computer-control and --omniparser cannot be used together."
+    exit 2
 fi
-
-# ------------------------------------------------------------------------------
-# 1. Distro Detection & System Packages
-# ------------------------------------------------------------------------------
 detect_distro() {
-    if [[ -f /etc/os-release ]]; then
+    if [[ -r /etc/os-release ]]; then
         # shellcheck disable=SC1091
         source /etc/os-release
         DISTRO_ID="${ID:-unknown}"
         DISTRO_NAME="${NAME:-Linux}"
         DISTRO_LIKE="${ID_LIKE:-}"
-    else
-        DISTRO_ID="unknown"
-        DISTRO_NAME="Unknown Linux"
-        DISTRO_LIKE=""
     fi
+}
+
+select_packages() {
+    detect_distro
+    local ids="${DISTRO_ID} ${DISTRO_LIKE}"
+
+    if [[ "$ids" =~ (debian|ubuntu|linuxmint|pop|elementary|zorin|devuan|kali|parrot) ]]; then
+        PKG_MANAGER=apt
+        CORE_PKGS=(python3 libportaudio2 portaudio19-dev curl git jq pkg-config build-essential)
+        DESKTOP_PKGS=(at-spi2-core gir1.2-atspi-2.0 python3-gi wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify-bin pipewire pipewire-pulse wireplumber alsa-utils pulseaudio-utils)
+    elif [[ "$ids" =~ (fedora|rhel|centos|rocky|alma|amzn|openmandriva) ]]; then
+        if command -v dnf >/dev/null 2>&1; then PKG_MANAGER=dnf; else PKG_MANAGER=yum; fi
+        CORE_PKGS=(python3 portaudio portaudio-devel curl git jq pkgconf-pkg-config gcc gcc-c++ make)
+        DESKTOP_PKGS=(at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify pipewire pipewire-pulseaudio wireplumber alsa-utils pulseaudio-utils)
+    elif [[ "$ids" =~ (opensuse|suse) ]]; then
+        PKG_MANAGER=zypper
+        CORE_PKGS=(python3 portaudio portaudio-devel curl git jq pkg-config gcc make)
+        DESKTOP_PKGS=(at-spi2-core python-gobject wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify-tools pipewire pipewire-pulseaudio wireplumber alsa-utils pulseaudio-utils)
+    elif [[ "$ids" =~ (arch|cachyos|manjaro|endeavouros|artix) ]]; then
+        PKG_MANAGER=pacman
+        CORE_PKGS=(python portaudio curl git jq pkgconf base-devel)
+        DESKTOP_PKGS=(at-spi2-core python-gobject wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify pipewire pipewire-pulse wireplumber alsa-utils libpulse)
+    elif [[ "$DISTRO_ID" == gentoo || "$DISTRO_LIKE" == *gentoo* ]]; then
+        PKG_MANAGER=emerge
+        CORE_PKGS=(dev-lang/python media-libs/portaudio net-misc/curl dev-vcs/git app-misc/jq dev-build/pkgconf sys-devel/gcc sys-devel/make)
+        DESKTOP_PKGS=(app-accessibility/at-spi2-core dev-python/pygobject gui-apps/wtype app-misc/ydotool x11-misc/xdotool x11-misc/wmctrl gui-apps/grim gui-apps/slurp sys-power/brightnessctl x11-libs/libnotify media-video/pipewire media-video/wireplumber media-sound/alsa-utils)
+    elif [[ "$DISTRO_ID" == alpine || "$DISTRO_LIKE" == *alpine* ]]; then
+        PKG_MANAGER=apk
+        CORE_PKGS=(python3 portaudio portaudio-dev curl git jq pkgconf build-base linux-headers)
+        DESKTOP_PKGS=(at-spi2-core py3-gobject3 wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify pipewire pipewire-pulse wireplumber alsa-utils pulseaudio-utils)
+    elif [[ "$DISTRO_ID" == void || "$DISTRO_LIKE" == *void* ]]; then
+        PKG_MANAGER=xbps-install
+        CORE_PKGS=(python3 portaudio-devel curl git jq pkg-config base-devel)
+        DESKTOP_PKGS=(at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify pipewire wireplumber alsa-utils pulseaudio)
+    elif [[ "$DISTRO_ID" == solus || "$DISTRO_LIKE" == *solus* ]]; then
+        PKG_MANAGER=eopkg
+        CORE_PKGS=(python3 portaudio-devel curl git jq pkg-config system.devel)
+        DESKTOP_PKGS=(at-spi2-core python-gobject wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify pipewire wireplumber alsa-utils pulseaudio)
+    elif [[ "$DISTRO_ID" == nixos || "$DISTRO_LIKE" == *nixos* ]]; then
+        PKG_MANAGER=nixos
+        CORE_PKGS=(python3 portaudio curl git jq pkg-config gcc)
+        DESKTOP_PKGS=(pipewire wireplumber libnotify at-spi2-core wtype ydotool xdotool wmctrl grim slurp brightnessctl)
+    else
+        # A manager fallback is useful for derivatives with incomplete os-release
+        # data. Keep the package vocabulary conservative and explain uncertainty.
+        if command -v apt-get >/dev/null 2>&1; then
+            PKG_MANAGER=apt
+            CORE_PKGS=(python3 libportaudio2 portaudio19-dev curl git jq pkg-config build-essential)
+            DESKTOP_PKGS=(at-spi2-core gir1.2-atspi-2.0 python3-gi wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify-bin pipewire pipewire-pulse wireplumber alsa-utils pulseaudio-utils)
+        elif command -v dnf >/dev/null 2>&1; then
+            PKG_MANAGER=dnf
+            CORE_PKGS=(python3 portaudio portaudio-devel curl git jq pkgconf-pkg-config gcc gcc-c++ make)
+            DESKTOP_PKGS=(at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify pipewire pipewire-pulseaudio wireplumber alsa-utils pulseaudio-utils)
+        elif command -v pacman >/dev/null 2>&1; then
+            PKG_MANAGER=pacman
+            CORE_PKGS=(python portaudio curl git jq pkgconf base-devel)
+            DESKTOP_PKGS=(at-spi2-core python-gobject wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify pipewire pipewire-pulse wireplumber alsa-utils libpulse)
+        else
+            log_error "Unsupported distribution '$DISTRO_NAME'. Install Python, PortAudio development files, curl, git, jq and a C build toolchain, then rerun with --skip-sys-pkgs."
+            return 1
+        fi
+        log_warn "Unknown distribution ID '$DISTRO_ID'; using $PKG_MANAGER package names. Review them before continuing."
+    fi
+}
+
+prompt_yes_no() {
+    local prompt="$1" default_yes="$2" answer=""
+    if [[ "$ASSUME_YES" == true ]]; then
+        [[ "$default_yes" == true ]]
+        return
+    fi
+    while true; do
+        if [[ "$default_yes" == true ]]; then
+            read -r -p "$prompt [Y/n] " answer || return 1
+            [[ -z "$answer" || "$answer" =~ ^[Yy]([Ee][Ss])?$ ]] && return 0
+            [[ "$answer" =~ ^[Nn]([Oo])?$ ]] && return 1
+        else
+            read -r -p "$prompt [y/N] " answer || return 1
+            [[ "$answer" =~ ^[Yy]([Ee][Ss])?$ ]] && return 0
+            [[ -z "$answer" || "$answer" =~ ^[Nn]([Oo])?$ ]] && return 1
+        fi
+        printf 'Please answer yes or no.\n' >&2
+    done
+}
+
+SUDO_CMD=()
+find_privilege_tool() {
+    if command -v sudo >/dev/null 2>&1; then
+        SUDO_CMD=(sudo)
+    elif command -v doas >/dev/null 2>&1; then
+        SUDO_CMD=(doas)
+    else
+        log_error "System package installation requires sudo or doas. Use --skip-sys-pkgs if dependencies are already installed."
+        return 1
+    fi
+}
+
+pkg_install() {
+    case "$PKG_MANAGER" in
+        apt) "${SUDO_CMD[@]}" apt-get install -y -- "$@" ;;
+        dnf|yum) "${SUDO_CMD[@]}" "$PKG_MANAGER" install -y -- "$@" ;;
+        zypper) "${SUDO_CMD[@]}" zypper --non-interactive install -- "$@" ;;
+        pacman) "${SUDO_CMD[@]}" pacman -S --needed --noconfirm -- "$@" ;;
+        emerge) "${SUDO_CMD[@]}" emerge --ask=n --noreplace "$@" ;;
+        apk) "${SUDO_CMD[@]}" apk add -- "$@" ;;
+        xbps-install) "${SUDO_CMD[@]}" xbps-install -Sy "$@" ;;
+        eopkg) "${SUDO_CMD[@]}" eopkg install -y "$@" ;;
+        *) log_error "No installer for package manager '$PKG_MANAGER'."; return 1 ;;
+    esac
+}
+
+install_package_group() {
+    local label="$1" required="$2"
+    shift 2
+    local -a failures=()
+    (($#)) || return 0
+    log_info "Installing $label packages with $PKG_MANAGER."
+    if [[ "$PKG_MANAGER" == apt ]]; then
+        "${SUDO_CMD[@]}" apt-get update
+    fi
+    if pkg_install "$@"; then
+        log_ok "$label packages installed."
+        return 0
+    fi
+    log_warn "The batch install failed; retrying $label packages individually."
+    local package
+    for package in "$@"; do
+        if ! pkg_install "$package"; then failures+=("$package"); fi
+    done
+    if ((${#failures[@]})); then
+        if [[ "$required" == true ]]; then
+            log_error "Required packages could not be installed: ${failures[*]}"
+            return 1
+        fi
+        log_warn "Optional packages unavailable: ${failures[*]}"
+        return 0
+    fi
+    log_ok "$label packages installed individually."
 }
 
 install_system_packages() {
-    detect_distro
-    log_info "Detected Linux distribution: ${CLR_BOLD}${DISTRO_NAME}${CLR_RESET} (${DISTRO_ID})"
-
-    if [[ "$SKIP_SYS_PKGS" == true ]]; then
-        log_info "Skipping system package installation (--skip-sys-pkgs)."
-        return 0
+    [[ "$SKIP_SYS_PKGS" == true ]] && { log_info "Skipping system package manager (--skip-sys-pkgs)."; return 0; }
+    select_packages || return 1
+    if [[ "$PKG_MANAGER" == nixos ]]; then
+        log_error "NixOS package changes are declarative. Add the listed runtime packages to your Nix configuration, then rerun with --skip-sys-pkgs."
+        return 1
     fi
-
-    # Select both the package manager and distro-specific package names.
-    local PKG_MANAGER=""
-    local -a PKGS=()
-
-    if [[ "$DISTRO_ID" == "gentoo" || "$DISTRO_LIKE" == *"gentoo"* ]]; then
-        PKG_MANAGER="emerge"
-        PKGS=(
-            media-libs/portaudio
-            app-misc/tmux
-            app-accessibility/at-spi2-core
-            dev-python/pygobject
-            gui-apps/wtype
-            app-misc/ydotool
-            x11-misc/xdotool
-            x11-misc/wmctrl
-            gui-apps/grim
-            gui-apps/slurp
-            sys-power/brightnessctl
-            x11-libs/libnotify
-            media-video/pipewire
-            media-video/wireplumber
-            media-sound/alsa-utils
-            net-misc/curl
-            dev-vcs/git
-            app-misc/jq
-            dev-build/pkgconf
-            sys-devel/gcc
-            sys-devel/make
-        )
-    elif [[ "$DISTRO_ID" == *"suse"* || "$DISTRO_LIKE" == *"suse"* ]]; then
-        PKG_MANAGER="zypper"
-        PKGS=(
-            portaudio
-            portaudio-devel
-            tmux
-            at-spi2-core
-            python-gobject
-            wtype
-            ydotool
-            xdotool
-            wmctrl
-            grim
-            slurp
-            brightnessctl
-            libnotify-tools
-            pipewire
-            pipewire-pulseaudio
-            wireplumber
-            alsa-utils
-            pulseaudio-utils
-            curl
-            git
-            jq
-            pkg-config
-            gcc
-            make
-        )
-    elif [[ "$DISTRO_ID" =~ (debian|ubuntu|linuxmint|pop|elementary|zorin|devuan|kali|parrot) || "$DISTRO_LIKE" == *"debian"* || "$DISTRO_LIKE" == *"ubuntu"* ]]; then
-        PKG_MANAGER="apt"
-        PKGS=(
-            libportaudio2
-            portaudio19-dev
-            tmux
-            at-spi2-core
-            gir1.2-atspi-2.0
-            python3-gi
-            wtype
-            ydotool
-            xdotool
-            wmctrl
-            grim
-            slurp
-            brightnessctl
-            libnotify-bin
-            pipewire
-            pipewire-pulse
-            wireplumber
-            alsa-utils
-            pulseaudio-utils
-            curl
-            git
-            jq
-            pkg-config
-            build-essential
-        )
-    elif [[ "$DISTRO_ID" =~ (fedora|rhel|centos|rocky|alma|ol|amzn|openmandriva) || "$DISTRO_LIKE" == *"fedora"* || "$DISTRO_LIKE" == *"rhel"* ]]; then
-        if command -v dnf &>/dev/null; then PKG_MANAGER="dnf"; else PKG_MANAGER="yum"; fi
-        PKGS=(
-            portaudio
-            portaudio-devel
-            tmux
-            at-spi2-core
-            python3-gobject
-            wtype
-            ydotool
-            xdotool
-            wmctrl
-            grim
-            slurp
-            brightnessctl
-            libnotify
-            pipewire
-            pipewire-pulseaudio
-            wireplumber
-            alsa-utils
-            pulseaudio-utils
-            curl
-            git
-            jq
-            pkgconf-pkg-config
-            gcc
-            gcc-c++
-            make
-        )
-    elif [[ "$DISTRO_ID" =~ (arch|cachyos|manjaro|endeavouros|artix) || "$DISTRO_LIKE" == *"arch"* ]]; then
-        PKG_MANAGER="pacman"
-        PKGS=(
-            portaudio
-            tmux
-            at-spi2-core
-            python-gobject
-            wtype
-            ydotool
-            xdotool
-            wmctrl
-            grim
-            slurp
-            brightnessctl
-            libnotify
-            pipewire
-            pipewire-pulse
-            wireplumber
-            alsa-utils
-            libpulse
-            curl
-            git
-            jq
-            pkgconf
-            base-devel
-        )
-    elif [[ "$DISTRO_ID" == "alpine" || "$DISTRO_LIKE" == *"alpine"* ]]; then
-        PKG_MANAGER="apk"
-        PKGS=(
-            portaudio portaudio-dev tmux at-spi2-core py3-gobject3 wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
-            pipewire pipewire-pulse wireplumber alsa-utils pulseaudio-utils
-            curl git jq pkgconf build-base linux-headers
-        )
-    elif [[ "$DISTRO_ID" == "void" || "$DISTRO_LIKE" == *"void"* ]]; then
-        PKG_MANAGER="xbps-install"
-        PKGS=(
-            portaudio-devel tmux at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
-            pipewire wireplumber alsa-utils pulseaudio curl git jq
-            pkg-config base-devel
-        )
-    elif [[ "$DISTRO_ID" == "solus" || "$DISTRO_LIKE" == *"solus"* ]]; then
-        PKG_MANAGER="eopkg"
-        PKGS=(
-            portaudio-devel tmux at-spi2-core python-gobject wtype ydotool xdotool wmctrl grim slurp brightnessctl libnotify
-            pipewire wireplumber alsa-utils pulseaudio curl git jq
-            pkg-config system.devel
-        )
-    elif [[ "$DISTRO_ID" == "nixos" || "$DISTRO_LIKE" == *"nixos"* ]]; then
-        log_warn "NixOS uses declarative system packages. Add portaudio, pipewire, wireplumber, libnotify, curl, git, jq, tmux, at-spi2-core, python3Packages.pygobject3, wtype, ydotool, xdotool, wmctrl, grim, slurp, and brightnessctl to your system configuration."
-        log_warn "Continuing without changing your NixOS configuration."
-        return 0
-    elif command -v apt-get &>/dev/null; then
-        PKG_MANAGER="apt"
-        PKGS=(libportaudio2 portaudio19-dev tmux at-spi2-core gir1.2-atspi-2.0 python3-gi wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulse wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config build-essential)
-    elif command -v dnf &>/dev/null; then
-        PKG_MANAGER="dnf"
-        PKGS=(portaudio portaudio-devel tmux at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconf-pkg-config gcc gcc-c++ make)
-    elif command -v yum &>/dev/null; then
-        PKG_MANAGER="yum"
-        PKGS=(portaudio portaudio-devel tmux at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber pulseaudio-utils alsa-utils curl git jq pkgconfig gcc gcc-c++ make)
-    elif command -v zypper &>/dev/null; then
-        PKG_MANAGER="zypper"
-        PKGS=(portaudio portaudio-devel tmux at-spi2-core python-gobject wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulseaudio wireplumber pulseaudio-utils alsa-utils curl git jq pkg-config gcc make)
-    elif command -v pacman &>/dev/null; then
-        PKG_MANAGER="pacman"
-        PKGS=(portaudio tmux at-spi2-core python-gobject wtype ydotool xdotool wmctrl grim slurp pipewire pipewire-pulse wireplumber pulseaudio alsa-utils curl git jq pkgconf base-devel)
-    elif command -v apk &>/dev/null; then
-        PKG_MANAGER="apk"
-        PKGS=(portaudio portaudio-dev tmux at-spi2-core py3-gobject3 wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkgconf build-base linux-headers)
-    elif command -v xbps-install &>/dev/null; then
-        PKG_MANAGER="xbps-install"
-        PKGS=(portaudio-devel tmux at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config base-devel)
-    elif command -v eopkg &>/dev/null; then
-        PKG_MANAGER="eopkg"
-        PKGS=(portaudio-devel tmux at-spi2-core python3-gobject wtype ydotool xdotool wmctrl grim slurp pipewire wireplumber alsa-utils pulseaudio curl git jq pkg-config system.devel)
+    if [[ "$ASSUME_YES" != true ]] && ! prompt_yes_no "Install required packages for $DISTRO_NAME?" true; then
+        log_error "Required system packages were not installed. Rerun with --skip-sys-pkgs only if they are already present."
+        return 1
     fi
+    find_privilege_tool || return 1
+    install_package_group "required" true "${CORE_PKGS[@]}" || return 1
 
-    if [[ -z "$PKG_MANAGER" ]]; then
-        log_warn "Could not identify a supported package manager for '${DISTRO_ID}'."
-        log_warn "Install PortAudio development files, PipeWire, WirePlumber, PulseAudio utilities (pactl), curl, git, jq, and a C build toolchain, then rerun with --skip-sys-pkgs."
-        return 0
-    fi
-
-    # Interactive confirmation prompt
-    if [[ "$ASSUME_YES" != true ]]; then
-        echo ""
-        read -r -p "Install required system packages for ${DISTRO_NAME} using ${PKG_MANAGER}? [Y/n] " answer
-        if [[ "$answer" =~ ^[Nn]$ ]]; then
-            log_info "Skipping system package installation."
-            return 0
+    local install_desktop=false
+    if [[ "$DISABLE_COMPUTER_CONTROL" != true ]]; then
+        if [[ "$INSTALL_DESKTOP_TOOLS" == true ]]; then
+            install_desktop=true
+        elif [[ "$ASSUME_YES" != true ]] && prompt_yes_no "Install optional X11/Wayland desktop-control packages?" false; then
+            install_desktop=true
         fi
     fi
-
-    log_info "Installing system packages via ${PKG_MANAGER}..."
-    if [[ "$PKG_MANAGER" == "apt" ]]; then
-        if [[ -n "$SUDO" ]]; then "$SUDO" apt-get update -y; else apt-get update -y; fi
-    fi
-
-    install_package_batch() {
-        case "$PKG_MANAGER" in
-            apt) if [[ -n "$SUDO" ]]; then "$SUDO" apt-get install -y "$@"; else apt-get install -y "$@"; fi ;;
-            dnf|yum) if [[ -n "$SUDO" ]]; then "$SUDO" "$PKG_MANAGER" install -y "$@"; else "$PKG_MANAGER" install -y "$@"; fi ;;
-            zypper) if [[ -n "$SUDO" ]]; then "$SUDO" zypper --non-interactive install -y "$@"; else zypper --non-interactive install -y "$@"; fi ;;
-            pacman) if [[ -n "$SUDO" ]]; then "$SUDO" pacman -S --needed --noconfirm "$@"; else pacman -S --needed --noconfirm "$@"; fi ;;
-            emerge) if [[ -n "$SUDO" ]]; then "$SUDO" emerge --ask=n --noreplace "$@"; else emerge --ask=n --noreplace "$@"; fi ;;
-            apk) if [[ -n "$SUDO" ]]; then "$SUDO" apk add "$@"; else apk add "$@"; fi ;;
-            xbps-install) if [[ -n "$SUDO" ]]; then "$SUDO" xbps-install -Sy "$@"; else xbps-install -Sy "$@"; fi ;;
-            eopkg) if [[ -n "$SUDO" ]]; then "$SUDO" eopkg install -y "$@"; else eopkg install -y "$@"; fi ;;
-        esac
-    }
-
-    install_one_package() {
-        local package="$1"
-        case "$PKG_MANAGER" in
-            apt) if [[ -n "$SUDO" ]]; then "$SUDO" apt-get install -y "$package"; else apt-get install -y "$package"; fi ;;
-            dnf|yum) if [[ -n "$SUDO" ]]; then "$SUDO" "$PKG_MANAGER" install -y "$package"; else "$PKG_MANAGER" install -y "$package"; fi ;;
-            zypper) if [[ -n "$SUDO" ]]; then "$SUDO" zypper --non-interactive install -y "$package"; else zypper --non-interactive install -y "$package"; fi ;;
-            pacman) if [[ -n "$SUDO" ]]; then "$SUDO" pacman -S --needed --noconfirm "$package"; else pacman -S --needed --noconfirm "$package"; fi ;;
-            emerge) if [[ -n "$SUDO" ]]; then "$SUDO" emerge --ask=n --noreplace "$package"; else emerge --ask=n --noreplace "$package"; fi ;;
-            apk) if [[ -n "$SUDO" ]]; then "$SUDO" apk add "$package"; else apk add "$package"; fi ;;
-            xbps-install) if [[ -n "$SUDO" ]]; then "$SUDO" xbps-install -Sy "$package"; else xbps-install -Sy "$package"; fi ;;
-            eopkg) if [[ -n "$SUDO" ]]; then "$SUDO" eopkg install -y "$package"; else eopkg install -y "$package"; fi ;;
-        esac
-    }
-
-    local -a FAILED_PKGS=()
-    if ! install_package_batch "${PKGS[@]}"; then
-        log_warn "The package manager rejected at least one package name; retrying packages individually."
-        for package in "${PKGS[@]}"; do
-            if ! install_one_package "$package"; then FAILED_PKGS+=("$package"); fi
-        done
-    fi
-    if ((${#FAILED_PKGS[@]})); then
-        log_warn "Some optional packages were unavailable: ${FAILED_PKGS[*]}"
-        log_warn "Install missing tools later if a desktop action or audio device needs them."
+    if [[ "$install_desktop" == true ]]; then
+        install_package_group "optional desktop-control" false "${DESKTOP_PKGS[@]}"
     else
-        log_success "System package installation completed."
+        log_info "Skipping optional desktop-control packages. Use --install-desktop-tools to add them."
     fi
 }
 
-# ------------------------------------------------------------------------------
-# 2. uv Package Manager Installation
-# ------------------------------------------------------------------------------
-ensure_uv() {
-    log_info "Checking for Astral 'uv' Python manager..."
-    if ! command -v uv &>/dev/null; then
-        if [[ -x "$HOME/.local/bin/uv" ]]; then
-            export PATH="$HOME/.local/bin:$PATH"
-        elif [[ -x "$HOME/.cargo/bin/uv" ]]; then
-            export PATH="$HOME/.cargo/bin:$PATH"
-        else
-            log_info "Installing uv via official Astral installer..."
-            curl -LsSf https://astral.sh/uv/install.sh | sh
-            export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
-        fi
-    fi
-
-    if ! command -v uv &>/dev/null; then
-        log_err "Failed to locate or install 'uv'. Please install uv manually: https://docs.astral.sh/uv/"
-        exit 1
-    fi
-    log_success "Using uv: $(uv --version)"
-}
-
-# ------------------------------------------------------------------------------
-# 3. Python Environment & Dependencies
-# ------------------------------------------------------------------------------
-ensure_onnxruntime() {
-    local python="${SCRIPT_DIR}/.venv/bin/python"
-    local runtime_package="onnxruntime"
-    [[ "$RUNTIME_EXTRA" == "runtime-nvidia" ]] && runtime_package="onnxruntime-gpu"
-
-    if "$python" -c 'import onnxruntime' &>/dev/null; then
-        return 0
-    fi
-    if [[ "$SKIP_PYTHON" == true ]]; then
-        log_err "ONNX Runtime is missing or damaged, and --skip-python-deps prevents repairing it."
-        return 1
-    fi
-
-    log_warn "ONNX Runtime is missing or damaged; reinstalling ${runtime_package}."
-    uv pip install --reinstall --python "$python" "$runtime_package"
-    if ! "$python" -c 'import onnxruntime' &>/dev/null; then
-        log_err "${runtime_package} is still not importable after reinstall."
-        return 1
-    fi
-    log_success "${runtime_package} imports successfully."
-}
-
-ensure_torchaudio() {
-    local python="${SCRIPT_DIR}/.venv/bin/python"
-    if "$python" -c 'import torch, torchaudio' &>/dev/null; then
-        return 0
-    fi
-    if [[ "$SKIP_PYTHON" == true ]]; then
-        log_err "PyTorch/TorchAudio cannot be imported together, and --skip-python-deps prevents repairing them."
-        return 1
-    fi
-
-    log_warn "PyTorch/TorchAudio failed its import check; reinstalling the configured runtime dependencies."
-    local -a UV_ARGS=(sync --extra "$RUNTIME_EXTRA" --reinstall-package torchaudio)
-    [[ "$SKIP_SPEAKER_VERIFICATION" != true ]] && UV_ARGS+=(--extra speaker-verification)
-    [[ "$ENABLE_IDEA_ROUTING" == true ]] && UV_ARGS+=(--extra intent-routing)
-    [[ "$ENABLE_BROWSER_NAVIGATION" == true ]] && UV_ARGS+=(--extra browser-control)
-    uv "${UV_ARGS[@]}"
-    if ! "$python" -c 'import torch, torchaudio' &>/dev/null; then
-        log_err "PyTorch and TorchAudio are still not importable together."
-        return 1
-    fi
-    log_success "PyTorch and TorchAudio import successfully together."
-}
-
-setup_python_env() {
-    export ADAM_SKIP_SPEAKER_VERIFICATION="$([[ "$SKIP_SPEAKER_VERIFICATION" == true ]] && echo 1 || echo 0)"
-    export ADAM_SKIP_ENROLLMENT="$([[ "$SKIP_ENROLLMENT" == true ]] && echo 1 || echo 0)"
-    export ADAM_SKIP_OLLAMA="$([[ "$SKIP_OLLAMA" == true ]] && echo 1 || echo 0)"
-    export ADAM_SKIP_SERVICE="$([[ "$SKIP_SERVICE" == true ]] && echo 1 || echo 0)"
-    export ADAM_CPU_ONLY="$([[ "$CPU_ONLY" == true ]] && echo 1 || echo 0)"
-    export ADAM_SKIP_PYTHON="$([[ "$SKIP_PYTHON" == true ]] && echo 1 || echo 0)"
-    export ADAM_IDEA_ROUTING_DEFAULT="$([[ "$ENABLE_IDEA_ROUTING" == true ]] && echo 1 || echo 0)"
-    export ADAM_BROWSER_NAVIGATION_DEFAULT="$([[ "$ENABLE_BROWSER_NAVIGATION" == true ]] && echo 1 || echo 0)"
-    if [[ "$SKIP_PYTHON" == true ]]; then
-        log_info "Skipping Python dependency sync (--skip-python-deps)."
-        [[ "$CPU_ONLY" == true ]] && RUNTIME_EXTRA="runtime-cpu"
-        [[ "$FORCE_NVIDIA_RUNTIME" == true ]] && RUNTIME_EXTRA="runtime-nvidia"
-        export ADAM_RUNTIME_EXTRA="${RUNTIME_EXTRA}"
-        return 0
-    fi
-
+choose_runtime() {
     if [[ "$CPU_ONLY" == true ]]; then
-        RUNTIME_EXTRA="runtime-cpu"
+        RUNTIME_EXTRA=runtime-cpu
     elif [[ "$FORCE_NVIDIA_RUNTIME" == true ]]; then
-        RUNTIME_EXTRA="runtime-nvidia"
-    elif command -v nvidia-smi &>/dev/null && nvidia-smi -L 2>/dev/null | grep 'GPU' >/dev/null; then
-        if [[ "$ASSUME_YES" == true ]]; then
-            RUNTIME_EXTRA="runtime-nvidia"
-        else
-            echo ""
-            read -r -p "Install NVIDIA CUDA runtime support? This only installs libraries; Adam will use only the GPU you select. [Y/n] " answer
-            [[ "$answer" =~ ^[Nn]$ ]] && RUNTIME_EXTRA="runtime-cpu" || RUNTIME_EXTRA="runtime-nvidia"
+        RUNTIME_EXTRA=runtime-nvidia
+    elif [[ "$ASSUME_YES" != true ]] && command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi -L >/dev/null 2>&1; then
+        if prompt_yes_no "Install NVIDIA ONNX/CUDA runtime libraries?" false; then
+            RUNTIME_EXTRA=runtime-nvidia
+        fi
+    fi
+    log_info "Python runtime selection: $RUNTIME_EXTRA. A detected GPU does not change this default."
+}
+
+ensure_uv() {
+    if ! command -v uv >/dev/null 2>&1; then
+        log_error "uv is required but is not installed. Install it from https://docs.astral.sh/uv/getting-started/installation/ and rerun setup."
+        return 1
+    fi
+    log_info "Using $(uv --version)."
+}
+
+set_config_scalar() {
+    local section="$1" key="$2" value="$3"
+    python3 - "$CONFIG_FILE" "$section" "$key" "$value" <<'PY'
+from pathlib import Path
+import os
+import re
+import sys
+import tempfile
+
+path = Path(sys.argv[1])
+section, key, value = sys.argv[2:]
+text = path.read_text(encoding="utf-8")
+lines = text.splitlines(keepends=True)
+section_re = re.compile(rf"^{re.escape(section)}:\s*(?:#.*)?(?:\r?\n)?$")
+top_re = re.compile(r"^[^\s#][^:\n]*:\s*(?:#.*)?(?:\r?\n)?$")
+key_re = re.compile(rf"^(\s+{re.escape(key)}:\s*)(.*?)(\s+#.*)?(\r?\n)?$")
+
+start = next((i for i, line in enumerate(lines) if section_re.match(line)), None)
+if start is None:
+    if text and not text.endswith("\n"):
+        lines[-1] += "\n"
+    if lines and lines[-1].strip():
+        lines.append("\n")
+    lines.extend([f"{section}:\n", f"  {key}: {value}\n"])
+else:
+    end = next((i for i in range(start + 1, len(lines)) if top_re.match(lines[i])), len(lines))
+    found = False
+    for i in range(start + 1, end):
+        match = key_re.match(lines[i])
+        if match:
+            newline = match.group(4) or "\n"
+            comment = match.group(3) or ""
+            lines[i] = f"{match.group(1)}{value}{comment}{newline}"
+            found = True
+            break
+    if not found:
+        lines.insert(start + 1, f"  {key}: {value}\n")
+
+contents = "".join(lines)
+fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+try:
+    with os.fdopen(fd, "w", encoding="utf-8", newline="") as handle:
+        handle.write(contents)
+    os.chmod(temp_name, 0o600)
+    os.replace(temp_name, path)
+except BaseException:
+    try:
+        os.unlink(temp_name)
+    except FileNotFoundError:
+        pass
+    raise
+PY
+}
+
+prepare_config() {
+    local config="$SCRIPT_DIR/config.yaml"
+    if [[ -L "$config" ]]; then
+        if [[ ! -e "$config" ]]; then
+            log_error "config.yaml is a broken symlink; repair it before running setup."
+            return 1
+        fi
+        CONFIG_FILE="$(python3 - "$config" <<'PY'
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).resolve(strict=True))
+PY
+)"
+        if [[ ! -f "$CONFIG_FILE" ]]; then
+            log_error "config.yaml must point to a regular file."
+            return 1
         fi
     else
-        RUNTIME_EXTRA="runtime-cpu"
-        log_info "No NVIDIA GPU was detected; using the CPU ONNX Runtime."
+        CONFIG_FILE="$config"
     fi
+    if [[ ! -e "$config" ]]; then
+        if [[ ! -f "$SCRIPT_DIR/config.yaml.example" ]]; then
+            log_error "Neither config.yaml nor config.yaml.example exists."
+            return 1
+        fi
+        cp -- "$SCRIPT_DIR/config.yaml.example" "$config"
+        log_info "Created config.yaml from config.yaml.example."
+    fi
+    [[ -f "$config" ]] || { log_error "config.yaml is not a regular file."; return 1; }
 
-    export ADAM_RUNTIME_EXTRA="$RUNTIME_EXTRA"
-
-    log_info "Synchronizing Python virtual environment and dependencies..."
-    local -a UV_ARGS=(sync --extra "$RUNTIME_EXTRA")
-    if [[ "$SKIP_SPEAKER_VERIFICATION" != true ]]; then
-        UV_ARGS+=(--extra speaker-verification)
+    if [[ "$SKIP_SPEAKER_VERIFICATION" == true ]]; then
+        set_config_scalar speaker_verification enabled false
     fi
     if [[ "$ENABLE_IDEA_ROUTING" == true ]]; then
-        UV_ARGS+=(--extra intent-routing)
+        set_config_scalar idea_routing enabled true
     fi
     if [[ "$ENABLE_BROWSER_NAVIGATION" == true ]]; then
-        UV_ARGS+=(--extra browser-control)
+        set_config_scalar browser_navigation enabled true
     fi
-    uv "${UV_ARGS[@]}"
-    ensure_onnxruntime
-    ensure_torchaudio
-    log_success "Python virtual environment configured in $SCRIPT_DIR/.venv"
+    if [[ "$ENABLE_DIARIZATION" == true ]]; then
+        set_config_scalar speaker_diarization enabled true
+    fi
+    if [[ "$ENABLE_OMNIPARSER" == true ]]; then
+        set_config_scalar computer_vision enabled true
+        set_config_scalar computer_vision backend omniparser
+    fi
+    if [[ "$DISABLE_COMPUTER_CONTROL" == true ]]; then
+        set_config_scalar computer_control enabled false
+    fi
+    chmod 600 -- "$config"
+    log_ok "Configuration is private (mode 0600); existing settings were preserved except explicit flags."
 }
 
-# ------------------------------------------------------------------------------
-# 4. Neural Models & Voice Assets Download
-# ------------------------------------------------------------------------------
 download_asset() {
-    local url="$1"
-    local dest="$2"
-    local name="$3"
-
-    if [[ -f "$dest" && -s "$dest" ]]; then
-        log_success "$name already present: $dest"
+    local url="$1" destination="$2" label="$3"
+    if [[ -s "$destination" ]]; then
+        log_ok "$label already exists."
         return 0
     fi
-
-    log_info "Downloading $name..."
-    mkdir -p "$(dirname "$dest")"
-    local temp_dest="${dest}.part.$$"
-    
-    if curl -fSL --progress-bar "$url" -o "$temp_dest"; then
-        mv "$temp_dest" "$dest"
-        log_success "Successfully downloaded $name."
-    else
-        rm -f "$temp_dest"
-        log_err "Failed to download $name from $url"
-        return 1
-    fi
+    mkdir -p -- "$(dirname -- "$destination")"
+    local temp="${destination}.part.$$"
+    TEMP_FILES+=("$temp")
+    log_info "Downloading $label."
+    curl --fail --location --retry 3 --output "$temp" "$url"
+    [[ -s "$temp" ]] || { log_error "$label download was empty."; return 1; }
+    mv -- "$temp" "$destination"
+    log_ok "Downloaded $label."
 }
 
 download_models() {
     if [[ "$SKIP_MODELS" == true ]]; then
-        log_info "Skipping model downloads (--skip-models)."
+        log_info "Skipping Kokoro downloads (--skip-models)."
         return 0
     fi
-
-    if [[ "$ASSUME_YES" != true ]]; then
-        echo ""
-        read -r -p "Download Kokoro TTS neural voice and Silero VAD weights (~350MB)? [Y/n] " answer
-        if [[ "$answer" =~ ^[Nn]$ ]]; then
-            log_info "Skipping model downloads."
-            return 0
-        fi
+    if [[ "$ASSUME_YES" != true ]] && ! prompt_yes_no "Download the Kokoro model and voices (about 300 MB)?" true; then
+        log_warn "Kokoro downloads skipped. Select another TTS engine or download these assets before starting Adam."
+        return 0
     fi
-
-    log_info "Verifying required neural model assets..."
-    mkdir -p assets/models assets/voices/kokoro assets/chimes
-
-    # Silero VAD v5 ONNX
-    download_asset \
-        "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx" \
-        "assets/models/silero_vad.onnx" \
-        "Silero VAD ONNX model"
-
-    # Kokoro-82M TTS ONNX Model
     download_asset \
         "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx" \
-        "assets/voices/kokoro/kokoro-v1.0.onnx" \
-        "Kokoro-82M ONNX model weights"
-
-    # Kokoro-82M Voice Binaries (am_adam, etc.)
+        "$SCRIPT_DIR/assets/voices/kokoro/kokoro-v1.0.onnx" "Kokoro ONNX model"
     download_asset \
         "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" \
-        "assets/voices/kokoro/voices-v1.0.bin" \
-        "Kokoro voice embeddings (voices-v1.0.bin)"
-
-    log_success "All voice and VAD assets verified."
+        "$SCRIPT_DIR/assets/voices/kokoro/voices-v1.0.bin" "Kokoro voice embeddings"
 }
 
-# ------------------------------------------------------------------------------
-# 5. Systemd User Service Template Generation
-# ------------------------------------------------------------------------------
-generate_systemd_template() {
-    if [[ ! -d /run/systemd/system ]] || ! command -v systemctl &>/dev/null || ! systemctl --user show-environment &>/dev/null; then
-        log_warn "This Linux system does not use systemd; skipping the systemd user unit."
-        log_info "Start Adam manually with: uv run python -m src.main"
+sync_python_environment() {
+    if [[ "$SKIP_PYTHON" == true ]]; then
+        log_info "Skipping uv sync (--skip-python-deps)."
         return 0
     fi
-    ensure_onnxruntime
-    ensure_torchaudio
-    local user_systemd_dir="$HOME/.config/systemd/user"
-    mkdir -p "$user_systemd_dir"
-    local service_dest="${user_systemd_dir}/adam.service"
-    local template_file="${SCRIPT_DIR}/systemd/adam.service.template"
+    local -a args=(sync --inexact --extra "$RUNTIME_EXTRA")
+    [[ "$SKIP_SPEAKER_VERIFICATION" == true ]] || args+=(--extra speaker-verification)
 
-    if [[ -f "$template_file" ]]; then
-        sed \
-            -e "s|{{PROJECT_DIR}}|${SCRIPT_DIR}|g" \
-            -e "s|{{HOME}}|${HOME}|g" \
-            "$template_file" > "$service_dest"
-    else
-        cat <<EOF > "$service_dest"
-[Unit]
-Description=Adam: Voice-Activated Autonomous Terminal Agent
-After=pipewire.service wireplumber.service pipewire-pulse.service
-Wants=pipewire.service wireplumber.service
+    local existing_extras=""
+    if [[ -f "$CONFIG_FILE" ]]; then
+        existing_extras="$(python3 - "$CONFIG_FILE" <<'PY'
+from pathlib import Path
+import re, sys
 
-[Service]
-Type=simple
-WorkingDirectory=${SCRIPT_DIR}
-ExecStart=${SCRIPT_DIR}/.venv/bin/python -m src.main
-Restart=on-failure
-RestartSec=3s
-Environment=PYTHONUNBUFFERED=1
-Environment=CUDA_DEVICE_ORDER=PCI_BUS_ID
-Environment="PATH=${SCRIPT_DIR}/.venv/bin:${HOME}/.local/bin:/usr/local/bin:/usr/bin:/bin"
-PassEnvironment=DISPLAY WAYLAND_DISPLAY HYPRLAND_INSTANCE_SIGNATURE XDG_CURRENT_DESKTOP XDG_RUNTIME_DIR
-StandardOutput=journal
-StandardError=journal
+path = Path(sys.argv[1])
+try:
+    text = path.read_text(encoding="utf-8")
+except Exception:
+    sys.exit(0)
 
-[Install]
-WantedBy=default.target
-EOF
+def is_enabled(section: str, key: str = "enabled") -> bool:
+    sec_match = re.search(rf"(?m)^{re.escape(section)}:\s*(?:#.*)?$", text)
+    if not sec_match:
+        return False
+    rest = text[sec_match.end():]
+    next_sec = re.search(r"(?m)^[^\s#][^:\n]*:\s*(?:#.*)?$", rest)
+    sec_body = rest[:next_sec.start()] if next_sec else rest
+    val_match = re.search(rf"(?m)^\s+{re.escape(key)}:\s*([^\s#]+)", sec_body)
+    if not val_match:
+        return False
+    return val_match.group(1).lower() in ("true", "yes", "1")
+
+extras = []
+if is_enabled("idea_routing"):
+    extras.append("intent-routing")
+if is_enabled("browser_navigation"):
+    extras.append("browser-control")
+if is_enabled("speaker_diarization"):
+    extras.append("nemotron-diarization")
+if is_enabled("computer_control", "ocr_only"):
+    extras.append("computer-ocr")
+
+print(" ".join(extras))
+PY
+)"
     fi
 
-    systemctl --user daemon-reload
-    log_success "Systemd user service written to: $service_dest"
+    if [[ "$ENABLE_IDEA_ROUTING" == true ]] || [[ " $existing_extras " =~ [[:space:]]intent-routing[[:space:]] ]]; then
+        args+=(--extra intent-routing)
+    fi
+    if [[ "$ENABLE_BROWSER_NAVIGATION" == true ]] || [[ " $existing_extras " =~ [[:space:]]browser-control[[:space:]] ]]; then
+        args+=(--extra browser-control)
+    fi
+    if [[ "$ENABLE_DIARIZATION" == true ]] || [[ " $existing_extras " =~ [[:space:]]nemotron-diarization[[:space:]] ]]; then
+        args+=(--extra nemotron-diarization)
+    fi
+    if [[ " $existing_extras " =~ [[:space:]]computer-ocr[[:space:]] ]]; then
+        args+=(--extra computer-ocr)
+    fi
+
+    log_info "Synchronizing the Python environment."
+    uv "${args[@]}"
 }
 
-# ------------------------------------------------------------------------------
-# 6. Unattended / Automated Fallback
-# ------------------------------------------------------------------------------
-run_unattended_setup() {
-    log_info "Running in automated non-interactive mode..."
-    if [[ "$SKIP_SERVICE" != true ]] && [[ -d /run/systemd/system ]] && command -v systemctl &>/dev/null && systemctl --user show-environment &>/dev/null; then
-        generate_systemd_template
-        systemctl --user enable --now adam.service
-        log_success "adam.service enabled and started."
-    elif [[ "$SKIP_SERVICE" != true ]]; then
-        log_warn "No systemd user service is available; start Adam manually with: uv run python -m src.main"
-    fi
-}
-
-configure_unattended_browser_navigation() {
-    [[ "$ENABLE_BROWSER_NAVIGATION" == true ]] || return 0
-
-    if grep -q '^browser_navigation:' "${SCRIPT_DIR}/config.yaml"; then
-        sed -i '/^browser_navigation:/,/^[^ ]/ s/^[[:space:]]*enabled:.*/  enabled: true/' "${SCRIPT_DIR}/config.yaml"
-    else
-        cat >> "${SCRIPT_DIR}/config.yaml" <<'EOF'
-
-browser_navigation:
-  enabled: true
-  browser: "default"
-  profile_path: "~/.local/share/adam/browser-navigation"
-  timeout_seconds: 15.0
-EOF
-    fi
-
-    local default_browser
-    default_browser="$(uv run --no-sync python -c 'from src.config import load_config; print(load_config().desktop.default_browser.lower())')"
-    local managed_engine=""
-    if [[ "$default_browser" == *firefox* ]]; then
-        managed_engine="firefox"
-    elif [[ "$default_browser" == "chromium" || "$default_browser" == "chromium-browser" ]]; then
-        managed_engine="chromium"
-    fi
-    if [[ -n "$managed_engine" ]] && ! uv run --no-sync playwright install "$managed_engine"; then
-        log_warn "Could not install Playwright $managed_engine; disabling browser navigation."
-        sed -i '/^browser_navigation:/,/^[^ ]/ s/^[[:space:]]*enabled:.*/  enabled: false/' "${SCRIPT_DIR}/config.yaml"
-        return 1
-    fi
-    log_success "Browser navigation enabled in config.yaml."
-}
-
-configure_computer_control() {
-    local enabled=true
-    [[ "$DISABLE_COMPUTER_CONTROL" == true ]] && enabled=false
-    if grep -q '^computer_control:' "${SCRIPT_DIR}/config.yaml"; then
-        sed -i "/^computer_control:/,/^[^ ]/ s/^[[:space:]]*enabled:.*/  enabled: ${enabled}/" "${SCRIPT_DIR}/config.yaml"
-    else
-        cat >> "${SCRIPT_DIR}/config.yaml" <<EOF
-
-computer_control:
-  enabled: ${enabled}
-  max_text_length: 1000
-EOF
-    fi
-}
-
-# ------------------------------------------------------------------------------
-# Main
-# ------------------------------------------------------------------------------
-main() {
-    echo -e "${CLR_CYAN}${CLR_BOLD}================================================================${CLR_RESET}"
-    echo -e "${CLR_CYAN}${CLR_BOLD}          🎙️   Adam / Adam Voice Assistant Setup               ${CLR_RESET}"
-    echo -e "${CLR_CYAN}${CLR_BOLD}================================================================${CLR_RESET}"
-
-    # Base dependencies
-    install_system_packages
-    ensure_uv
-    setup_python_env
-    download_models
-
-    # Initialize config.yaml from example if missing without touching existing settings.
-    if [[ ! -f "${SCRIPT_DIR}/config.yaml" && -f "${SCRIPT_DIR}/config.yaml.example" ]]; then
-        log_info "Initializing config.yaml from config.yaml.example..."
-        cp "${SCRIPT_DIR}/config.yaml.example" "${SCRIPT_DIR}/config.yaml"
-        chmod 600 "${SCRIPT_DIR}/config.yaml"
-        if [[ "$RUNTIME_EXTRA" == "runtime-cpu" ]]; then
-            log_info "Preparing laptop-friendly transcription defaults (small.en on CPU)."
-            sed -i \
-                -e '/^stt:/,/^[^ ]/ { s/^  model_size: "qwen3-asr-1.7b"/  model_size: "small.en"/; s/^  device: "Vulkan0"/  device: "cpu"/; s/^  compute_type: "int8_float32"/  compute_type: "int8"/; }' \
-                -e 's/^  device_id: 0/  device_id: -1/' \
-                "${SCRIPT_DIR}/config.yaml"
+install_optional_feature_assets() {
+    if [[ "$SKIP_PYTHON" == true ]]; then
+        local python="$SCRIPT_DIR/.venv/bin/python"
+        if { [[ "$ENABLE_IDEA_ROUTING" == true ]] || [[ "$ENABLE_BROWSER_NAVIGATION" == true ]] || [[ "$ENABLE_DIARIZATION" == true ]]; } && [[ ! -x "$python" ]]; then
+            log_error "--skip-python-deps with an optional feature requires a prepared .venv."
+            return 1
+        fi
+        if [[ "$ENABLE_IDEA_ROUTING" == true ]] && ! "$python" -c 'import huggingface_hub, tokenizers' >/dev/null 2>&1; then
+            log_error "Idea routing dependencies are missing from .venv; remove --skip-python-deps or install the intent-routing extra first."
+            return 1
+        fi
+        if [[ "$ENABLE_BROWSER_NAVIGATION" == true ]] && ! "$python" -c 'import playwright' >/dev/null 2>&1; then
+            log_error "Browser navigation needs Playwright in .venv; remove --skip-python-deps or install the browser-control extra first."
+            return 1
+        fi
+        if [[ "$ENABLE_DIARIZATION" == true ]] && ! "$python" -c 'import transformers, librosa' >/dev/null 2>&1; then
+            log_error "Diarization dependencies are missing from .venv; remove --skip-python-deps or install the nemotron-diarization extra first."
+            return 1
         fi
     fi
+    if [[ "$ENABLE_IDEA_ROUTING" == true ]]; then
+        uv run --no-sync python -m src.intent.idea_router --download
+    fi
+    if [[ "$ENABLE_DIARIZATION" == true && "$SKIP_MODELS" != true ]]; then
+        log_info "Downloading Nemotron diarization model..."
+        uv run --no-sync python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='nvidia/Nemotron-3-Diarization', allow_patterns=['config.json', 'model.safetensors', 'processor_config.json', 'preprocessor_config.json', 'tokenizer_config.json', 'special_tokens_map.json'])"
+    fi
+    if [[ "$ENABLE_BROWSER_NAVIGATION" == true ]]; then
+        local browser selection
+        if [[ "$SKIP_PYTHON" == true ]]; then
+            if [[ ! -x "$SCRIPT_DIR/.venv/bin/python" ]]; then
+                log_error "--skip-python-deps requires a prepared .venv before enabling browser navigation."
+                return 1
+            fi
+            if ! "$SCRIPT_DIR/.venv/bin/python" -c 'import playwright' >/dev/null 2>&1; then
+                log_error "Browser navigation needs Playwright in .venv; remove --skip-python-deps or install the browser-control extra first."
+                return 1
+            fi
+        fi
+        selection="$(uv run --no-sync python - "$CONFIG_FILE" <<'PY'
+from pathlib import Path
+import sys, yaml
 
-    configure_computer_control
-
-    if [[ "$ASSUME_YES" == true ]]; then
-        configure_unattended_browser_navigation || true
-        run_unattended_setup
-    else
-        # Generate the unit only on systemd hosts and when the user wants one.
-        if [[ "$SKIP_SERVICE" != true ]]; then generate_systemd_template; fi
-        # Launch full interactive wizard for audio, persona, ollama, and enrollment
-        uv run python "${SCRIPT_DIR}/tools/setup_wizard.py"
+path = Path(sys.argv[1])
+try:
+    c = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+except Exception:
+    c = {}
+b = c.get("browser_navigation", {})
+browser = (b.get("browser") or "default").lower()
+default_browser = (c.get("desktop", {}).get("default_browser") or "chromium").lower()
+print(f"{browser}|{default_browser}")
+PY
+)"
+        browser="${selection%%|*}"
+        local default_browser="${selection#*|}"
+        [[ "$browser" == default ]] && browser="$default_browser"
+        case "$browser" in
+            firefox|*firefox*) uv run --no-sync playwright install firefox ;;
+            *)
+                local channel_or_binary=""
+                case "$browser" in
+                    chromium|chromium-browser) channel_or_binary="" ;;
+                    *edge*|*msedge*) channel_or_binary="$(command -v microsoft-edge-stable || command -v microsoft-edge || true)" ;;
+                    *chrome*) channel_or_binary="$(command -v google-chrome-stable || command -v google-chrome || true)" ;;
+                    *brave*) channel_or_binary="$(command -v brave-browser || command -v brave || true)" ;;
+                    *vivaldi*) channel_or_binary="$(command -v vivaldi-stable || command -v vivaldi || true)" ;;
+                    *zen*) channel_or_binary="$(command -v zen || command -v zen-browser || true)" ;;
+                    *opera*) channel_or_binary="$(command -v opera || true)" ;;
+                esac
+                if [[ -n "$channel_or_binary" ]]; then
+                    log_info "Using installed browser: $channel_or_binary"
+                else
+                    log_info "Installing Playwright Chromium build..."
+                    uv run --no-sync playwright install chromium
+                fi
+                ;;
+        esac
+    fi
+    if [[ "$ENABLE_OMNIPARSER" == true && "$SKIP_MODELS" != true ]]; then
+        local device="cpu" gpu_uuid=""
+        if [[ "$RUNTIME_EXTRA" == "runtime-nvidia" ]]; then
+            gpu_uuid="$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -n 1 || true)"
+            gpu_uuid="$(echo "$gpu_uuid" | tr -d '[:space:]')"
+            if [[ -n "$gpu_uuid" ]]; then
+                device="cuda"
+            fi
+        fi
+        log_info "Installing OmniParser detector ($device)..."
+        local -a omni_args=(python3 tools/install_omniparser.py --device "$device")
+        if [[ -n "$gpu_uuid" ]]; then
+            omni_args+=(--gpu-uuid "$gpu_uuid")
+        fi
+        "${omni_args[@]}" || {
+            log_warn "OmniParser installation failed; leaving feature disabled."
+            set_config_scalar computer_vision enabled false
+        }
     fi
 }
 
-main
+render_service_unit() {
+    local template="$SCRIPT_DIR/systemd/adam.service.template"
+    local destination="$HOME/.config/systemd/user/adam.service"
+    [[ -f "$template" ]] || { log_error "Service template is missing: $template"; return 1; }
+    if [[ -e "$destination" || -L "$destination" ]]; then
+        log_info "Preserving existing service unit: $destination"
+        return 0
+    fi
+    mkdir -p -- "$(dirname -- "$destination")"
+    local temp
+    temp="$(mktemp "$(dirname -- "$destination")/.adam.service.XXXXXX")"
+    TEMP_FILES+=("$temp")
+    local render_result=0
+    python3 - "$template" "$temp" "$SCRIPT_DIR" "$HOME" <<'PY' || render_result=$?
+import re
+import sys
+from pathlib import Path
+
+template, output, project, home = sys.argv[1:]
+
+def is_safe_path(val: str) -> bool:
+    return bool(re.fullmatch(r"[A-Za-z0-9_./+-]+", val))
+
+if not is_safe_path(project) or not is_safe_path(home):
+    sys.exit(3)
+
+text = Path(template).read_text(encoding="utf-8")
+text = text.replace("{{PROJECT_DIR}}", project)
+text = text.replace("{{HOME}}", home)
+Path(output).write_text(text, encoding="utf-8")
+PY
+    if ((render_result == 3)); then
+        rm -f -- "$temp"
+        log_warn "The project or home path contains characters this service template cannot safely represent; skipping unit generation."
+        return 0
+    elif ((render_result != 0)); then
+        rm -f -- "$temp"
+        log_error "Failed to render systemd service unit."
+        return 1
+    fi
+    chmod 644 -- "$temp"
+    # Hard-link creation is atomic and refuses to clobber a concurrently created unit.
+    if ln -- "$temp" "$destination" 2>/dev/null; then
+        rm -f -- "$temp"
+        log_ok "Installed user unit without enabling it: $destination"
+        if systemctl --user show-environment >/dev/null 2>&1; then
+            systemctl --user daemon-reload
+        else
+            log_warn "Could not reach the systemd user manager; run systemctl --user daemon-reload later."
+        fi
+    else
+        rm -f -- "$temp"
+        log_info "A service unit appeared during setup; preserving it: $destination"
+    fi
+}
+
+print_dry_run() {
+    select_packages >/dev/null 2>&1 || true
+    local planned_runtime=runtime-cpu
+    [[ "$FORCE_NVIDIA_RUNTIME" == true ]] && planned_runtime=runtime-nvidia
+    local planned_extras=("$planned_runtime")
+    [[ "$SKIP_SPEAKER_VERIFICATION" != true ]] && planned_extras+=(speaker-verification)
+    [[ "$ENABLE_IDEA_ROUTING" == true ]] && planned_extras+=(intent-routing)
+    [[ "$ENABLE_BROWSER_NAVIGATION" == true ]] && planned_extras+=(browser-control)
+    [[ "$ENABLE_DIARIZATION" == true ]] && planned_extras+=(nemotron-diarization)
+    local extras_str=""
+    for e in "${planned_extras[@]}"; do
+        extras_str+=" --extra $e"
+    done
+    local pkg_desc="${PKG_MANAGER:-unknown} (required)"
+    if [[ "$INSTALL_DESKTOP_TOOLS" == true ]]; then
+        pkg_desc="${PKG_MANAGER:-unknown} (required + optional desktop)"
+    fi
+    printf 'Dry run: no commands will be executed and no files will be changed.\n'
+    printf 'Project: %s\nDistribution: %s (%s)\n' "$SCRIPT_DIR" "$DISTRO_NAME" "$DISTRO_ID"
+    printf 'System packages: %s\n' "$([[ "$SKIP_SYS_PKGS" == true ]] && printf 'skipped' || printf '%s' "$pkg_desc")"
+    printf 'Python dependencies: %s\n' "$([[ "$SKIP_PYTHON" == true ]] && printf 'skipped' || printf 'uv sync%s' "$extras_str")"
+    printf 'Kokoro assets: %s\n' "$([[ "$SKIP_MODELS" == true ]] && printf 'skipped' || printf 'download if accepted/defaulted')"
+    printf 'Config: initialize if absent; preserve existing values except explicit flags\n'
+    printf 'Service: %s\n' "$([[ "$ASSUME_YES" == true && "$SKIP_SERVICE" != true ]] && printf 'install only if absent; never enable or start' || printf 'interactive wizard owns service setup')"
+    printf 'Requested flags: idea-routing=%s browser-navigation=%s diarization=%s omniparser=%s disable-computer-control=%s install-desktop-tools=%s speaker-verification-skip=%s\n' \
+        "$ENABLE_IDEA_ROUTING" "$ENABLE_BROWSER_NAVIGATION" "$ENABLE_DIARIZATION" "$ENABLE_OMNIPARSER" "$DISABLE_COMPUTER_CONTROL" "$INSTALL_DESKTOP_TOOLS" "$SKIP_SPEAKER_VERIFICATION"
+}
+
+main() {
+    if [[ "$DRY_RUN" == true ]]; then
+        print_dry_run
+        return 0
+    fi
+    if ((EUID == 0)); then
+        log_error "Run setup as the regular account that will use Adam, not as root."
+        return 2
+    fi
+    if [[ "$ASSUME_YES" != true && ! -t 0 ]]; then
+        log_error "Interactive setup needs a terminal. Use --yes for bootstrap or --dry-run to inspect the plan."
+        return 2
+    fi
+    export ADAM_SKIP_SPEAKER_VERIFICATION="$([[ "$SKIP_SPEAKER_VERIFICATION" == true ]] && printf 1 || printf 0)"
+    export ADAM_SKIP_ENROLLMENT="$([[ "$SKIP_ENROLLMENT" == true ]] && printf 1 || printf 0)"
+    export ADAM_SKIP_OLLAMA="$([[ "$SKIP_OLLAMA" == true ]] && printf 1 || printf 0)"
+    export ADAM_SKIP_SERVICE="$([[ "$SKIP_SERVICE" == true ]] && printf 1 || printf 0)"
+    export ADAM_CPU_ONLY="$([[ "$CPU_ONLY" == true ]] && printf 1 || printf 0)"
+    export ADAM_SKIP_PYTHON="$([[ "$SKIP_PYTHON" == true ]] && printf 1 || printf 0)"
+    export ADAM_IDEA_ROUTING_DEFAULT="$([[ "$ENABLE_IDEA_ROUTING" == true ]] && printf 1 || printf 0)"
+    export ADAM_BROWSER_NAVIGATION_DEFAULT="$([[ "$ENABLE_BROWSER_NAVIGATION" == true ]] && printf 1 || printf 0)"
+    export ADAM_DIARIZATION_ENABLED="$([[ "$ENABLE_DIARIZATION" == true ]] && printf 1 || printf 0)"
+
+    ensure_uv || return 1
+    choose_runtime
+    export ADAM_RUNTIME_EXTRA="$RUNTIME_EXTRA"
+    install_system_packages || return 1
+    prepare_config || return 1
+    sync_python_environment || return 1
+    download_models || return 1
+    install_optional_feature_assets || return 1
+
+    if [[ "$ASSUME_YES" == true ]]; then
+        if [[ "$SKIP_SERVICE" != true ]] && [[ -d "$SYSTEMD_RUNTIME_DIR" ]] && command -v systemctl >/dev/null 2>&1; then
+            render_service_unit || return 1
+        elif [[ "$SKIP_SERVICE" != true ]]; then
+            log_info "No active systemd user service setup detected; start Adam manually with uv run --no-sync python -m src.main."
+        fi
+        log_ok "Bootstrap complete. The service was not enabled or started."
+        return 0
+    fi
+
+    log_info "Starting the interactive configuration wizard. It owns the service prompt and unit installation."
+    uv run --no-sync python "$SCRIPT_DIR/tools/setup_wizard.py"
+}
+
+main "$@"
