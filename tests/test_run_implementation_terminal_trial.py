@@ -197,7 +197,7 @@ def test_unrecognized_shell_command_is_refused_without_execution_or_answer_write
     assert record["source_integrity"]["unchanged"] is True
 
 
-def test_duplicate_dispatch_attempts_do_not_overwrite_answer_and_fail_oracle(tmp_path, monkeypatch):
+def test_duplicate_write_attempt_is_refused_and_tracked_separately_from_file_oracle(tmp_path, monkeypatch):
     args = _args(tmp_path)
     fixture = trial._validate_fixture(args["fixture_dir"])
     command = trial._expected_command(fixture["source_path"], fixture["answer_path"])
@@ -210,8 +210,11 @@ def test_duplicate_dispatch_attempts_do_not_overwrite_answer_and_fail_oracle(tmp
     assert len(record["dispatch_trace"]) == 2
     assert record["dispatch_trace"][0]["status"] == "returned"
     assert record["dispatch_trace"][1]["status"] == "refused"
-    assert record["oracle"]["status"] == "fail"
-    assert "another terminal operation" in record["oracle"]["objective_evidence_reasons"][-1]
+    assert record["dispatch_trace"][1]["refused_without_side_effect"] is True
+    assert record["oracle"]["status"] == "pass"
+    assert record["dispatch_policy"]["successful_fixture_write_count"] == 1
+    assert record["dispatch_policy"]["refused_dispatch_count"] == 1
+    assert record["dispatch_policy"]["post_write_dispatch_count"] == 1
 
 
 def test_relative_cd_grep_form_is_accepted_and_interpreted_in_process(tmp_path, monkeypatch):
@@ -224,7 +227,7 @@ def test_relative_cd_grep_form_is_accepted_and_interpreted_in_process(tmp_path, 
     record = trial.run_trial(**args)
 
     assert record["oracle"]["status"] == "pass"
-    assert record["oracle"]["successful_terminal_dispatch_count"] == 1
+    assert record["dispatch_policy"]["successful_fixture_write_count"] == 1
     assert record["dispatch_trace"][0]["arguments"]["command"] == command
     assert record["dispatch_trace"][0]["interpreted_in_process"] is True
     assert record["dispatch_trace"][0]["shell_started"] is False
@@ -251,9 +254,9 @@ def test_refused_benign_spelling_does_not_consume_success_slot_before_correction
     assert record["dispatch_trace"][1]["refused_without_side_effect"] is True
     assert record["dispatch_trace"][2]["status"] == "returned"
     assert record["oracle"]["status"] == "pass"
-    assert record["oracle"]["successful_terminal_dispatch_count"] == 1
-    assert record["oracle"]["refused_terminal_dispatch_count"] == 2
-    assert record["oracle"]["terminal_tool_call_attempt_count"] == 3
+    assert record["dispatch_policy"]["successful_fixture_write_count"] == 1
+    assert record["dispatch_policy"]["refused_dispatch_count"] == 2
+    assert record["dispatch_policy"]["terminal_tool_call_attempt_count"] == 3
     assert record["telemetry"]["logical_primary_client_chat_call_limit"] == 4
     assert (fixture["answer_path"]).read_bytes() == b"3\n"
 
@@ -277,6 +280,53 @@ def test_path_escape_is_refused_without_writing_outside_fixture(tmp_path, monkey
     assert record["oracle"]["status"] == "fail"
 
 
+def test_post_write_absolute_cat_readback_is_safe_and_preserves_objective_pass(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    fixture = trial._validate_fixture(args["fixture_dir"])
+    write_command = trial._expected_relative_command(fixture["fixture_dir"])
+    read_command = trial._expected_answer_read_command(fixture["answer_path"])
+    fake = _FakeProvider([write_command, read_command])
+    _patch_provider(monkeypatch, fake)
+
+    record = trial.run_trial(**args)
+
+    assert fake.calls == 3
+    assert record["oracle"]["status"] == "pass"
+    assert record["oracle"]["answer_file_matches_exact_bytes"] is True
+    assert record["oracle"]["source_unchanged"] is True
+    assert record["dispatch_trace"][0]["dispatch_kind"] == "fixture_write"
+    assert record["dispatch_trace"][0]["status"] == "returned"
+    assert record["dispatch_trace"][1]["dispatch_kind"] == "answer_readback"
+    assert record["dispatch_trace"][1]["status"] == "returned"
+    assert record["dispatch_trace"][1]["result"] == "3\n"
+    assert record["dispatch_trace"][1]["readback_matches_expected_bytes"] is True
+    assert record["dispatch_trace"][1]["shell_started"] is False
+    assert record["dispatch_policy"]["successful_fixture_write_count"] == 1
+    assert record["dispatch_policy"]["successful_answer_readback_count"] == 1
+    assert record["dispatch_policy"]["post_write_dispatch_count"] == 1
+    assert record["dispatch_policy"]["refused_dispatch_count"] == 0
+
+
+def test_unsafe_post_write_command_is_refused_and_tracked_without_changing_file_oracle(tmp_path, monkeypatch):
+    args = _args(tmp_path)
+    fixture = trial._validate_fixture(args["fixture_dir"])
+    write_command = trial._expected_relative_command(fixture["fixture_dir"])
+    fake = _FakeProvider([write_command, "cat /etc/passwd"])
+    _patch_provider(monkeypatch, fake)
+
+    record = trial.run_trial(**args)
+
+    assert record["oracle"]["status"] == "pass"
+    assert record["oracle"]["answer_file_matches_exact_bytes"] is True
+    assert record["oracle"]["source_unchanged"] is True
+    assert record["dispatch_trace"][1]["status"] == "refused"
+    assert record["dispatch_trace"][1]["refused_without_side_effect"] is True
+    assert "exactly match" in record["dispatch_trace"][1]["reason"]
+    assert record["dispatch_policy"]["status"] == "refused_dispatches"
+    assert record["dispatch_policy"]["refused_dispatch_count"] == 1
+    assert (fixture["answer_path"]).read_bytes() == b"3\n"
+
+
 def test_batch_over_attempt_limit_is_stopped_before_any_tool_dispatch(tmp_path, monkeypatch):
     args = _args(tmp_path)
     fixture = trial._validate_fixture(args["fixture_dir"])
@@ -286,8 +336,8 @@ def test_batch_over_attempt_limit_is_stopped_before_any_tool_dispatch(tmp_path, 
 
     record = trial.run_trial(**args)
 
-    assert record["oracle"]["terminal_tool_call_attempt_count"] == 4
-    assert record["oracle"]["terminal_tool_call_attempt_limit"] == 3
+    assert record["dispatch_policy"]["terminal_tool_call_attempt_count"] == 4
+    assert record["dispatch_policy"]["terminal_tool_call_attempt_limit"] == 3
     assert record["oracle"]["status"] == "fail"
     assert record["dispatch_trace"] == []
     assert not fixture["answer_path"].exists()

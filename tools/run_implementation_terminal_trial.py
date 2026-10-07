@@ -295,6 +295,10 @@ def _expected_relative_command(fixture_dir: Path) -> str:
     return f"cd {shlex.quote(str(fixture_dir))} && grep -c '^ITEM:' source.txt > answer.txt"
 
 
+def _expected_answer_read_command(answer_path: Path) -> str:
+    return f"cat {shlex.quote(str(answer_path))}"
+
+
 def _write_answer(answer_path: Path, content: bytes) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -323,9 +327,9 @@ def _make_tool() -> CanonicalTool:
         description=(
             "T1 synthetic terminal capability. In the generated fixture directory named in the user request, "
             "count lines in source.txt that begin with ITEM: and write only the decimal count followed by one "
-            "newline to answer.txt. Use only those two fixture files. The runner accepts only the exact command "
-            "for this operation, validates it against the fixture paths, and interprets it in process without "
-            "starting a shell."
+            "newline to answer.txt. A read-only verification of answer.txt is allowed after writing. Use only "
+            "those two fixture files. The runner accepts only exact fixture-scoped commands, validates them "
+            "against the fixture paths, and interprets them in process without starting a shell."
         ),
         parameters={
             "type": "object",
@@ -356,6 +360,7 @@ def _build_brain(config, fixture: dict[str, Any], secrets: list[str]):
     command = _expected_command(fixture["source_path"], fixture["answer_path"])
     relative_command = _expected_relative_command(fixture["fixture_dir"])
     allowed_commands = {command, relative_command}
+    read_answer_command = _expected_answer_read_command(fixture["answer_path"])
     with patch("src.llm.brain.CustomToolManager", return_value=_NoCustomTools()), \
             patch("src.llm.brain.SkillManager", _NoSkills):
         brain = AdamBrain(
@@ -369,10 +374,10 @@ def _build_brain(config, fixture: dict[str, Any], secrets: list[str]):
     dispatch_trace: list[dict[str, Any]] = []
     dispatch_lock = asyncio.Lock()
     dispatch_attempt_count = 0
-    successful_dispatch_count = 0
+    successful_write_count = 0
 
     async def restricted_execute_locked(name: str, args: dict) -> str:
-        nonlocal dispatch_attempt_count, successful_dispatch_count
+        nonlocal dispatch_attempt_count, successful_write_count
         dispatch_attempt_count += 1
         entry: dict[str, Any] = {
             "tool_name": str(name)[:100],
@@ -384,10 +389,6 @@ def _build_brain(config, fixture: dict[str, Any], secrets: list[str]):
             entry["status"] = "refused"
             entry["reason"] = "total terminal tool-call attempt limit reached"
             raise TrialError("T1 runner permits at most three terminal tool-call attempts")
-        if successful_dispatch_count >= MAX_SUCCESSFUL_TOOL_DISPATCHES:
-            entry["status"] = "refused"
-            entry["reason"] = "one successful terminal dispatch has already been used"
-            raise TrialError("T1 runner permits only one successful terminal dispatch")
         if name != "run_bash_command":
             entry["status"] = "refused"
             entry["reason"] = "only run_bash_command is permitted"
@@ -396,11 +397,45 @@ def _build_brain(config, fixture: dict[str, Any], secrets: list[str]):
             entry["status"] = "refused"
             entry["reason"] = "arguments must contain only command"
             raise TrialError("T1 runner refused unexpected terminal arguments")
-        if not isinstance(args.get("command"), str) or args["command"] not in allowed_commands:
+        terminal_command = args.get("command")
+        if not isinstance(terminal_command, str):
+            entry["status"] = "refused"
+            entry["reason"] = "command must be a string"
+            entry["refused_without_side_effect"] = True
+            raise TrialError("T1 runner refused a non-string command")
+        if terminal_command == read_answer_command:
+            if successful_write_count != 1:
+                entry["status"] = "refused"
+                entry["reason"] = "answer.txt readback is permitted only after the fixture write"
+                entry["refused_without_side_effect"] = True
+                raise TrialError("T1 runner permits answer.txt readback only after the fixture write")
+            entry["status"] = "dispatched"
+            entry["dispatch_kind"] = "answer_readback"
+            entry["interpreted_in_process"] = True
+            entry["shell_started"] = False
+            try:
+                readback = _read_owned_regular(fixture["answer_path"], max_bytes=1_024)
+            except Exception as exc:
+                entry["status"] = "failed"
+                entry["error"] = f2._safe_error(exc, secrets)
+                raise
+            result_text = readback.decode("utf-8", errors="replace")
+            entry["status"] = "returned"
+            entry["result"] = result_text
+            entry["readback_byte_length"] = len(readback)
+            entry["readback_sha256"] = hashlib.sha256(readback).hexdigest()
+            entry["readback_matches_expected_bytes"] = readback == fixture["oracle_answer_bytes"]
+            return result_text
+        if terminal_command not in allowed_commands:
             entry["status"] = "refused"
             entry["reason"] = "command did not exactly match an allowed generated-fixture command form"
             entry["refused_without_side_effect"] = True
             raise TrialError("T1 runner refused a command outside the allowed fixture command forms")
+        if successful_write_count >= MAX_SUCCESSFUL_TOOL_DISPATCHES:
+            entry["status"] = "refused"
+            entry["reason"] = "one successful fixture write has already been used"
+            entry["refused_without_side_effect"] = True
+            raise TrialError("T1 runner permits only one successful fixture write")
         source_now = _read_owned_regular(fixture["source_path"], max_bytes=16_384)
         if _snapshot(source_now) != fixture["source_before"]:
             entry["status"] = "refused"
@@ -427,11 +462,12 @@ def _build_brain(config, fixture: dict[str, Any], secrets: list[str]):
             raise
         result_text = result_bytes.decode("ascii")
         entry["status"] = "returned"
+        entry["dispatch_kind"] = "fixture_write"
         entry["result"] = result_text
         entry["answer_bytes_written"] = len(result_bytes)
         entry["answer_sha256"] = hashlib.sha256(result_bytes).hexdigest()
         entry["source_sha256_at_dispatch"] = hashlib.sha256(source_now).hexdigest()
-        successful_dispatch_count += 1
+        successful_write_count += 1
         return result_text
 
     async def restricted_execute(name: str, args: dict) -> str:
@@ -606,17 +642,29 @@ def run_trial(
     answer_matches = answer_after_bytes == fixture["oracle_answer_bytes"]
     source_unchanged = source_after == fixture["source_before"]
     dispatch_trace = getattr(brain, "_t1_dispatch_trace", []) if brain is not None else []
-    successful_dispatch_count = sum(
-        entry.get("tool_name") == "run_bash_command" and entry.get("status") == "returned"
+    successful_write_count = sum(
+        entry.get("dispatch_kind") == "fixture_write" and entry.get("status") == "returned"
         for entry in dispatch_trace
     )
-    terminal_returned = successful_dispatch_count == 1
-    duplicate_success_attempt = any(
-        entry.get("reason") == "one successful terminal dispatch has already been used"
+    successful_readback_count = sum(
+        entry.get("dispatch_kind") == "answer_readback" and entry.get("status") == "returned"
         for entry in dispatch_trace
     )
+    terminal_returned = successful_write_count == 1
+    refused_dispatch_count = sum(entry.get("status") == "refused" for entry in dispatch_trace)
     tool_call_limit_exceeded = bool(
         getattr(client_capture, "tool_call_limit_exceeded", False)
+    )
+    write_attempt_number = next(
+        (entry.get("attempt_number") for entry in dispatch_trace
+         if entry.get("dispatch_kind") == "fixture_write" and entry.get("status") == "returned"),
+        None,
+    )
+    post_write_dispatch_count = sum(
+        isinstance(write_attempt_number, int)
+        and isinstance(entry.get("attempt_number"), int)
+        and entry["attempt_number"] > write_attempt_number
+        for entry in dispatch_trace
     )
     final_answer = None
     if brain is not None:
@@ -628,11 +676,7 @@ def run_trial(
     safe_answer, answer_truncated = f2._scrub_text(final_answer or "", secrets, limit=MAX_RESPONSE_CHARS)
     objective_reasons = []
     if not terminal_returned:
-        objective_reasons.append("exactly one permitted terminal operation must return successfully")
-    if duplicate_success_attempt:
-        objective_reasons.append("the model attempted another terminal operation after the successful write")
-    if tool_call_limit_exceeded:
-        objective_reasons.append("the model exceeded the total terminal tool-call attempt limit")
+        objective_reasons.append("exactly one permitted fixture write must return successfully")
     if not answer_matches:
         objective_reasons.append("answer.txt bytes did not exactly match the generated answer oracle")
     if not source_unchanged:
@@ -645,6 +689,11 @@ def run_trial(
     event_digest = hashlib.sha256(event_bytes).hexdigest()
     attempt_summary = f2._provider_attempt_summary(event_bytes, run_id)
     responses = client_capture.responses if isinstance(client_capture, _CapturingClient) else []
+    dispatch_policy_status = (
+        "attempt_limit_exceeded" if tool_call_limit_exceeded
+        else "refused_dispatches" if refused_dispatch_count
+        else "clean"
+    )
     record = {
         "schema_version": 1,
         "run_id": run_id,
@@ -677,11 +726,7 @@ def run_trial(
             "objective_evidence_status": objective_status,
             "objective_evidence_reasons": objective_reasons,
             "answer_review_status": answer_review_status,
-            "terminal_dispatch_returned": terminal_returned,
-            "successful_terminal_dispatch_count": successful_dispatch_count,
-            "terminal_tool_call_attempt_count": getattr(client_capture, "tool_call_suggestions", 0),
-            "terminal_tool_call_attempt_limit": MAX_TOOL_DISPATCH_ATTEMPTS,
-            "refused_terminal_dispatch_count": sum(entry.get("status") == "refused" for entry in dispatch_trace),
+            "fixture_write_returned": terminal_returned,
             "answer_file_matches_exact_bytes": answer_matches,
             "source_unchanged": source_unchanged,
             "fixture_metadata_unchanged": fixture_metadata_unchanged,
@@ -695,6 +740,17 @@ def run_trial(
         "normalized_provider_responses": responses,
         "provider_tool_trace": [call for response in responses for call in response.get("tool_calls", [])],
         "dispatch_trace": dispatch_trace,
+        "dispatch_policy": {
+            "status": dispatch_policy_status,
+            "terminal_tool_call_attempt_count": getattr(client_capture, "tool_call_suggestions", 0),
+            "terminal_tool_call_attempt_limit": MAX_TOOL_DISPATCH_ATTEMPTS,
+            "successful_fixture_write_count": successful_write_count,
+            "successful_fixture_write_limit": MAX_SUCCESSFUL_TOOL_DISPATCHES,
+            "successful_answer_readback_count": successful_readback_count,
+            "refused_dispatch_count": refused_dispatch_count,
+            "post_write_dispatch_count": post_write_dispatch_count,
+            "attempt_limit_exceeded": tool_call_limit_exceeded,
+        },
         "errors": [error_record] if error_record else [],
         "timing_ms": {
             "headless_brain_call": round((end_ns - start_ns) / 1_000_000, 3)
