@@ -463,6 +463,88 @@ def test_temporal_memory_context_includes_iana_timezone(monkeypatch, tmp_path):
     assert "[event timezone: America/New_York]" in context
 
 
+def test_relative_temporal_context_exposes_resolved_window_and_timezone(monkeypatch, tmp_path):
+    from datetime import datetime as RealDateTime
+    from zoneinfo import ZoneInfo
+
+    class FixedDateTime(RealDateTime):
+        @classmethod
+        def now(cls, tz=None):
+            fixed = cls(2026, 10, 6, 12, tzinfo=ZoneInfo("America/New_York"))
+            return fixed.astimezone(tz) if tz is not None else fixed
+
+        def astimezone(self, tz=None):
+            # The temporal parser asks for the host-local time with no explicit zone.
+            return self if tz is None else super().astimezone(tz)
+
+    monkeypatch.setattr("src.memory.manager.local_timezone_name", lambda: "America/New_York")
+    monkeypatch.setattr("src.memory.temporal.datetime", FixedDateTime)
+    monkeypatch.setenv("TZ", "America/New_York")
+    mgr = MemoryManager(
+        storage_path=tmp_path / "relative-window-context.json",
+        embedder=MemoryEmbedder(disabled=True),
+    )
+    in_window_first = mgr.save(
+        "I worked on the Juniper migration on 2026-09-29 from 9:30 to 10:15am"
+    )
+    in_window_second = mgr.save(
+        "I worked on the Juniper invoice export on 2026-10-02 from 3:00pm to 4:00pm"
+    )
+    outside_window = mgr.save(
+        "I worked on Juniper cleanup on 2026-10-05 from 11:00am to 11:30am"
+    )
+
+    relative_context = mgr.retrieve_context("What Juniper work did I log last week?")
+    assert relative_context is not None
+    assert relative_context.splitlines()[0] == (
+        "[Resolved relative date window: 2026-09-28 through 2026-10-04; "
+        "local timezone: America/New_York]"
+    )
+    assert relative_context.index(in_window_first.text) < relative_context.index(
+        in_window_second.text
+    )
+    assert in_window_first.event_start_at in relative_context
+    assert in_window_second.event_start_at in relative_context
+    assert outside_window.text not in relative_context
+
+    explicit_context = mgr.retrieve_context("What Juniper work did I log on 2026-09-29?")
+    assert explicit_context is not None
+    assert not explicit_context.startswith("[Resolved relative date window:")
+    assert in_window_first.text in explicit_context
+    assert in_window_second.text not in explicit_context
+    assert outside_window.text not in explicit_context
+
+    mixed_context = mgr.retrieve_context(
+        "What Juniper work did I log on 2026-09-29 last week?"
+    )
+    assert mixed_context is not None
+    assert not mixed_context.startswith("[Resolved relative date window:")
+    assert in_window_first.text in mixed_context
+    assert in_window_second.text not in mixed_context
+
+    non_temporal_context = mgr.retrieve_context("Juniper migration")
+    assert non_temporal_context is not None
+    assert not non_temporal_context.startswith("[Resolved relative date window:")
+    assert in_window_first.text in non_temporal_context
+
+    assert mgr.retrieve_context("What Juniper work did I log last year?") is None
+
+    # An unsupported process-local TZ must not inherit the system-zone fallback
+    # returned by local_timezone_name(), since it may not match datetime's anchor.
+    monkeypatch.setenv("TZ", "UTC0")
+    override_context = mgr.retrieve_context("What Juniper work did I log last week?")
+    assert override_context is not None
+    assert override_context.splitlines()[0] == (
+        "[Resolved relative date window: 2026-09-28 through 2026-10-04; "
+        "local timezone: unavailable]"
+    )
+
+    monkeypatch.delenv("TZ", raising=False)
+    unset_context = mgr.retrieve_context("What Juniper work did I log last week?")
+    assert unset_context is not None
+    assert unset_context.splitlines()[0].endswith("local timezone: America/New_York]")
+
+
 @pytest.mark.asyncio
 async def test_brain_recall_request_receives_synthetic_event_timezone(monkeypatch, tmp_path):
     from types import SimpleNamespace

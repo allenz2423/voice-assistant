@@ -36,6 +36,28 @@ DEFAULT_MEMORY_PATH = (
     / "embedding-memories.json"
 )
 
+_RELATIVE_QUERY_DATE = re.compile(
+    r"\b(?:today|yesterday|day before yesterday|this week|last week|"
+    r"this month|last month|this year|last year|"
+    r"\d{1,4}\s+(?:days?|weeks?|months?|years?)\s+ago)\b",
+    re.IGNORECASE,
+)
+
+
+def _relative_query_timezone_name() -> str | None:
+    """Return an IANA key only when it agrees with an explicit process TZ override."""
+    timezone_name = local_timezone_name()
+    configured_tz = os.environ.get("TZ")
+    if configured_tz is None:
+        return timezone_name
+
+    configured_name = configured_tz.strip().lstrip(":")
+    if not configured_name or timezone_name != configured_name:
+        # local_timezone_name falls back to /etc/localtime for unknown TZ values,
+        # which may not describe the process-local clock when TZ overrides it.
+        return None
+    return timezone_name
+
 # Natural speech trigger regexes for direct voice memory creation
 MEMORY_TRIGGERS = [
     re.compile(
@@ -603,6 +625,14 @@ class MemoryManager:
     def retrieve_context(self, utterance: str, limit: int = 3) -> str | None:
         """Format matching memories into a compact context block for prompt injection."""
         date_range = parse_temporal_query_range(utterance)
+        relative_date_query = bool(
+            date_range is not None
+            and not re.search(
+                r"\b(?:19\d{2}|20\d{2}|21\d{2})-\d{2}-\d{2}\b",
+                utterance,
+            )
+            and _RELATIVE_QUERY_DATE.search(utterance)
+        )
         event_type = event_type_for_query(utterance)
         matches = self.search(
             utterance,
@@ -639,6 +669,12 @@ class MemoryManager:
             matches.sort(key=current_correction_order, reverse=True)
 
         lines = []
+        if relative_date_query:
+            timezone_name = _relative_query_timezone_name() or "unavailable"
+            lines.append(
+                f"[Resolved relative date window: {date_range[0]} through {date_range[1]}; "
+                f"local timezone: {timezone_name}]"
+            )
         for memory in matches:
             event_note = ""
             if memory.event_start_at and memory.event_end_at:
