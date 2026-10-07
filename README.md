@@ -144,10 +144,11 @@ runtime are AGPL-3.0 licensed.
 
 ## Meeting mode
 
-Say **“Hey Adam, meeting mode”** to start continuous capture and transcription.
-Say **“Hey Adam, meeting over”** to stop. Adam also continues to listen for
-ordinary commands during the meeting. Sessions stop at the configured time limit
-(four hours by default).
+For deterministic voice controls, say **“Hey Adam, meeting mode on”** to start
+continuous capture and **“Hey Adam, meeting mode off”** to stop. Natural requests
+such as “start meeting mode” or “meeting over” go through Brain and its
+`meeting_mode` tool. Adam also continues to listen for ordinary commands during
+the meeting. Sessions stop at the configured time limit (four hours by default).
 
 Meeting audio is stored as the original mixed recording. Diarization adds speaker
 labels to transcript turns; it does not isolate or suppress other people. When

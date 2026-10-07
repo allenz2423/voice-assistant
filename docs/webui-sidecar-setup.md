@@ -75,15 +75,15 @@ The standalone sidecar serves the UI in disconnected mode (`DisconnectedBridge`)
 
 ## Interface Layout & User Experience
 
-The dashboard interface uses a desktop-first, KDE Plasma Breeze Dark-inspired aesthetic with full responsive adaptability, accessible keyboard workflows, and real-time execution feedback.
+The dashboard follows the operating system's color preference, with dark and light themes, responsive layouts, accessible keyboard workflows, and real-time execution feedback.
 
 ### 1. Desktop Two-Panel Layout
-On viewports wider than 860px, the dashboard displays a unified side-by-side workstation layout:
+Above 880px, the dashboard displays a unified side-by-side workstation layout:
 - **Primary Panel (Left):** Conversation history log, active turn status indicator, prompt suggestion chips, and the expandable message composer.
 - **System Sidebar (Right):** Live tool execution telemetry, runtime configuration snapshot (mode, model routing, available tool count, loopback binding), and explicit callouts for currently unavailable runtime capabilities (long-running task checkpoints and remote approvals).
 
 ### 2. Mobile Responsive Layout & Tabs
-On small viewports (≤ 860px), the dashboard automatically switches to a single-column layout with an accessible top tab bar:
+At 880px and below, the dashboard switches to a single-column layout with an accessible top tab bar:
 - **Conversation Tab:** Full-width view of conversation history, quick prompts, turn status, and pinned message composer.
 - **System & Tools Tab:** Full-width view of live tool activity, runtime telemetry, and runtime limitation cards.
 - **Accessible Tab Semantics:** Built with WAI-ARIA `role="tablist"`, `role="tab"`, and `role="tabpanel"` semantics. Supports keyboard navigation with `ArrowLeft`, `ArrowRight`, `Home`, and `End` keys to switch tabs with automatic focus management. Resizing between mobile and desktop automatically synchronizes panel visibility.
@@ -93,6 +93,8 @@ On small viewports (≤ 860px), the dashboard automatically switches to a single
 - **Newline Entry:** Press **`Shift + Enter`** to insert a line break into the message textarea without submitting.
 - **Auto-Expanding Textarea:** The composer automatically grows to fit multi-line inputs up to 140px high before scrolling.
 - **Quick Prompts:** Interactive prompt chips allow one-click submission of common queries (e.g., system status, time, active desktop windows).
+- **Meeting Controls:** Start and Stop buttons, also available as prompt chips, submit the explicit `meeting mode on` and `meeting mode off` commands.
+- **Message Actions:** Copy buttons copy individual assistant replies. Clear Chat removes messages from the displayed view only; it does not delete the daemon's conversation history. When you scroll away from the latest messages, a button returns the view to the bottom.
 - **In-Flight Disconnect Handling:** If disconnected when submitting a turn, the message is safely queued in the client while attempting automatic reconnection before reporting failure.
 
 ### 4. Authentication Dialog

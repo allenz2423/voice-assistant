@@ -10,6 +10,9 @@
   let pendingChatTimeout = null;
   let isSending = false;
   let historyLoaded = false;
+  let historyLoading = false;
+  let historyGeneration = 0;
+  let historyReloadPending = false;
   let lastFocusedElement = null;
   const liveTools = new Map();
   const loadedRevision = new URL(document.currentScript.src).searchParams.get("v");
@@ -138,7 +141,7 @@
     let processed = escaped.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (match, lang, code) => {
       const id = codeBlocks.length;
       codeBlocks.push({ lang, code });
-      return `@@CODE_BLOCK_${id}@@`;
+      return `\n\n@@CODE_BLOCK_${id}@@\n\n`;
     });
 
     // Inline code
@@ -149,31 +152,46 @@
     processed = processed.replace(/\*([^*]+)\*/g, "<em>$1</em>");
 
     // Blockquotes (lines starting with &gt; )
-    processed = processed.replace(/^&gt;\s+(.*)$/gm, "<blockquote>$1</blockquote>");
+    processed = processed.replace(/^&gt;\s+(.*)$/gm, "\n\n<blockquote>$1</blockquote>\n\n");
 
     // Bullet points (lines starting with - or *)
-    processed = processed.replace(/^[-*]\s+(.*)$/gm, "<li>$1</li>");
-    processed = processed.replace(/(<li>.*<\/li>\n?)+/g, "<ul>$&</ul>");
+    processed = processed.replace(/^[-*]\s+(.*)$/gm, "<!--ul--><li>$1</li>");
+    processed = processed.replace(/(?:<!--ul--><li>.*<\/li>(?:\n|$))+/g, (match) => {
+      const items = match.replace(/<!--ul-->/g, "").trimEnd();
+      return `\n\n<ul>\n${items}\n</ul>\n\n`;
+    });
 
     // Numbered lists (lines starting with 1. )
-    processed = processed.replace(/^\d+\.\s+(.*)$/gm, "<li>$1</li>");
-    processed = processed.replace(/(<li>.*<\/li>\n?)+/g, "<ol>$&</ol>");
+    processed = processed.replace(/^\d+\.\s+(.*)$/gm, "<!--ol--><li>$1</li>");
+    processed = processed.replace(/(?:<!--ol--><li>.*<\/li>(?:\n|$))+/g, (match) => {
+      const items = match.replace(/<!--ol-->/g, "").trimEnd();
+      return `\n\n<ol>\n${items}\n</ol>\n\n`;
+    });
 
     // Paragraphs and breaks
-    processed = processed.replace(/\n{2,}/g, "</p><p>");
-    processed = processed.replace(/\n/g, "<br>");
-    processed = `<p>${processed}</p>`;
-
-    // Clean up empty tags
-    processed = processed.replace(/<p><\/p>/g, "");
-    processed = processed.replace(/<p>(<ul|<ol|<blockquote)/g, "$1");
-    processed = processed.replace(/(<\/ul>|<\/ol>|<\/blockquote>)<\/p>/g, "$1");
+    const blocks = processed.split(/\n{2,}/);
+    processed = blocks
+      .map((block) => {
+        const trimmed = block.trim();
+        if (!trimmed) return "";
+        if (
+          trimmed.startsWith("@@CODE_BLOCK_") ||
+          trimmed.startsWith("<pre>") ||
+          trimmed.startsWith("<ul>") ||
+          trimmed.startsWith("<ol>") ||
+          trimmed.startsWith("<blockquote>")
+        ) {
+          return trimmed;
+        }
+        return `<p>${trimmed.replace(/\n/g, "<br>")}</p>`;
+      })
+      .filter(Boolean)
+      .join("");
 
     // Re-insert code blocks
     processed = processed.replace(/@@CODE_BLOCK_(\d+)@@/g, (match, idx) => {
       const block = codeBlocks[Number(idx)];
       if (!block) return "";
-      const rawCode = block.code.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#039;/g, "'");
       return `<pre><code>${block.code}</code></pre>`;
     });
 
@@ -445,14 +463,22 @@
   // Load conversation history from API
   async function loadHistory() {
     if (historyLoaded) return;
+    if (historyLoading) {
+      historyReloadPending = true;
+      return;
+    }
+    historyLoading = true;
+    const gen = historyGeneration;
     try {
       const res = await fetch("/api/history", { headers: getAuthHeaders() });
+      if (gen !== historyGeneration) return;
       if (res.status === 401) {
         handleAuthRequired();
         return;
       }
       if (!res.ok) return;
       const data = await res.json();
+      if (gen !== historyGeneration) return;
       if (Array.isArray(data.messages) && data.messages.length > 0) {
         data.messages.forEach((m) => {
           appendMessage(m.role, m.content, m.tool_calls, m.timestamp);
@@ -461,6 +487,14 @@
       historyLoaded = true;
     } catch (err) {
       console.warn("Could not load history:", err);
+    } finally {
+      historyLoading = false;
+      if (historyReloadPending) {
+        historyReloadPending = false;
+        if (!historyLoaded) {
+          loadHistory();
+        }
+      }
     }
   }
 
@@ -766,9 +800,56 @@
     }
   }
 
+  const mobileNav = document.getElementById("mobileNav");
+  const mobileMediaQuery = window.matchMedia("(max-width: 880px)");
+  let currentActiveTab = "chat";
+
   // Mobile View Switcher - Accessible Tablist Implementation
+  function updateResponsiveTabs() {
+    const isMobile = mobileMediaQuery.matches;
+
+    if (isMobile) {
+      if (mobileNav) {
+        mobileNav.removeAttribute("aria-hidden");
+      }
+      if (chatSection) {
+        chatSection.setAttribute("role", "tabpanel");
+        chatSection.setAttribute("aria-labelledby", "mobileTabChat");
+      }
+      if (sidebarSection) {
+        sidebarSection.setAttribute("role", "tabpanel");
+        sidebarSection.setAttribute("aria-labelledby", "mobileTabSidebar");
+      }
+      switchMobileTab(currentActiveTab);
+    } else {
+      if (mobileNav) {
+        mobileNav.setAttribute("aria-hidden", "true");
+      }
+      if (mobileTabChat) {
+        mobileTabChat.tabIndex = -1;
+      }
+      if (mobileTabSidebar) {
+        mobileTabSidebar.tabIndex = -1;
+      }
+      if (chatSection) {
+        chatSection.removeAttribute("role");
+        chatSection.removeAttribute("aria-labelledby");
+        chatSection.hidden = false;
+      }
+      if (sidebarSection) {
+        sidebarSection.removeAttribute("role");
+        sidebarSection.removeAttribute("aria-labelledby");
+        sidebarSection.hidden = false;
+      }
+      if (mainLayout) {
+        delete mainLayout.dataset.activeTab;
+      }
+    }
+  }
+
   function switchMobileTab(targetTab) {
-    const isChat = targetTab === "chat";
+    currentActiveTab = targetTab === "sidebar" ? "sidebar" : "chat";
+    const isChat = currentActiveTab === "chat";
 
     if (mobileTabChat) {
       mobileTabChat.classList.toggle("active", isChat);
@@ -786,6 +867,13 @@
       mainLayout.dataset.activeTab = isChat ? "chat" : "sidebar";
     }
   }
+
+  if (mobileMediaQuery.addEventListener) {
+    mobileMediaQuery.addEventListener("change", updateResponsiveTabs);
+  } else if (mobileMediaQuery.addListener) {
+    mobileMediaQuery.addListener(updateResponsiveTabs);
+  }
+  window.addEventListener("resize", updateResponsiveTabs);
 
   if (mobileTabChat && mobileTabSidebar) {
     const tabs = [mobileTabChat, mobileTabSidebar];
@@ -894,7 +982,10 @@
     }
 
     closeAuthModal();
+    historyGeneration++;
     historyLoaded = false;
+    historyReloadPending = false;
+    chatMessages.querySelectorAll(".message-row").forEach((r) => r.remove());
     connectWebSocket(true);
   });
 
@@ -914,12 +1005,15 @@
     authModalStatus.className = "auth-modal-status status-success";
     authModalStatus.classList.remove("hidden");
     checkAuthStatus();
+    historyGeneration++;
     historyLoaded = false;
+    historyReloadPending = false;
+    chatMessages.querySelectorAll(".message-row").forEach((r) => r.remove());
     connectWebSocket(true);
   });
 
   // Initial startup sequence
-  switchMobileTab("chat");
+  updateResponsiveTabs();
   checkAuthStatus();
   fetchStatus();
   loadHistory();

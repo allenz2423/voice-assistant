@@ -63,7 +63,7 @@ async def security_headers_middleware(request: web.Request, handler: Any) -> web
     response.headers["Content-Security-Policy"] = (
         "default-src 'self'; "
         "style-src 'self' 'unsafe-inline'; "
-        "script-src 'self' 'unsafe-inline'; "
+        "script-src 'self'; "
         "img-src 'self' data:; "
         "connect-src 'self' ws: wss:;"
     )

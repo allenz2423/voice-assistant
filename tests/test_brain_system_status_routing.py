@@ -255,7 +255,7 @@ async def test_experimental_comparison_review_is_bounded_and_preserves_draft_on_
     assert model.calls[0]["max_tokens"] is None
     assert model.calls[1]["max_tokens"] == 192
     assert model.calls[0]["tools"] == [tool_schema]
-    assert model.calls[1]["tools"] == model.calls[0]["tools"]
+    assert model.calls[1]["tools"] == []
     assert "Mozilla Firefox" in model.calls[0]["messages"][-1]["content"]
     assert "Draft answer." in model.calls[1]["messages"][1]["content"]
     assert tts.spoken == [expected_text]

@@ -2104,7 +2104,6 @@ class AdamBrain:
         self,
         user_text: str,
         draft: str,
-        available_tools: list,
     ) -> str:
         """Use one bounded primary-model pass to catch broad comparison claims."""
         review_prompt = (
@@ -2126,7 +2125,7 @@ class AdamBrain:
                 response = await self._await_with_progress(
                     self.llm_client.chat(
                         review_messages,
-                        tools=available_tools,
+                        tools=[],
                         max_tokens=_FACTUAL_COMPARISON_REVIEW_MAX_TOKENS,
                     )
                 )
@@ -2141,8 +2140,7 @@ class AdamBrain:
 
         if not isinstance(response, dict) or response.get("provider_error"):
             return draft
-        # Preserve broad tool availability on the review request, but never
-        # dispatch a new action during this one-call, text-only review stage.
+        # This review is text-only; never dispatch a tool action from it.
         if response.get("tool_calls"):
             print("[LLM] Factual comparison review requested a tool; keeping the original answer.", flush=True)
             return draft
@@ -2793,7 +2791,6 @@ class AdamBrain:
                     content = await self._review_short_factual_comparison(
                         user_text,
                         str(content),
-                        available_tools,
                     )
                     if self._is_interrupted or getattr(self.tts, "pending_barge_in_text", None):
                         print("[Adam] Interrupted during factual comparison review. Halting turn.", flush=True)

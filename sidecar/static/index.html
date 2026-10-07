@@ -62,7 +62,7 @@
     </header>
 
     <!-- Mobile View Switcher (Visible on small screens) -->
-    <nav class="mobile-nav" role="tablist" aria-label="Mobile view switcher">
+    <nav id="mobileNav" class="mobile-nav" role="tablist" aria-label="Mobile view switcher" aria-hidden="true">
       <button
         type="button"
         id="mobileTabChat"
@@ -70,7 +70,7 @@
         role="tab"
         aria-selected="true"
         aria-controls="chatSection"
-        tabindex="0"
+        tabindex="-1"
         data-tab="chat"
       >
         <svg class="tab-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -98,7 +98,7 @@
     <!-- Main Content Area -->
     <main class="main-layout" id="mainLayout" data-active-tab="chat">
       <!-- Left Column: Chat Section -->
-      <section id="chatSection" class="chat-section" role="tabpanel" aria-labelledby="mobileTabChat" aria-label="Conversation and Commands">
+      <section id="chatSection" class="chat-section" aria-label="Conversation and Commands">
         <div class="section-header">
           <div class="section-title-wrap">
             <h2>Conversation</h2>
@@ -190,7 +190,7 @@
       </section>
 
       <!-- Right Column: Sidebar (Controls, Tools, Telemetry, Architecture) -->
-      <aside id="sidebarSection" class="sidebar-section" role="tabpanel" aria-labelledby="mobileTabSidebar" aria-label="System controls, telemetry, and tool activity">
+      <aside id="sidebarSection" class="sidebar-section" aria-label="System controls, telemetry, and tool activity">
         <!-- Meeting Mode Controls Card -->
         <div class="card card-meeting-controls">
           <div class="card-header">

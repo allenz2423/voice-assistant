@@ -414,6 +414,8 @@ async def test_server_status_and_security_headers():
         assert resp.headers["X-Content-Type-Options"] == "nosniff"
         assert resp.headers["X-Frame-Options"] == "DENY"
         assert "default-src 'self'" in resp.headers["Content-Security-Policy"]
+        assert "script-src 'self';" in resp.headers["Content-Security-Policy"]
+        assert "'unsafe-inline'" not in resp.headers["Content-Security-Policy"].split("script-src", 1)[1].split(";", 1)[0]
 
 
 @pytest.mark.asyncio
