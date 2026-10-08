@@ -1247,3 +1247,21 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - On **2026-10-08**, the focused Edge window title indicated the synthetic fixture report. No page content was observed, and the other tabs were not inspected.
 - The page-only `grim` capture timed out. AT-SPI initialization failed because `/run/user/1000/at-spi/bus_1` refused connections. No user prompt or model request was sent; audio state was unchanged.
 - This preflight implies no product pass or fail. Live silent browser-profile acceptance remains deferred until a safe scoped UI observation path is available. No tests were run.
+
+## Checkpoint 172 — live silent browser-profile UI acceptance
+
+- On **2026-10-08**, the real Edge browser-profile sidecar UI at `127.0.0.1:8765` was used in silent mode. The exact live `system status` request returned through `get_system_status` in **100 ms** with a short response. Host-specific status metrics are not recorded.
+- The exact follow-up input `Meeting,mode off` (case and punctuation variant) returned: `Meeting mode is already off.` Meeting mode was inactive before and after; no recording started.
+- This is limited live UI acceptance for silent input and response. It does not establish voice latency or desktop app GUI behavior. No tests were run.
+
+## Checkpoint 173 — custom-route factual response through live sidecar UI
+
+- On **2026-10-08**, through the same Edge profile and sidecar UI, the prompt `Compare rigatoni and penne in two short sentences.` used the configured custom route `deepseek/deepseek-v4.1-flash`; status was `ok`, `total_ms=4098`, and `finish_reason=stop`. The prompt and response were inspected in Edge at `127.0.0.1:8765`.
+- Adam's response was exactly two sentences: `Rigatoni are wide, ridged tubes with straight-cut ends, while penne are narrower tubes with diagonally cut, pointed ends. Both are ridged and hold sauce well, but rigatoni's larger size suits chunky, hearty sauces, whereas penne's smaller size works better with lighter or smoother sauces.`
+- This is a limited live provider-backed factual turn. It does not establish desktop app GUI behavior or voice latency. No tests were run.
+
+## Checkpoint 174 — live CPU diagnostic through sidecar UI
+
+- On **2026-10-08**, one live model-mediated diagnostic turn was sent in silent mode through the real Edge profile's Adam sidecar UI at `127.0.0.1:8765`, using the exact prompt `Why is my CPU usage high?`. The UI showed `get_system_status · Returned (100 ms)` and `list_processes · Returned (101 ms)`. Host-specific metric values and process names are omitted.
+- Journal evidence confirms the configured route `deepseek/deepseek-v4.1-flash`, provider status `ok`, and two LLM rounds: **2,790 ms** with `finish_reason=tool_calls`, then **2,619 ms** with `finish_reason=stop`. Adam replied in two short sentences and included the exact policy sentence: `No cause is identified; this snapshot cannot explain an earlier spike.`
+- This is one live browser-UI sample. It does not establish voice latency. No pytest was run.
