@@ -1235,3 +1235,15 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - Immediately before context close, the host-visible BrowserNavigator descendant tree (Playwright driver plus Chromium processes) comprised **7 processes**, totaling **688,537,600 bytes RSS / 350,273,536 bytes PSS**. Recovery samples are timed from completion of `BrowserNavigator.release_browser()` context close: at **+0.498 s**, tracked live RSS/PSS was **0 bytes**; one exited process reported zero RSS and no PSS. No tracked descendants remained at **+30 s** or **+120 s**.
 - Host and Adam service cgroup readings are shared context and **unattributable to the browser**. At baseline / immediate / +30 s / +120 s after context close, host `MemAvailable` was **22,076,756 / 21,994,380 / 22,054,120 / 22,036,808 KiB** (host `MemTotal` **32,772,236 KiB** throughout). Adam cgroup `memory.current` was **1,189,601,280 / 1,188,831,232 / 1,189,081,088 / 1,189,617,664 bytes**; `memory.peak` stayed **1,299,185,664 bytes**. The corresponding shared cgroup `cpu.stat usage_usec` values were **58,759,994 / 58,763,024 / 58,921,520 / 59,402,867**. These aggregate readings do not establish task-attributable Adam or host resource deltas.
 - The fixture server stopped, and the temporary fixture, profile, and harness were removed after measurements were captured. This is **Loop 2 resource and DOM snapshot evidence only**, not model answer acceptance or a B1 task pass. No tests were run.
+
+## Checkpoint 170 — Nemotron preflight stops at sandboxed Torch import
+
+- On **2026-10-08**, a provider-free, network-isolated Nemotron resource preflight stopped during Torch import because `/dev/urandom` was unavailable inside Bubblewrap. No model weights were loaded, no inference ran, and no WAV was read or created.
+- The brief process-start interval produced **5 samples**: peak sampled **RSS 712,596 kB / PSS 527,499 kB**, with `VmHWM=712,596 kB`. This measures startup before the import failure, not model load or inference.
+- Host `MemAvailable` was **22,064,988 kB** at preflight, **22,025,200 kB** at exit, and **22,040,608 kB** at **+30 s**; the **+120 s** sample is absent. No host temporary files were created. This is **not a valid model resource sample** and supports no inference-time or retained-model conclusion. No tests were run.
+
+## Checkpoint 171 — live browser-profile UI preflight deferred
+
+- On **2026-10-08**, the focused Edge window title indicated the synthetic fixture report. No page content was observed, and the other tabs were not inspected.
+- The page-only `grim` capture timed out. AT-SPI initialization failed because `/run/user/1000/at-spi/bus_1` refused connections. No user prompt or model request was sent; audio state was unchanged.
+- This preflight implies no product pass or fail. Live silent browser-profile acceptance remains deferred until a safe scoped UI observation path is available. No tests were run.
