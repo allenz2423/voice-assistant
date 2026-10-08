@@ -1082,3 +1082,8 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - A read-only capture-tool inventory found Hyprland **0.56.2** plus `grim`, `slurp`, `grimblast`, `wlrctl`, and `jq`; no screenshot was taken. `grim -T` requires an unavailable foreign-toplevel identifier. Direct `grim -g` crops a rectangle rather than isolating a surface, so overlapping content may appear.
 - Focused Edge metadata was unexpectedly **78×88** at **[1443,361]** (PID **11283**). No window or page content was inspected and no app input was sent. Target-window scope could not be proven, so browser-profile interaction was not safe. No tests, screenshots, provider calls, or microphone actions occurred.
+
+## Checkpoint 147 — fifth passive T1 watch remained occupied
+
+- All six polls during the fifth 30-minute passive watch found Gedit count **1**, fixture ports **8766, 8767, 8768, 41112, and 18765** listening, WebUI `IDLE_LISTENING`, and **6** established connections on port **8765**. The safe-window gate never passed.
+- No T1, chat, provider, UI, microphone, or log-query action occurred. No tests were run.
