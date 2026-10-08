@@ -136,21 +136,32 @@ def list_processes(sort_by: Optional[str] = "cpu", limit: int = 5) -> str:
     sort_flag = "-%mem" if (sort_by or "").lower() == "memory" else "-%cpu"
     num = max(1, min(limit, 20))
     try:
-        res = subprocess.run(
-            ["ps", "-eo", "pid,%cpu,%mem,comm", f"--sort={sort_flag}"],
-            capture_output=True,
+        command = ["ps", "-eo", "pid,%cpu,%mem,comm", f"--sort={sort_flag}"]
+        sampler = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=2
         )
-        lines = res.stdout.strip().splitlines()
-        header = lines[0] if lines else ""
-        top_lines = lines[1:num + 1]
+        try:
+            stdout, _stderr = sampler.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            sampler.kill()
+            sampler.communicate()
+            raise
+        lines = stdout.strip().splitlines()
         formatted = []
-        for l in top_lines:
+        for l in lines[1:]:
             p = l.split(None, 3)
             if len(p) >= 4:
                 pid, cpu, mem, comm = p[0], p[1], p[2], p[3]
-                formatted.append(f"{comm} (PID {pid}): {cpu}% CPU, {mem}% RAM")
+                if pid == str(sampler.pid):
+                    continue
+                formatted.append(
+                    f"{comm} (PID {pid}): {cpu}% CPU (single-core-equivalent lifetime average), {mem}% RAM"
+                )
+                if len(formatted) >= num:
+                    break
         return f"Top processes by {sort_by or 'cpu'}: " + ", ".join(formatted)
     except Exception as e:
         return f"Error listing processes: {e}"
