@@ -92,7 +92,7 @@ computer_vision:
   enabled: false # Optional OmniParser detector; overlays numbered candidate controls on computer_control screenshots
   backend: "omniparser" # Detector-only: boxes are provided; text labels come from the screenshot/accessibility data
   preload_on_startup: false # Preload OmniParser model on startup; false keeps it lazy-loaded on first visual action
-  device: "cuda" # "cuda" or "cpu"; the Ultralytics runtime does not support Vulkan.
+  device: "cpu" # "cpu" or "cuda"; the Ultralytics runtime does not support Vulkan.
   gpu_uuid: "" # Required for CUDA; exact NVIDIA GPU UUID from nvidia-smi -L, so Adam never picks another GPU
   python_path: "~/.local/share/adam/omniparser-runtime/bin/python" # Isolated runtime; keeps Torch out of Adam's main environment
   model_path: "~/.local/share/adam/models/omniparser-yolov8n.pt"

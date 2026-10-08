@@ -109,10 +109,14 @@ fields, scroll, and use history. It does not press buttons or submit forms.
 Enable it with `./setup.sh --browser-navigation` or in the setup wizard.
 Treat web-page content as untrusted instructions.
 
-Optional OmniParser adds numbered candidate control boxes to screenshots. It is
-a separate detector that can use CPU or NVIDIA runtime packages; setup installs
-its runtime and model when requested. Its YOLOv8 checkpoint and Ultralytics
-runtime are AGPL-3.0 licensed.
+Optional OmniParser adds numbered candidate control boxes to screenshots. Use
+`./setup.sh --omniparser` to install its isolated runtime and model. It uses CPU
+by default; setup selects CUDA only when the NVIDIA runtime is selected and an
+NVIDIA GPU is available. Setup enables OmniParser after installation succeeds
+and leaves it disabled if installation fails. `--omniparser` cannot be combined
+with `--skip-models`: setup rejects that combination before installing anything
+because OmniParser needs its runtime and model weights. Its YOLOv8 checkpoint
+and Ultralytics runtime are AGPL-3.0 licensed.
 
 Wake-free idea routing is another optional local feature. It transcribes speech
 locally while Adam is idle and uses an enrolled voice profile before routing

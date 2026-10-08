@@ -129,6 +129,10 @@ if [[ "$DISABLE_COMPUTER_CONTROL" == true && "$ENABLE_OMNIPARSER" == true ]]; th
     log_error "--disable-computer-control and --omniparser cannot be used together."
     exit 2
 fi
+if [[ "$ENABLE_OMNIPARSER" == true && "$SKIP_MODELS" == true ]]; then
+    log_error "--omniparser requires its runtime and model weights; remove --skip-models to install them."
+    exit 2
+fi
 detect_distro() {
     if [[ -r /etc/os-release ]]; then
         # shellcheck disable=SC1091
@@ -381,6 +385,12 @@ except BaseException:
 PY
 }
 
+set_config_string() {
+    local quoted
+    quoted="$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$3")" || return 1
+    set_config_scalar "$1" "$2" "$quoted"
+}
+
 prepare_config() {
     local config="$SCRIPT_DIR/config.yaml"
     if [[ -L "$config" ]]; then
@@ -424,7 +434,7 @@ PY
         set_config_scalar speaker_diarization enabled true || return 1
     fi
     if [[ "$ENABLE_OMNIPARSER" == true ]]; then
-        set_config_scalar computer_vision enabled true || return 1
+        set_config_scalar computer_vision enabled false || return 1
         set_config_scalar computer_vision backend omniparser || return 1
     fi
     if [[ "$DISABLE_COMPUTER_CONTROL" == true ]]; then
@@ -618,8 +628,30 @@ PY
     if [[ "$ENABLE_OMNIPARSER" == true && "$SKIP_MODELS" != true ]]; then
         local device="cpu" gpu_uuid=""
         if [[ "$RUNTIME_EXTRA" == "runtime-nvidia" ]]; then
-            gpu_uuid="$(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | head -n 1 || true)"
-            gpu_uuid="$(echo "$gpu_uuid" | tr -d '[:space:]')"
+            local -a available_gpu_uuids=()
+            mapfile -t available_gpu_uuids < <(nvidia-smi --query-gpu=uuid --format=csv,noheader 2>/dev/null | sed '/^[[:space:]]*$/d' || true)
+            local configured_gpu_uuid=""
+            configured_gpu_uuid="$(uv run --no-sync python - "$CONFIG_FILE" <<'PY'
+from pathlib import Path
+import sys
+import yaml
+
+try:
+    config = yaml.safe_load(Path(sys.argv[1]).read_text(encoding="utf-8")) or {}
+    print((config.get("computer_vision", {}) or {}).get("gpu_uuid", "") or "")
+except Exception:
+    print("")
+PY
+)" || return 1
+            for available_gpu_uuid in "${available_gpu_uuids[@]}"; do
+                if [[ "$available_gpu_uuid" == "$configured_gpu_uuid" ]]; then
+                    gpu_uuid="$configured_gpu_uuid"
+                    break
+                fi
+            done
+            if [[ -z "$gpu_uuid" && ${#available_gpu_uuids[@]} -gt 0 ]]; then
+                gpu_uuid="${available_gpu_uuids[0]}"
+            fi
             if [[ -n "$gpu_uuid" ]]; then
                 device="cuda"
             fi
@@ -629,10 +661,31 @@ PY
         if [[ -n "$gpu_uuid" ]]; then
             omni_args+=(--gpu-uuid "$gpu_uuid")
         fi
-        "${omni_args[@]}" || {
+        if "${omni_args[@]}"; then
+            local -a omni_paths=()
+            mapfile -t omni_paths < <(python3 - <<'PY'
+import os
+from pathlib import Path
+
+data_home = Path(os.environ.get("XDG_DATA_HOME", "~/.local/share")).expanduser()
+print(data_home / "adam" / "omniparser-runtime" / "bin" / "python")
+print(data_home / "adam" / "models" / "omniparser-yolov8n.pt")
+PY
+)
+            if ((${#omni_paths[@]} != 2)); then
+                log_error "Could not determine the installed OmniParser paths."
+                return 1
+            fi
+            set_config_scalar computer_vision backend omniparser || return 1
+            set_config_scalar computer_vision device "$device" || return 1
+            set_config_string computer_vision gpu_uuid "$gpu_uuid" || return 1
+            set_config_string computer_vision python_path "${omni_paths[0]}" || return 1
+            set_config_string computer_vision model_path "${omni_paths[1]}" || return 1
+            set_config_scalar computer_vision enabled true || return 1
+        else
             log_warn "OmniParser installation failed; leaving feature disabled."
-            set_config_scalar computer_vision enabled false
-        }
+            set_config_scalar computer_vision enabled false || return 1
+        fi
     fi
 }
 

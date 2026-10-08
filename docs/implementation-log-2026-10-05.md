@@ -1030,3 +1030,8 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - During a five-minute conditional watch for a safe T1 window, every check still showed Gedit open (**1**) and all five fixture ports (**8766, 8767, 8768, 41112, 18765**) listening; Adam remained `IDLE_LISTENING`. No turn was submitted, and the prepared rep 1 fixture remains unused.
 - No provider, UI, or microphone action was taken, and no tests were run. Earlier post-query recovery snapshots and fixture preparation remain as recorded.
+
+## Checkpoint 137 — make fresh OmniParser setup opt-in after installation
+
+- OmniParser now defaults to CPU. `--omniparser` writes the installed device, a valid discovered NVIDIA GPU UUID when using the NVIDIA runtime, and runtime/model paths under XDG data; it enables the feature only after installation and config writes succeed. Combining `--omniparser` with `--skip-models` is rejected before installation. `README.md` now documents these setup choices and limits.
+- `bash -n setup.sh`, `git diff --check`, and parsing `config.yaml.example` as YAML passed. Independent review found no concrete issue in `setup.sh` or the example config; README review confirmed the OmniParser paragraph matches setup and defaults. No tests, setup, downloads, or services were run.
