@@ -681,10 +681,8 @@ class AdamDaemon:
         try:
             if action == "start":
                 await self._start_meeting()
-            elif self.meeting_session.active:
-                await self._stop_meeting("voice command")
             else:
-                await self._speak_meeting_already_off()
+                await self._stop_meeting("voice command")
         except Exception as exc:
             succeeded = False
             verb = "start" if action == "start" else "stop"
@@ -750,17 +748,16 @@ class AdamDaemon:
         if action == "stop":
             was_active = self.meeting_session.active
             directory = self.meeting_session.session_dir
-            if was_active:
-                try:
-                    await self._stop_meeting("voice command")
-                except Exception as exc:
-                    print(f"[Meeting] Structured stop failed ({type(exc).__name__}: {exc}).", flush=True)
-                    return "Meeting mode failed to stop."
-                if directory is not None:
-                    return f"Meeting mode is off. I saved the recording and transcript in {directory}."
-                return "Meeting mode is off. Recording stopped."
-            await self._speak_meeting_already_off()
-            return "Meeting mode is already off."
+            try:
+                await self._stop_meeting("voice command")
+            except Exception as exc:
+                print(f"[Meeting] Structured stop failed ({type(exc).__name__}: {exc}).", flush=True)
+                return "Meeting mode failed to stop."
+            if not was_active:
+                return "Meeting mode is already off."
+            if directory is not None:
+                return f"Meeting mode is off. I saved the recording and transcript in {directory}."
+            return "Meeting mode is off. Recording stopped."
         return "Meeting mode action must be 'start' or 'stop'."
 
     async def _speak_meeting_already_off(self) -> None:
@@ -778,26 +775,43 @@ class AdamDaemon:
         await self._execute_turn(command, memory_context=memory_context)
 
     async def _start_meeting(self) -> None:
-        if self.meeting_session.active:
-            await self._speak_meeting_acknowledgement("Meeting mode is already on.")
-            return
-        self.meeting_speaker_registry = MeetingSpeakerRegistry(
-            self.meeting_voice_encoder,
-            enrolled_verifier=self.speaker_verifier,
-            similarity_threshold=self.config.meeting.speaker_similarity_threshold,
-        )
         try:
-            directory = self.meeting_session.start()
-        except Exception:
-            self.meeting_speaker_registry = None
-            raise
-        self.conversation_deadline = 0.0
-        print(f"[Meeting] Recording and transcription started: {directory}", flush=True)
-        if self.speaker_diarizer is None:
-            print("[Meeting] Speaker diarization is unavailable; turns will be labeled Unknown or by voice similarity.", flush=True)
-        # Keep Adam's acknowledgement out of the meeting tap, then quench room
-        # reflections before allowing capture to resume.
-        await self._speak_meeting_acknowledgement("Meeting mode is on. Recording now.")
+            if self.meeting_session.active:
+                await self._speak_meeting_acknowledgement("Meeting mode is already on.")
+                return
+            self.meeting_speaker_registry = MeetingSpeakerRegistry(
+                self.meeting_voice_encoder,
+                enrolled_verifier=self.speaker_verifier,
+                similarity_threshold=self.config.meeting.speaker_similarity_threshold,
+            )
+            try:
+                directory = self.meeting_session.start()
+            except Exception:
+                self.meeting_speaker_registry = None
+                raise
+            self.conversation_deadline = 0.0
+            print(f"[Meeting] Recording and transcription started: {directory}", flush=True)
+            if self.speaker_diarizer is None:
+                print("[Meeting] Speaker diarization is unavailable; turns will be labeled Unknown or by voice similarity.", flush=True)
+            # Keep Adam's acknowledgement out of the meeting tap, then quench room
+            # reflections before allowing capture to resume.
+            await self._speak_meeting_acknowledgement("Meeting mode is on. Recording now.")
+        finally:
+            await self._broadcast_meeting_status()
+
+    async def _broadcast_meeting_status(self) -> None:
+        """Refresh only the meeting indicator so unrelated runtime state stays current."""
+        try:
+            sidecar_bridge = getattr(self, "sidecar_bridge", None)
+            if sidecar_bridge is None:
+                return
+            status = await sidecar_bridge.get_status()
+            await sidecar_bridge.broadcast_state({
+                "type": "meeting_status",
+                "meeting_session_active": status.get("meeting_session_active"),
+            })
+        except Exception as exc:
+            print(f"[WebUI] Meeting status refresh failed ({type(exc).__name__}).", flush=True)
 
     async def _speak_meeting_acknowledgement(self, message: str) -> None:
         session = self.meeting_session
@@ -828,18 +842,22 @@ class AdamDaemon:
                     session.resume_capture(suspension_id)
 
     async def _stop_meeting(self, reason: str = "voice command") -> None:
-        if not self.meeting_session.active:
-            return
-        directory = await asyncio.to_thread(self.meeting_session.stop, reason)
-        self.conversation_deadline = 0.0
-        self.meeting_speaker_registry = None
-        print(f"[Meeting] Recording stopped ({reason}). Files saved in {directory}", flush=True)
         try:
-            await self.tts.speak_async(f"Meeting mode is off. I saved the recording and transcript in {directory}.")
-        except Exception as exc:
-            # stop() completed successfully, so speech failure does not change
-            # the saved recording's outcome reported to callers.
-            print(f"[Meeting] Stop acknowledgment failed ({type(exc).__name__}: {exc}).", flush=True)
+            if not self.meeting_session.active:
+                await self._speak_meeting_already_off()
+                return
+            directory = await asyncio.to_thread(self.meeting_session.stop, reason)
+            self.conversation_deadline = 0.0
+            self.meeting_speaker_registry = None
+            print(f"[Meeting] Recording stopped ({reason}). Files saved in {directory}", flush=True)
+            try:
+                await self.tts.speak_async(f"Meeting mode is off. I saved the recording and transcript in {directory}.")
+            except Exception as exc:
+                # stop() completed successfully, so speech failure does not change
+                # the saved recording's outcome reported to callers.
+                print(f"[Meeting] Stop acknowledgment failed ({type(exc).__name__}: {exc}).", flush=True)
+        finally:
+            await self._broadcast_meeting_status()
 
     def _contains_registered_voice(self, audio_data: np.ndarray) -> tuple[bool, float]:
         """Check short windows so background-only utterances never reach ASR."""

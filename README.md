@@ -126,8 +126,9 @@ selected requests. Enable it with `./setup.sh --idea-routing`; edit ideas in
 ### Web UI
 
 The optional Web UI provides text interaction, live tool activity, and system
-status in a local browser. It is disabled by default and binds to loopback. For
-a foreground session, run:
+status in a local browser, including whether a meeting session is active or
+whether that state is unavailable. It is disabled by default and binds to
+loopback. For a foreground session, run:
 
 ```sh
 uv run python -m src.main --webui

@@ -201,6 +201,10 @@ class SidecarServer:
                 await ws.send_json({"type": "chat_response", "user_message": user_text, "result": result})
             except (ConnectionError, RuntimeError):
                 logger.debug("Chat finished after browser disconnected")
+        try:
+            await self.bridge.broadcast_state({"type": "status", **await self.bridge.get_status()})
+        except Exception:
+            logger.debug("Could not broadcast status after chat completion", exc_info=True)
 
     async def shutdown(self, app):
         for ws in list(self.active_websockets):

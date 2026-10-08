@@ -217,10 +217,21 @@ class DaemonBridge(RuntimeBridge):
             if active_task is not None and not active_task.done():
                 active_tool = "executing_tool"
 
+        meeting_session_active = None
+        meeting_session = getattr(self.daemon, "meeting_session", None)
+        if meeting_session is not None:
+            try:
+                capture_state = getattr(meeting_session, "active", None)
+            except Exception:
+                capture_state = None
+            if isinstance(capture_state, bool):
+                meeting_session_active = capture_state
+
         return {
             "connected": True,
             "mode": "daemon",
             "system_state": state,
+            "meeting_session_active": meeting_session_active,
             "voice_default": True,
             "model": model_name,
             "tool_free_model": tool_free_model_name,

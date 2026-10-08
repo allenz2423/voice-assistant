@@ -81,6 +81,7 @@
   // Meeting Controls Elements
   const meetingStartBtn = document.getElementById("meetingStartBtn");
   const meetingStopBtn = document.getElementById("meetingStopBtn");
+  const meetingModeState = document.getElementById("meetingModeState");
 
   // Auth Modal Elements
   const authModal = document.getElementById("authModal");
@@ -577,6 +578,16 @@
     }
   }
 
+  function updateMeetingModeState(data) {
+    if (!meetingModeState) return;
+    const meetingState = data.meeting_session_active === true
+      ? "On"
+      : data.meeting_session_active === false ? "Off" : "Unknown";
+    if (meetingModeState.textContent !== meetingState) {
+      meetingModeState.textContent = meetingState;
+    }
+  }
+
   // Update telemetry display
   function updateTelemetry(data) {
     if (loadedRevision && data.ui_revision && loadedRevision !== data.ui_revision) {
@@ -586,6 +597,7 @@
         return;
       }
     }
+    updateMeetingModeState(data);
     if (data.mode && telemetryMode) telemetryMode.textContent = data.mode;
     if (data.model && telemetryModel) {
       telemetryModel.textContent = data.model;
@@ -882,6 +894,8 @@
         if (data.type === "pong") {
           // Heartbeat ack
           return;
+        } else if (data.type === "meeting_status") {
+          updateMeetingModeState(data);
         } else if (data.type === "status") {
           updateTelemetry(data);
           setConnectionStatus(data.connected, data.mode, data.connected ? null : "Disconnected (No Live Daemon)");
