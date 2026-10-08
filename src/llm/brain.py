@@ -326,11 +326,37 @@ def _can_direct_dispatch_system_status(user_text: str) -> bool:
     }
 
 
+def _is_brief_system_status_request(user_text: str) -> bool:
+    """Match a generic status overview, but leave explicit metric/detail requests to the model."""
+    text = str(user_text or "").strip()
+    if not re.search(r"\bsystem\s+(?:status|health)\b", text, re.IGNORECASE):
+        return False
+    if re.search(
+        r"\b(?:cpu|processor|ram|memory|gpu|graphics|disk|storage|temperature|temp|vram|"
+        r"core|load|utilization|usage|detailed?|details|full|complete|everything|all|every|each|include|including)\b",
+        text,
+        re.IGNORECASE,
+    ):
+        return False
+    allowed = _STATUS_LOOKUP_WORDS | frozenset({
+        "keep", "it", "brief", "briefly", "short", "concise", "quick", "quickly",
+        "overview", "summary",
+    })
+    tokens = re.findall(r"\d+|[a-z]+(?:'[a-z]+)?", text.casefold())
+    return bool(
+        _STATUS_LOOKUP_START.search(text)
+        and tokens
+        and all(token in allowed or token.isdigit() for token in tokens)
+    )
+
+
 def _format_direct_system_status_response(user_text: str, status_text: str) -> str:
     """Keep a factual status quickpath focused on the metrics the user asked for."""
     text = str(user_text or "")
     status = str(status_text or "").strip()
     if not status:
+        return status
+    if re.search(r"\b(?:unable|failed) to collect system status\b", status, re.IGNORECASE):
         return status
 
     # Telemetry sentences start with uppercase labels. Split only at sentence
@@ -439,44 +465,84 @@ def _format_direct_system_status_response(user_text: str, status_text: str) -> s
     if metrics:
         return " ".join(requested_metric(metric) for metric in metrics)
 
-    # Keep the generic status command brief. Core counts, load averages, GPU
-    # temperatures, and VRAM details remain available through specific requests.
-    overview: list[str] = []
-
+    # Generic status is a one-sentence CPU, memory, and GPU-utilization overview.
+    # Disk, temperatures, and VRAM details remain available through specific requests.
     cpu = first_sentence(r"\bCPU utilization\b")
     cpu_percent = re.search(r"\b(\d+(?:\.\d+)?)\s+percent\b", cpu or "", re.IGNORECASE)
-    overview.append(f"CPU {cpu_percent.group(1)}%" if cpu_percent else "CPU unavailable")
+    if cpu_percent:
+        cpu_summary = f"CPU is {cpu_percent.group(1)}%"
+    else:
+        cpu_summary = "CPU utilization is unavailable"
 
     memory = first_sentence(r"\bMemory is\b")
     memory_percent = re.search(r"\b(\d+(?:\.\d+)?)\s+percent\b", memory or "", re.IGNORECASE)
-    overview.append(f"memory {memory_percent.group(1)}%" if memory_percent else "memory unavailable")
-
-    storage = first_sentence(r"\bRoot storage has\b")
-    storage_free = re.search(
-        r"\b(\d+(?:\.\d+)?)\s+gigabytes free\b",
-        storage or "",
-        re.IGNORECASE,
-    )
-    overview.append(
-        f"disk {storage_free.group(1)} GB free" if storage_free else "disk unavailable"
+    memory_summary = (
+        f"memory is {memory_percent.group(1)}%"
+        if memory_percent else "memory is unavailable"
     )
 
-    gpu: list[str] = []
+    gpu_ids = list(dict.fromkeys(re.findall(r"\bGPU\s+(\d+)\s+\(", status, re.IGNORECASE)))
+    gpu_by_id: dict[str, str] = {}
+    generic_gpu_percentages: list[str] = []
+
+    def join_readings(values: list[str]) -> str:
+        if len(values) == 1:
+            return values[0]
+        if len(values) == 2:
+            return " and ".join(values)
+        if not values:
+            return ""
+        return ", ".join(values[:-1]) + f", and {values[-1]}"
+
     for phrase in gpu_fields("utilization"):
-        label = re.search(r"\bGPU\s+(\d+)\s+\([^)]+\)", phrase, re.IGNORECASE)
         gpu_percent = re.search(r"\b(\d+(?:\.\d+)?)\s+percent\b", phrase, re.IGNORECASE)
-        if label and gpu_percent:
-            gpu.append(f"GPU {label.group(1)} {gpu_percent.group(1)}%")
-    if gpu:
-        overview.append(", ".join(gpu))
+        if not gpu_percent:
+            continue
+        gpu_id = re.search(r"\bGPU\s+(\d+)\s+\(", phrase, re.IGNORECASE)
+        if gpu_id:
+            gpu_id = gpu_id.group(1)
+            gpu_by_id[gpu_id] = gpu_percent.group(1)
+            if gpu_id not in gpu_ids:
+                gpu_ids.append(gpu_id)
+        else:
+            generic_gpu_percentages.append(gpu_percent.group(1))
+
+    if gpu_ids and all(gpu_id in gpu_by_id for gpu_id in gpu_ids):
+        readings = [gpu_by_id[gpu_id] for gpu_id in gpu_ids]
+        if len(gpu_ids) >= 2 and len(set(readings)) == 1:
+            subject = "both GPUs" if len(gpu_ids) == 2 else f"all {len(gpu_ids)} GPUs"
+            gpu_summary = f"{subject} are at {readings[0]}% utilization"
+        elif len(gpu_ids) == 1:
+            gpu_summary = f"GPU utilization is {readings[0]}%"
+        else:
+            mapped = [f"{value}% on GPU {gpu_id}" for gpu_id, value in zip(gpu_ids, readings)]
+            joined = join_readings(mapped)
+            gpu_summary = f"GPU utilization is {joined}"
+    elif gpu_ids:
+        mapped = [
+            f"{gpu_by_id[gpu_id]}% on GPU {gpu_id}"
+            if gpu_id in gpu_by_id else f"unavailable on GPU {gpu_id}"
+            for gpu_id in gpu_ids
+        ]
+        gpu_summary = f"GPU utilization is {join_readings(mapped)}"
+    elif generic_gpu_percentages:
+        readings = [f"{value}%" for value in generic_gpu_percentages]
+        joined = readings[0] if len(readings) == 1 else join_readings(readings)
+        gpu_summary = f"GPU utilization readings are {joined}"
     else:
-        gpu_status = first_sentence(r"\bGPU telemetry\b")
-        has_gpu_data = bool(
-            gpu_status
-            and not re.search(r"\btelemetry is unavailable\b", gpu_status, re.IGNORECASE)
-        )
-        overview.append("GPU data available" if has_gpu_data else "GPU unavailable")
-    return "; ".join(overview) + "."
+        gpu_summary = "GPU utilization is unavailable"
+    return f"{cpu_summary}, {memory_summary}, and {gpu_summary}."
+
+
+def _brief_system_status_from_tool_calls(user_text: str, tool_calls: list[dict]) -> str | None:
+    """Format a generic status overview only when its telemetry tool succeeded."""
+    if not _is_brief_system_status_request(user_text):
+        return None
+    for call in reversed(tool_calls):
+        if call.get("name") != "get_system_status" or call.get("status") not in {"ok", "returned"}:
+            continue
+        return _format_direct_system_status_response(user_text, call.get("output", ""))
+    return None
 
 
 def _without_quoted_screen_text(text: str) -> str:
@@ -3158,6 +3224,11 @@ class AdamBrain:
                 )
                 if save_readback_guard:
                     content = save_readback_guard
+                brief_status = _brief_system_status_from_tool_calls(
+                    user_text, all_executed_tool_calls,
+                )
+                if brief_status is not None:
+                    content = brief_status
                 content = _guard_unrequested_earlier_spike_fallback(
                     user_text, content,
                 )
@@ -3294,6 +3365,13 @@ class AdamBrain:
                 args = normalized_args_by_idx.get(idx, {})
                 if name == "speak" and isinstance(args, dict):
                     spoken_update = str(args.get("message", ""))
+                    brief_status = _brief_system_status_from_tool_calls(
+                        user_text, all_executed_tool_calls,
+                    )
+                    if brief_status is not None:
+                        args = {**args, "message": brief_status}
+                        normalized_args_by_idx[idx] = args
+                        spoken_update = brief_status
                     guarded_spoken_update = _guard_unrequested_earlier_spike_fallback(
                         user_text, spoken_update,
                     )
@@ -3871,6 +3949,11 @@ class AdamBrain:
                             f"[Adam] No-progress final synthesis failed: {type(exc).__name__}: {exc}",
                             flush=True,
                         )
+                brief_status = _brief_system_status_from_tool_calls(
+                    user_text, all_executed_tool_calls,
+                )
+                if brief_status is not None:
+                    response_text = brief_status
                 response_text = _guard_unrequested_earlier_spike_fallback(
                     user_text, response_text,
                 )
@@ -3919,6 +4002,11 @@ class AdamBrain:
             )
             if save_readback_guard:
                 final_content = save_readback_guard
+            brief_status = _brief_system_status_from_tool_calls(
+                user_text, all_executed_tool_calls,
+            )
+            if brief_status is not None:
+                final_content = brief_status
             final_content = _guard_unrequested_earlier_spike_fallback(
                 user_text, final_content,
             )

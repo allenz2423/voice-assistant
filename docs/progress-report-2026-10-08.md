@@ -9,3 +9,9 @@ A no-tool comparison of 12 sorting algorithms completed in **15.232 s** on `cust
 The Edge-profile acceptance attempt remains blocked: Hyprland identified the focused Edge window as `Adam // Assistant Dashboard and 6 more pages - Personal - Microsoft Edge`, PID **11283**, without inspecting tabs or history. Focused-window `grim` (**6 s**) and `grimblast` (**20 s**) captures timed out; scoped AT-SPI was unavailable. No keystrokes were sent. The chatbot requests used localhost daemon `/api/chat`, not the Edge profile.
 
 No pytest or full suite was run per user preference. The import check and live daemon interactions were the only verification; `git diff --check` passed. A read-only review noted that the historical matcher can still match an unrelated past-time clause separated only by a comma or em dash; defer this edge for a targeted follow-up.
+
+## CP194 — concise system status
+
+Added a formatter for generic system-status overviews on direct and successful tool-backed paths. It returns one sentence with CPU, memory, and GPU utilization, omitting disk, temperature, and VRAM. Explicit metric/detail requests remain model-driven, while errors and missing telemetry are preserved. Equal multi-GPU readings use `both GPUs`; unequal or missing readings retain device IDs. Read-only review found no blocker.
+
+After the formatter, import check, and service restart, `What is my system status? Keep it brief.` used only `get_system_status` and completed in **2.020 s** with exactly: `CPU is 1%, memory is 32%, and both GPUs are at 0% utilization.` TTS remained Silent. No pytest or full suite was run; verification was limited to the import check and live turn. CP193's Edge-profile limitation remains: focused captures timed out, scoped AT-SPI was unavailable, and no keystrokes were sent. This chat turn used localhost daemon `/api/chat`, not the Edge profile.
