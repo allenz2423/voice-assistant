@@ -133,7 +133,8 @@ class DaemonBridge(RuntimeBridge):
 
         def receive(row):
             if row.get("event") in {
-                "tool.started", "tool.completed", "llm.retrying",
+                "turn.started", "llm.request_started", "llm.retrying",
+                "tool.started", "tool.completed",
                 "brain.tool_recovery", "brain.empty_completion_recovery",
                 "brain.capability_recovery",
             }:
@@ -164,13 +165,11 @@ class DaemonBridge(RuntimeBridge):
                     })
                     continue
 
-                await self.broadcast_state({
-                    "type": "task_progress",
-                    "event": row["event"],
-                    "attempt": attrs.get("attempt"),
-                    "max_attempts": attrs.get("max_attempts", 3),
-                    "reason": attrs.get("reason"),
-                })
+                progress = {"type": "task_progress", "event": row["event"]}
+                for field in ("attempt", "max_attempts", "reason"):
+                    if field in attrs:
+                        progress[field] = attrs[field]
+                await self.broadcast_state(progress)
 
         self._unsubscribe_events = subscribe_events(receive)
         self._event_task = asyncio.create_task(deliver())

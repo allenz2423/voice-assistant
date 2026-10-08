@@ -616,16 +616,27 @@ def _desktop_unchanged_screen_count(
 
 
 def _desktop_screens_match(
-    previous: bytes | str | tuple[bytes, tuple[str, ...]],
-    current: bytes | str | tuple[bytes, tuple[str, ...]],
+    previous: bytes | str | tuple,
+    current: bytes | str | tuple,
 ) -> bool:
     """Ignore tiny animated pixels while distinguishing meaningful screen changes."""
     if previous == current:
         return True
     if isinstance(previous, tuple) and isinstance(current, tuple):
-        if previous[1] != current[1]:
-            return False
-        return _desktop_screens_match(previous[0], current[0])
+        if len(previous) == 3 and len(current) == 3:
+            # The coarse image absorbs clocks, cursors, and other minor changes.
+            # OCR text remains direct evidence when it is available; the fine
+            # image comparison catches localized control edits when OCR is not.
+            if not _desktop_screens_match(previous[0], current[0]):
+                return False
+            if previous[2] != current[2]:
+                return False
+            return _desktop_local_images_match(previous[1], current[1])
+        if len(previous) == 2 and len(current) == 2:
+            if previous[1] != current[1]:
+                return False
+            return _desktop_screens_match(previous[0], current[0])
+        return False
     if isinstance(previous, tuple) or isinstance(current, tuple):
         return False
     if not isinstance(previous, bytes) or not isinstance(current, bytes):
@@ -638,6 +649,36 @@ def _desktop_screens_match(
     return mean_difference <= 2.0
 
 
+def _desktop_local_images_match(previous: bytes, current: bytes) -> bool:
+    """Ignore sparse cursor/animation changes but detect a localized text edit."""
+    if previous == current:
+        return True
+    if len(previous) != len(current) or len(previous) != 512 * 288:
+        return False
+
+    changed_pixels = 0
+    min_x, min_y = 512, 288
+    max_x = max_y = -1
+    for index, (before, after) in enumerate(zip(previous, current)):
+        if abs(before - after) < 18:
+            continue
+        x, y = index % 512, index // 512
+        changed_pixels += 1
+        min_x = min(min_x, x)
+        max_x = max(max_x, x)
+        min_y = min(min_y, y)
+        max_y = max(max_y, y)
+
+    if changed_pixels < 24:
+        return True
+    width, height = max_x - min_x + 1, max_y - min_y + 1
+    # A blinking caret or a small animated indicator is narrow or occupies one
+    # tiny patch. Text/control changes affect a broader patch of the screen.
+    localized_text_change = width >= 6 and height >= 3
+    broad_animation = width > 96 or height > 36 or changed_pixels > (512 * 288) // 12
+    return not (localized_text_change and not broad_animation)
+
+
 def _desktop_screenshot_signature(image_bytes: bytes, ocr_regions=None):
     """Reduce a desktop capture and its recognized text to cheap progress evidence."""
     try:
@@ -645,9 +686,11 @@ def _desktop_screenshot_signature(image_bytes: bytes, ocr_regions=None):
         from PIL import Image
 
         with Image.open(BytesIO(image_bytes)) as image:
-            pixels = image.convert("L").resize((32, 18), Image.Resampling.BILINEAR).tobytes()
+            grayscale = image.convert("L")
+            pixels = grayscale.resize((32, 18), Image.Resampling.BILINEAR).tobytes()
+            local_pixels = grayscale.resize((512, 288), Image.Resampling.BILINEAR).tobytes()
         text = ScreenOCR.text_signature(ocr_regions or [])
-        return (pixels, text) if text is not None else pixels
+        return (pixels, local_pixels, text)
     except Exception:
         return image_bytes
 
@@ -1191,7 +1234,7 @@ Voice & Execution:
 - Treat the current request as the active task. Earlier dialogue is context for resolving references, not a queue of unfinished work: continue an earlier task only when the current request asks to continue it or depends on it to resolve its meaning. Do not add work that the current request does not require.
 - Intermediate steps (launch, focus, open, navigate) are not completion. Always follow through to every requested deliverable.
 - Information delivery requirement: When asked to find, read, or check information, extract the content and speak the substantive details (names, dates, amounts, message body). NEVER simply answer "Found it", "I found it", or "Opened it".
-- Screen reading: When asked to read what is on screen, use the extracted OCR text and read/summarize its substantive content. Naming the open apps or describing the layout does not answer a screen-reading request. If OCR returns no usable text or reports truncation, say that and do not invent screen contents.
+- Screen reading: When asked to read what is on screen, use usable extracted OCR text first and read/summarize its substantive content. If OCR returns no usable text or reports truncation, read from the latest fresh focused-window screenshot when one is provided and the requested text is clearly legible. If neither source makes the text clear, say you cannot verify it; never infer screen contents from the requested value alone.
 - Computer-use outcome: Finish with the specific state confirmed by the latest screen. For settings or other state changes, name the requested value and its observed state, and include explicitly requested neighboring values that remained unchanged. Do not answer only "Done" or "Completed" when the user asked what changed or asked for a status; if a value is unconfirmed, say so plainly.
 
 Tool Routing:
@@ -1386,8 +1429,10 @@ def _summarize_desktop_readback_if_generic(
     user_text: str,
     model_response: str,
     tool_output: str | None,
+    *,
+    has_fresh_screenshot: bool = False,
 ) -> str | None:
-    """Use explicit OCR state when a status-seeking user gets only a generic acknowledgment."""
+    """Prefer OCR for readback; preserve substantive answers grounded in a fresh screenshot."""
     if not _is_dedicated_desktop_navigation_request(user_text):
         return None
     asks_saved_text = bool(re.search(
@@ -1414,7 +1459,18 @@ def _summarize_desktop_readback_if_generic(
     if not (asks_saved_text or asks_entered_text or asks_status):
         return None
     generic_response = bool(re.fullmatch(
-        r"\s*(?:done|completed|complete|finished|all\s+set|success(?:fully)?|saved)[.!\s]*\s*",
+        r"\s*(?:(?:(?:done|completed|complete|finished|all\s+set|success(?:fully)?|saved)"
+        r"[.!\s,]*)?"
+        r"(?:(?:(?:the\s+)?(?:note|text|content|file|entry)|it|that)"
+        r"\s+(?:has\s+been|was|is)\s+saved"
+        r"|(?:i|we)\s+(?:(?:have|has)\s+)?saved\s+"
+        r"(?:(?:the\s+)?(?:note|text|content|file|entry)|it|that)"
+        r"|(?:i|we)['’]ve\s+saved\s+"
+        r"(?:(?:the\s+)?(?:note|text|content|file|entry)|it|that)"
+        r"|saved\s+(?:(?:the\s+)?(?:note|text|content|file|entry)|it|that))"
+        r"(?:\s+successfully)?[.!?\s]*|"
+        r"(?:done|completed|complete|finished|all\s+set|success(?:fully)?|saved"
+        r"|saved\s+successfully|successfully\s+saved)[.!\s]*\s*)",
         model_response or "",
         re.IGNORECASE,
     ))
@@ -1471,6 +1527,21 @@ def _summarize_desktop_readback_if_generic(
             if verified_saved_text.casefold() in str(model_response or "").casefold():
                 return None
             return f"The saved text is: {verified_saved_text}"
+        if has_fresh_screenshot and not generic_response:
+            response_literal = " ".join(
+                str(model_response or "").strip(" \t\r\n\"'“”‘’.,;:!?").split()
+            ).casefold()
+            echoed_request_literal = any(
+                response_literal == " ".join(
+                    value.strip(" \t\r\n\"'“”‘’.,;:!?").split()
+                ).casefold()
+                for value in requested_literals
+            )
+            # With a fresh image, let a substantive visual readback stand. A
+            # bare repetition of the requested literal is not evidence that it
+            # appeared in the saved state.
+            if not echoed_request_literal:
+                return None
         return (
             "I couldn't verify from the screen that the note was saved, "
             "so I can't confirm the saved text."
@@ -1491,6 +1562,22 @@ def _desktop_tool_evidence_for_final_answer(
         if message.get("role") == "tool"
     )
     return "\n".join(evidence)
+
+
+def _is_state_changing_computer_control_action(args: object) -> bool:
+    """Whether a computer_control request contains input, rather than inspection."""
+    if not isinstance(args, dict):
+        return False
+    action = str(args.get("action", "")).strip().casefold()
+    state_changing_actions = {"click", "drag", "type", "press", "scroll"}
+    if action == "sequence":
+        actions = args.get("actions")
+        return isinstance(actions, list) and any(
+            isinstance(step, dict)
+            and str(step.get("action", "")).strip().casefold() in state_changing_actions
+            for step in actions
+        )
+    return action in state_changing_actions
 
 
 def _canonical_local_file_path(value: object) -> str | None:
@@ -1556,12 +1643,62 @@ def _saved_file_readback_summary(
     file_text: str,
 ) -> str | None:
     """Report only field values present in the reopened file."""
-    lines: dict[str, tuple[str, str]] = {}
+    lines: list[tuple[str, str, str]] = []
     for line in str(file_text or "").splitlines():
         match = re.match(r"\s*([^:]{1,100}):\s*(.*?)\s*$", line)
         if match:
             label = re.sub(r"[^a-z0-9]+", "", match.group(1).casefold())
-            lines[label] = (match.group(1).strip(), match.group(2).strip())
+            if label:
+                lines.append((label, match.group(1).strip(), match.group(2).strip()))
+
+    def resolve_requested_field(normalized: str) -> list[tuple[str, str, str]] | None:
+        """Resolve one requested field or a uniquely segmented group of fields."""
+        if not normalized:
+            return None
+        direct = [entry for entry in lines if entry[0] == normalized]
+        suffix_total = []
+        if normalized == "total":
+            suffix_total = [
+                entry for entry in lines
+                if re.search(r"(?:^|\s)total$", entry[1], re.IGNORECASE)
+            ]
+
+        # Some prompts list related fields without punctuation (for example,
+        # "supplier invoice IDs"). Resolve only if the phrase has one complete
+        # segmentation into the file's headers; partial or ambiguous matches fail closed.
+        paths: list[list[list[int]]] = [[] for _ in range(len(normalized) + 1)]
+        paths[0] = [[]]
+        for offset in range(len(normalized)):
+            if not paths[offset]:
+                continue
+            for entry_index, (label, _, _) in enumerate(lines):
+                if normalized.startswith(label, offset):
+                    end = offset + len(label)
+                    for path in paths[offset]:
+                        paths[end].append([*path, entry_index])
+                        if len(paths[end]) > 1:
+                            paths[end] = paths[end][:2]
+        complete_paths = paths[-1]
+
+        if direct:
+            if len(direct) != 1:
+                return None
+            direct_index = lines.index(direct[0])
+            # An exact header is still ambiguous if the same request can also
+            # be fully split across other headers (for example, SUPPLIER +
+            # INVOICE IDS alongside SUPPLIER INVOICE IDS).
+            if len(complete_paths) != 1 or complete_paths[0] != [direct_index]:
+                return None
+            if normalized == "total" and any(entry is not direct[0] for entry in suffix_total):
+                return None
+            return direct
+
+        if normalized == "total" and suffix_total:
+            return suffix_total if len(suffix_total) == 1 else None
+        if len(complete_paths) != 1 or not complete_paths[0]:
+            return None
+        return [lines[index] for index in complete_paths[0]]
+
     verified_fields: list[tuple[str, str]] = []
     verified_labels: set[str] = set()
 
@@ -1578,18 +1715,15 @@ def _saved_file_readback_summary(
         ]
         for field in fields:
             normalized = re.sub(r"[^a-z0-9]+", "", field.casefold())
-            matched = next(
-                ((label, display, content) for label, (display, content) in lines.items()
-                 if label == normalized or label.endswith(normalized)),
-                None,
-            )
-            if matched is None:
+            matches = resolve_requested_field(normalized)
+            if matches is None:
                 return None
-            label, display, value = matched
-            if not value or value.casefold() in {"tbd", "pending", "unknown"}:
-                return None
-            verified_fields.append((display, value))
-            verified_labels.add(label)
+            for label, display, value in matches:
+                if not value or value.casefold() in {"tbd", "pending", "unknown"}:
+                    return None
+                if label not in verified_labels:
+                    verified_fields.append((display, value))
+                    verified_labels.add(label)
 
     requested_changes = re.finditer(
         r"\bchange\s+([a-z][a-z0-9 _-]{0,60}?)\s+from\s+(.{1,80}?)\s+to\s+(.{1,80}?)(?=[.;?!,]|$)",
@@ -1599,11 +1733,11 @@ def _saved_file_readback_summary(
     for change in requested_changes:
         field = re.sub(r"[^a-z0-9]+", "", change.group(1).casefold())
         expected = change.group(3).strip().strip("\"'“”")
-        actual = lines.get(field)
-        if actual is None or actual[1].casefold() != expected.casefold():
+        matches = [entry for entry in lines if entry[0] == field]
+        if len(matches) != 1 or matches[0][2].casefold() != expected.casefold():
             return None
         if field not in verified_labels:
-            verified_fields.append((actual[0], actual[1]))
+            verified_fields.append((matches[0][1], matches[0][2]))
             verified_labels.add(field)
 
     if verified_fields:
@@ -2575,6 +2709,9 @@ class AdamBrain:
         last_desktop_attempt: tuple[
             str, bytes | str | tuple[bytes, tuple[str, ...]]
         ] | None = None
+        # Per-turn provenance for the latest desktop screenshot. Set only from
+        # a dispatched computer_control input action and its focused-window image.
+        readback_screenshot_is_trusted = False
         desktop_no_progress_repeats = 0
         desktop_no_progress_reason: str | None = None
         desktop_unchanged_screen_count = 0
@@ -2823,6 +2960,7 @@ class AdamBrain:
                     user_text,
                     content,
                     _desktop_tool_evidence_for_final_answer(last_tool_output, self.messages),
+                    has_fresh_screenshot=readback_screenshot_is_trusted,
                 )
                 if readback_summary:
                     content = readback_summary
@@ -3036,6 +3174,13 @@ class AdamBrain:
                         earcon = getattr(self.arbiter, "earcon", None) if self.arbiter else None
                         if earcon is not None:
                             earcon.play("captured")
+                    if (
+                        name in DESKTOP_MUTATION_TOOLS
+                        or name in {"observe_desktop", "capture_screenshot"}
+                    ):
+                        # Any later desktop input or standalone observation
+                        # supersedes this turn's previous screenshot provenance.
+                        readback_screenshot_is_trusted = False
                     started = asyncio.get_running_loop().time()
                     try:
                         if idx in parallel_results:
@@ -3051,13 +3196,31 @@ class AdamBrain:
                             tool_output = raw_output.message
                             tool_status = raw_output.status
                             dispatched = raw_output.dispatched
+                            readback_screenshot_is_trusted = bool(
+                                name == "computer_control"
+                                and _is_state_changing_computer_control_action(args)
+                                and tool_status in {"ok", "partial"}
+                                and dispatched is True
+                                and raw_output.screenshot
+                                # ComputerController keeps the scope bound to
+                                # the action-capable snapshot until a new inspect.
+                                and getattr(self.computer_controller, "_scope", None) == "window"
+                            )
                             if raw_output.status == "ok" and raw_output.snapshot_id:
                                 turn_snapshot_id = raw_output.snapshot_id
                             elif name in {"computer_control", "drag", "drop"}:
                                 turn_snapshot_id = None
                             if (
                                 name in {"computer_control", "drag", "drop"}
-                                and tool_status == "ok"
+                                and (
+                                    tool_status == "ok"
+                                    or (
+                                        name == "computer_control"
+                                        and isinstance(args, dict)
+                                        and args.get("action") == "sequence"
+                                        and tool_status == "partial"
+                                    )
+                                )
                                 and dispatched is True
                             ):
                                 signature_args = dict(args) if isinstance(args, dict) else {}
@@ -3392,6 +3555,20 @@ class AdamBrain:
                     span_id=new_span_id(), component="brain", status="recovering",
                     attributes={"attempt": tool_recovery_attempts, "max_attempts": 3},
                 )
+                partial_desktop_sequence = any(
+                    name == "computer_control"
+                    and isinstance(args, dict)
+                    and args.get("action") == "sequence"
+                    and status == "partial"
+                    for name, args, _output, status in executed_hop_results
+                )
+                desktop_recovery_guidance = (
+                    " Use a fresh desktop observation before any further input. Treat successful sequence steps "
+                    "reported in the result as completed and omit them from any new call. Choose and dispatch "
+                    "only the next action grounded in that fresh observation; if no fresh observation is available, "
+                    "inspect first."
+                    if partial_desktop_sequence else ""
+                )
                 self.messages.append({
                     "role": "user",
                     "content": (
@@ -3401,6 +3578,7 @@ class AdamBrain:
                         "partially dispatched action, inspect its current effects before repeating it. "
                         "Do not repeat a write, click, or other action blindly; do not expand authorization "
                         "or claim completion. If no permitted recovery exists, explain the blocker."
+                        + desktop_recovery_guidance
                     ),
                 })
 
@@ -3426,7 +3604,11 @@ class AdamBrain:
                 screenshot_instruction = (
                     "Fresh desktop observation after the preceding action. Treat this as current state, "
                     "compare it with the user's requested outcome, and continue or answer only when the "
-                    "requested result is supported by evidence."
+                    "requested result is supported by evidence. If the user asks what text or value was "
+                    "saved, entered, or selected, read back the exact visible text or value when it is "
+                    "legible; do not replace a requested readback with a generic completion claim. Say "
+                    "you cannot verify it only when the relevant evidence in this observation is actually "
+                    "unreadable or ambiguous."
                 )
                 self.messages.append({
                     "role": "user",
@@ -3490,6 +3672,7 @@ class AdamBrain:
                 user_text,
                 final_content,
                 _desktop_tool_evidence_for_final_answer(last_tool_output, self.messages),
+                has_fresh_screenshot=readback_screenshot_is_trusted,
             )
             if readback_summary:
                 final_content = readback_summary

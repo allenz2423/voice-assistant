@@ -268,6 +268,49 @@ async def test_find_files_missing_directory_is_retried_as_a_tool_failure(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_partial_desktop_sequence_recovery_uses_fresh_next_action_and_repeat_guard():
+    from src.llm.brain import AdamBrain
+    from src.tools.computer_control import ComputerControlResult
+
+    sequence = {
+        "action": "sequence",
+        "snapshot_id": "fresh-snapshot",
+        "actions": [
+            {"action": "click", "x": 80, "y": 45},
+            {"action": "type", "text": "fixture"},
+        ],
+    }
+    partial = ComputerControlResult(
+        "Sequence stopped after a step did not complete successfully. Step 1/2 (click): ok.",
+        status="partial",
+        dispatched=True,
+    )
+    brain = AdamBrain(_config(), None, None, None, _DummyTTS())
+    brain.llm_client = _DummyClient("local", [
+        {"content": "", "tool_calls": [{"id": "sequence-1", "function": {
+            "name": "computer_control", "arguments": sequence,
+        }}]},
+        {"content": "", "tool_calls": [{"id": "sequence-2", "function": {
+            "name": "computer_control", "arguments": sequence,
+        }}]},
+        {"content": "The sequence is still blocked.", "tool_calls": []},
+    ])
+
+    from unittest.mock import AsyncMock
+    brain._execute_tool = AsyncMock(return_value=partial)
+
+    with patch("src.llm.brain.get_open_windows_prompt_context", return_value="Synthetic desktop"):
+        await brain.process_user_utterance("Enter fixture in the current app")
+
+    assert brain._execute_tool.await_count == 2
+    recovery = brain.llm_client.requests[1][-1]["content"]
+    assert "fresh desktop observation" in recovery
+    assert "omit them" in recovery
+    assert "only the next action grounded" in recovery
+    assert "same desktop action left the screen unchanged" in brain.tts.spoken[-1].lower()
+
+
+@pytest.mark.asyncio
 async def test_capability_refusal_recovery_stops_after_three_reprompts():
     from src.llm.brain import AdamBrain
 
@@ -856,6 +899,21 @@ def test_plain_text_save_reopen_guard_requires_post_save_matching_content_readba
         "The saved values read back are: SUPPLIER: Juniper Labs; "
         "INVOICE IDS: INV-0055, INV-0056; OVERDUE TOTAL: $2,175.00; REVIEW: Complete."
     )
+
+
+def test_saved_file_readback_rejects_competing_header_resolutions():
+    from src.llm.brain import _saved_file_readback_summary
+
+    assert _saved_file_readback_summary(
+        "Replace TBD supplier invoice IDs with the selected values.",
+        "SUPPLIER INVOICE IDS: Combined value\n"
+        "SUPPLIER: Juniper Labs\n"
+        "INVOICE IDS: INV-0055, INV-0056\n",
+    ) is None
+    assert _saved_file_readback_summary(
+        "Replace TBD total with the selected value.",
+        "TOTAL: $2,175.00\nOVERDUE TOTAL: $2,175.00\n",
+    ) is None
 
 
 @pytest.mark.asyncio

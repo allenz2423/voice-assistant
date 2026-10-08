@@ -50,7 +50,11 @@ class MeetingSession:
         self.started_at: datetime | None = None
         self._started_monotonic = 0.0
         self._accepting = False
+        self._capture_suspended = False
+        self._capture_suspension_ids: set[int] = set()
+        self._next_capture_suspension_id = 0
         self._lock = threading.RLock()
+        self._lifecycle_lock = threading.Lock()
         self._audio_queue: queue.Queue = queue.Queue(maxsize=self.audio_queue_size)
         self._segment_queue: queue.Queue = queue.Queue(maxsize=self.segment_queue_size)
         self._audio_thread: threading.Thread | None = None
@@ -76,68 +80,127 @@ class MeetingSession:
         return self.active and self.elapsed_seconds >= self.max_duration_seconds
 
     def start(self) -> Path:
+        if not self._lifecycle_lock.acquire(blocking=False):
+            raise RuntimeError("Meeting session is transitioning")
+        try:
+            startup_attempted = False
+            try:
+                with self._lock:
+                    if self._accepting:
+                        raise RuntimeError("A meeting session is already active")
+                    startup_attempted = True
+                    self._capture_suspension_ids.clear()
+                    self._capture_suspended = False
+                    self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    os.chmod(self.root, 0o700)
+                    self.started_at = datetime.now().astimezone()
+                    stamp = self.started_at.strftime("%Y%m%d-%H%M%S")
+                    self.session_dir = self.root / f"meeting-{stamp}"
+                    suffix = 1
+                    while self.session_dir.exists():
+                        self.session_dir = self.root / f"meeting-{stamp}-{suffix}"
+                        suffix += 1
+                    self.session_dir.mkdir(mode=0o700)
+                    self.audio_path = self.session_dir / "meeting.wav"
+                    self.transcript_path = self.session_dir / "transcript.txt"
+                    self.turns_path = self.session_dir / "turns.jsonl"
+                    self.transcript_path.touch(mode=0o600)
+                    self.turns_path.touch(mode=0o600)
+                    os.chmod(self.transcript_path, 0o600)
+                    os.chmod(self.turns_path, 0o600)
+                    self._started_monotonic = time.monotonic()
+                    self._audio_drops = self._transcript_drops = self._written_samples = 0
+                    self._stop_reason = ""
+                    self._audio_queue = queue.Queue(maxsize=self.audio_queue_size)
+                    self._segment_queue = queue.Queue(maxsize=self.segment_queue_size)
+                    self._audio_thread = threading.Thread(
+                        target=self._write_and_segment_audio, name="adam-meeting-audio", daemon=True
+                    )
+                    self._segment_thread = threading.Thread(
+                        target=self._process_segments, name="adam-meeting-transcription", daemon=True
+                    )
+                    # Keep capture disabled until every startup step has succeeded.
+                    self._audio_thread.start()
+                    self._segment_thread.start()
+                    metadata = {
+                        "started_at": self.started_at.isoformat(),
+                        "sample_rate": self.sample_rate,
+                        "max_duration_seconds": self.max_duration_seconds,
+                        "audio_file": self.audio_path.name,
+                        "transcript_file": self.transcript_path.name,
+                        "speaker_turns_file": self.turns_path.name,
+                    }
+                    self._write_metadata(metadata)
+                    self._accepting = True
+                    return self.session_dir
+            except BaseException:
+                if startup_attempted:
+                    self._rollback_failed_start()
+                raise
+        finally:
+            self._lifecycle_lock.release()
+
+    def _rollback_failed_start(self) -> None:
+        """Stop any workers created by a partial start and leave capture inactive."""
         with self._lock:
-            if self._accepting:
-                raise RuntimeError("A meeting session is already active")
-            self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-            os.chmod(self.root, 0o700)
-            self.started_at = datetime.now().astimezone()
-            stamp = self.started_at.strftime("%Y%m%d-%H%M%S")
-            self.session_dir = self.root / f"meeting-{stamp}"
-            suffix = 1
-            while self.session_dir.exists():
-                self.session_dir = self.root / f"meeting-{stamp}-{suffix}"
-                suffix += 1
-            self.session_dir.mkdir(mode=0o700)
-            self.audio_path = self.session_dir / "meeting.wav"
-            self.transcript_path = self.session_dir / "transcript.txt"
-            self.turns_path = self.session_dir / "turns.jsonl"
-            self.transcript_path.touch(mode=0o600)
-            self.turns_path.touch(mode=0o600)
-            os.chmod(self.transcript_path, 0o600)
-            os.chmod(self.turns_path, 0o600)
-            self._started_monotonic = time.monotonic()
-            self._audio_drops = self._transcript_drops = self._written_samples = 0
-            self._stop_reason = ""
-            self._audio_queue = queue.Queue(maxsize=self.audio_queue_size)
-            self._segment_queue = queue.Queue(maxsize=self.segment_queue_size)
-            self._accepting = True
-            self._audio_thread = threading.Thread(
-                target=self._write_and_segment_audio, name="adam-meeting-audio", daemon=True
-            )
-            self._segment_thread = threading.Thread(
-                target=self._process_segments, name="adam-meeting-transcription", daemon=True
-            )
-            self._audio_thread.start()
-            self._segment_thread.start()
-            metadata = {
-                "started_at": self.started_at.isoformat(),
-                "sample_rate": self.sample_rate,
-                "max_duration_seconds": self.max_duration_seconds,
-                "audio_file": self.audio_path.name,
-                "transcript_file": self.transcript_path.name,
-                "speaker_turns_file": self.turns_path.name,
-            }
-            self._write_metadata(metadata)
-            return self.session_dir
+            self._accepting = False
+            self._capture_suspension_ids.clear()
+            self._capture_suspended = False
+            audio_thread = self._audio_thread
+            segment_thread = self._segment_thread
+
+        audio_started = audio_thread is not None and audio_thread.ident is not None
+        if audio_started:
+            while audio_thread.is_alive():
+                try:
+                    self._audio_queue.put(None, timeout=0.1)
+                    break
+                except queue.Full:
+                    continue
+            audio_thread.join()
+        elif segment_thread is not None and segment_thread.ident is not None:
+            self._segment_queue.put(None)
+
+        if segment_thread is not None and segment_thread.ident is not None:
+            segment_thread.join()
+
+        with self._lock:
+            self._audio_thread = None
+            self._segment_thread = None
 
     def enqueue_audio(self, audio: np.ndarray) -> bool:
         """Nonblocking audio callback for AudioStreamManager's capture thread."""
         with self._lock:
-            if not self._accepting:
+            if not self._accepting or self._capture_suspended:
                 return False
-        if self.elapsed_seconds >= self.max_duration_seconds:
-            return False
-        chunk = np.asarray(audio, dtype=np.float32).reshape(-1)
-        if chunk.size == 0:
-            return True
-        try:
-            self._audio_queue.put_nowait(chunk.copy())
-            return True
-        except queue.Full:
-            with self._lock:
+            if self.elapsed_seconds >= self.max_duration_seconds:
+                return False
+            chunk = np.asarray(audio, dtype=np.float32).reshape(-1)
+            if chunk.size == 0:
+                return True
+            try:
+                self._audio_queue.put_nowait(chunk.copy())
+                return True
+            except queue.Full:
                 self._audio_drops += 1
-            return False
+                return False
+
+    def suspend_capture(self) -> int | None:
+        """Temporarily exclude audio while Adam speaks a meeting acknowledgement."""
+        with self._lock:
+            if not self._accepting:
+                return None
+            self._next_capture_suspension_id += 1
+            suspension_id = self._next_capture_suspension_id
+            self._capture_suspension_ids.add(suspension_id)
+            self._capture_suspended = True
+            return suspension_id
+
+    def resume_capture(self, suspension_id: int | None) -> None:
+        with self._lock:
+            if suspension_id is not None:
+                self._capture_suspension_ids.discard(suspension_id)
+            self._capture_suspended = bool(self._capture_suspension_ids)
 
     def append_turn(
         self,
@@ -169,10 +232,16 @@ class MeetingSession:
             os.chmod(self.transcript_path, 0o600)
 
     def stop(self, reason: str = "user") -> Path | None:
+        with self._lifecycle_lock:
+            return self._stop_locked(reason)
+
+    def _stop_locked(self, reason: str) -> Path | None:
         with self._lock:
             if not self._accepting:
                 return self.session_dir
             self._accepting = False
+            self._capture_suspension_ids.clear()
+            self._capture_suspended = False
             self._stop_reason = reason
         # The audio thread drains all queued frames, finalizes its last speech
         # segment, and then closes the WAV before returning.
@@ -199,6 +268,10 @@ class MeetingSession:
                 "written_audio_seconds": round(self._written_samples / self.sample_rate, 3),
             })
             self._write_metadata(metadata)
+            self._audio_thread = None
+            self._segment_thread = None
+            self._capture_suspension_ids.clear()
+            self._capture_suspended = False
             return self.session_dir
 
     def _write_and_segment_audio(self) -> None:

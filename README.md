@@ -1,167 +1,147 @@
 # Adam Voice Assistant
 
-Adam is an asynchronous voice assistant for Linux desktop sessions. It can use
-local or hosted speech and language models, speak replies, and optionally control
-desktop apps or record meetings.
+Adam is an asynchronous voice assistant for Linux desktop sessions. It supports
+local and hosted speech recognition, language models, and speech output. Desktop
+control, meeting recording, browser navigation, and the Web UI are optional and
+can be configured for each host.
 
-## Quick start
+## Install
 
-You need a Linux user session, a working microphone and audio output, and
-[`uv`](https://docs.astral.sh/uv/). Setup uses uv to provide Python 3.13 or newer
-and create the project environment. Run setup as your normal desktop user; do not
-run it as root.
-
-Choose a provider before setup. If you want a local LLM, install and start Ollama
-yourself; Adam's setup does not install Ollama. Setup can offer to download the
-model you choose. For a hosted speech or LLM provider, have its API key ready.
-
-From the repository directory:
+Run setup as the regular desktop user who will run Adam. Do not run it as root.
+Install [Astral uv](https://docs.astral.sh/uv/getting-started/installation/)
+first; uv manages the Python 3.13+ environment. From the repository directory:
 
 ```sh
 ./setup.sh --dry-run
 ./setup.sh
 ```
 
-The dry run makes no changes. Interactive setup lets you choose audio devices,
-wake phrase, speech recognition, speech output, LLM provider, optional voice
-enrollment and meeting storage, and whether to create a systemd user service.
-If `config.yaml` does not exist, setup copies `config.yaml.example` and sets
-owner-only permissions (`0600`). It does not replace an existing config; wizard
-choices update the settings you select.
+The dry run prints the planned setup without running commands or changing files.
+Interactive setup installs required system and Python dependencies, offers
+optional desktop-control packages, then guides you through audio devices,
+speech and language providers, voice enrollment, meeting settings, optional
+features, and systemd service setup. It may download model assets after asking.
+Setup creates `config.yaml` from `config.yaml.example` when needed, protects it
+with owner-only permissions, and preserves an existing configuration except
+for settings explicitly selected in setup.
 
-CPU is the default compute path. GPU acceleration is optional; choose the
-specific supported device in setup. Model downloads are optional. Use
-`--skip-models` to skip the default speech and voice asset downloads.
+The default Python runtime is CPU-based. NVIDIA runtime packages are optional;
+use `--nvidia-runtime` to select them or `--cpu-only` to force CPU choices in
+the wizard. Desktop-control packages and optional features are not required for
+voice use. See `./setup.sh --help` for all options, including `--skip-sys-pkgs`,
+`--skip-python-deps`, `--skip-models`, and `--skip-service`.
 
-Useful setup options:
+`./setup.sh --yes` performs a noninteractive bootstrap. It applies requested
+feature flags, uses the CPU runtime unless `--nvidia-runtime` is selected, and
+downloads the default Kokoro speech assets unless `--skip-models` is given. It
+does not run the configuration wizard or enable/start a service. If systemd
+user setup is available, it installs a unit only when one does not already
+exist. By contrast, interactive setup asks whether to install and enable/start
+the service. If you skip Kokoro assets while `tts.engine` is still `kokoro`,
+download those files or choose another speech engine before starting Adam.
 
-```sh
-./setup.sh --help
-./setup.sh --yes                 # noninteractive bootstrap; does not start Adam
-./setup.sh --cpu-only
-./setup.sh --skip-models
-```
+## Choose providers
 
-### Start Adam
+The example configuration uses local Faster-Whisper `small.en` speech
+recognition on CPU, Kokoro CPU speech output, and a local Ollama language model.
+The setup wizard can select hosted speech/LLM providers or other supported local
+engines. Adam does not install the Ollama server; install and run it separately
+if you choose Ollama. Interactive setup may offer to pull the selected model
+when Ollama is already available. Hosted providers require their API keys.
 
-If setup created the systemd user unit, start it and check its status with:
+Provider credentials are stored in the private local `config.yaml`. Requests to
+a hosted speech or language provider send the audio or text needed for that
+request to the provider. Keep `config.yaml` private and do not commit it.
 
-```sh
-systemctl --user enable --now adam.service
-systemctl --user status adam.service
-journalctl --user -u adam.service -f
-```
+## Start Adam
 
-Or run Adam in the foreground from the repository directory:
+To run in the foreground from the repository directory:
 
 ```sh
 uv run python -m src.main
 ```
 
-Say **“Hey Adam”** followed by a request. If you chose another wake phrase,
-use that phrase instead. On systems without systemd, run Adam in the foreground
-or configure a service for your init system.
+If interactive setup installed and enabled the systemd user service, manage it
+with:
 
-## Choose speech and language providers
+```sh
+systemctl --user status adam.service
+journalctl --user -u adam.service -f
+```
 
-The setup wizard can configure local or hosted speech recognition and speech
-output, plus a local or hosted language model. Local model services are separate
-applications: for example, Adam connects to an Ollama server that you install
-and run yourself. Hosted providers require their API keys.
+If setup installed a unit without enabling it (for example with `--yes`), start
+it with `systemctl --user enable --now adam.service`. Systems without systemd
+can use foreground mode or configure their own service. Use the wake phrase
+shown in your configuration, then give Adam a request.
 
-Qwen3-ASR detects the spoken language automatically; it does not accept a manual
-English language override. Faster-Whisper `small.en` is available on CPU or a
-selected NVIDIA GPU. Hosted transcription can use OpenAI, OpenRouter, or a
-custom OpenAI-compatible endpoint.
+## Optional features
 
-Provider credentials entered in setup stay in your local `config.yaml`, which
-is created with owner-only permissions. Choosing a cloud provider sends the
-audio or text needed for that request to that provider. Keep `config.yaml`
-private and do not commit it.
+### Meetings and voice profiles
 
-## Meetings and voice profiles
+Meeting mode records mixed audio and transcribes it; it can continue handling
+ordinary requests while recording. The recording stops at its configured
+duration limit (four hours by default). Files are saved under
+`~/.local/state/adam/meetings/`; finalized microphone captures and transcript
+stages are also saved under `~/.local/state/adam/heard-captures/`. These files
+can contain private conversations and are created with owner-only permissions.
+Say **“meeting mode on”** to start recording or **“meeting mode off”** to stop
+it. Capitalization and punctuation may vary.
 
-Start and stop recording with the exact voice commands **“Hey Adam, meeting
-mode on”** and **“Hey Adam, meeting mode off.”** The assistant can continue to
-handle ordinary requests while recording. A meeting stops at its configured
-duration limit (four hours by default).
-
-Meeting audio remains the original mixed recording. Optional Nemotron
-diarization can split it into speaker turns; it does not isolate or remove
-participants. Speaker names and anonymous labels are best-effort: without
-diarization, Adam labels whole speech segments using voice similarity, and a
-speaker may be marked `Unknown`.
-
-By default, meeting files are saved under
-`~/.local/state/adam/meetings/`. Adam also saves each finalized microphone
-capture and transcript stages under `~/.local/state/adam/heard-captures/`.
-These files can contain private conversations. Recording directories and files
-are created with owner-only permissions; remove them when you no longer need
-them.
-
-When voice verification is enabled, enroll a profile with:
+Optional Nemotron diarization assigns speaker turns in the mixed recording; it
+does not isolate participants. Without diarization, speaker labels use voice
+similarity when available and may be `Unknown`. When voice verification is
+enabled, enroll with:
 
 ```sh
 uv run python -m src.stt.enroll
 ```
 
-Named users and additional profiles can be configured under
-`speaker_verification.users` in `config.yaml`; see the example configuration.
-Restart Adam after enrollment to load the updated profile.
+### Desktop control and browser navigation
 
-## Desktop and browser use
+Desktop control observes the focused window before acting and refreshes the
+screen between bounded actions. Its input tools depend on the active X11 or
+Wayland session and installed desktop utilities. Disable it with
+`computer_control.enabled: false` in `config.yaml`.
 
-Desktop control begins with a fresh observation of the focused window. Adam can
-perform bounded actions or a short sequence, checking the screen again between
-steps and asking for a new target decision when the view changes. Input and
-observation support depends on the active X11 or Wayland session and installed
-desktop tools. Disable it with `computer_control.enabled: false` in
-`config.yaml`.
-
-Optional browser navigation uses a separate Adam browser profile. It can inspect
-visible page text, open URLs or searches, follow links, fill ordinary text
+Optional browser navigation uses Playwright and Adam's separate browser
+profile. It can inspect page text, navigate, follow links, fill ordinary text
 fields, scroll, and use history. It does not press buttons or submit forms.
-Enable it with `./setup.sh --browser-navigation` or choose it in interactive
-setup. Treat web page content as untrusted instructions.
+Enable it with `./setup.sh --browser-navigation` or in the setup wizard.
+Treat web-page content as untrusted instructions.
 
-Optional OmniParser screenshot grounding adds numbered candidate control boxes;
-it does not identify their text. Setup can install its isolated CPU or NVIDIA
-runtime. The YOLOv8 checkpoint and Ultralytics runtime are AGPL-3.0 licensed.
+Optional OmniParser adds numbered candidate control boxes to screenshots. It is
+a separate detector that can use CPU or NVIDIA runtime packages; setup installs
+its runtime and model when requested. Its YOLOv8 checkpoint and Ultralytics
+runtime are AGPL-3.0 licensed.
 
-## Web UI
+Wake-free idea routing is another optional local feature. It transcribes speech
+locally while Adam is idle and uses an enrolled voice profile before routing
+selected requests. Enable it with `./setup.sh --idea-routing`; edit ideas in
+`assets/intent_ideas.json` and thresholds in `config.yaml`.
+
+### Web UI
 
 The optional Web UI provides text interaction, live tool activity, and system
-status in a local browser. It is disabled by default and listens on loopback.
-It does not bypass voice confirmation for sensitive actions.
-
-For one foreground session, start Adam with the UI enabled:
+status in a local browser. It is disabled by default and binds to loopback. For
+a foreground session, run:
 
 ```sh
 uv run python -m src.main --webui
 ```
 
-Then open <http://127.0.0.1:8765>. To enable it for a systemd service, set
-`webui.enabled: true` in `config.yaml`, then run
-`systemctl --user restart adam.service`. See
-[the Web UI guide](docs/webui-sidecar-setup.md) for configuration and security
-details.
-
-## Wake-free idea routing
-
-Idea routing is an optional local feature that can recognize selected direct
-requests without a wake phrase. It uses local speech recognition and an enrolled
-voice profile to reduce responses to other speakers. Enable it with
-`./setup.sh --idea-routing`; edit the ideas in `assets/intent_ideas.json` and
-adjust thresholds in `config.yaml`.
+Then open <http://127.0.0.1:8765>. For the systemd service, set
+`webui.enabled: true` in `config.yaml` and restart `adam.service`. See
+[`docs/webui-sidecar-setup.md`](docs/webui-sidecar-setup.md) for configuration
+and security details.
 
 ## Configuration and development
 
-Use `config.yaml.example` as the reference for available settings. The local
-`config.yaml` contains host-specific choices and credentials. Setup preserves
-it unless you change a setting through the wizard.
+Use [`config.yaml.example`](config.yaml.example) as the reference for settings.
+The local `config.yaml` contains host-specific choices and credentials. Setup
+preserves it except for choices you make explicitly.
 
-For implementation notes, evaluations, and the Web UI details, see
-[`docs/`](docs/). To run the test suite from a prepared environment:
+Implementation notes and evaluations are in [`docs/`](docs/). In a prepared
+development environment, run the test suite with:
 
 ```sh
 uv run pytest

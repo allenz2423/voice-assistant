@@ -151,7 +151,8 @@ class ReferenceAudioMonitor:
 class AudioStreamManager:
     """Continuous audio capture from default mic at 16kHz mono with dynamic VAD and speaker reference monitor."""
     def __init__(self, target_source="Adam_Clean_Mic", sample_rate=16000, chunk_size=512):
-        setup_mic_routing(target_source)
+        self.target_source = (target_source or "default").strip()
+        setup_mic_routing(self.target_source)
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size  # 512 samples = 32ms at 16kHz
         self.pulse_idx = None
@@ -178,16 +179,74 @@ class AudioStreamManager:
             return
         import sounddevice as sd
         self.pulse_idx = resolve_pulse_device_index()
-        self.running = True
-        self.stream = sd.InputStream(
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="float32",
-            blocksize=self.chunk_size,
-            device=self.pulse_idx,
-            callback=self._audio_callback
-        )
-        self.stream.start()
+        stream = None
+        try:
+            stream = sd.InputStream(
+                samplerate=self.sample_rate,
+                channels=1,
+                dtype="float32",
+                blocksize=self.chunk_size,
+                device=self.pulse_idx,
+                callback=self._audio_callback
+            )
+            self.stream = stream
+            self.running = True
+            stream.start()
+        except Exception as e:
+            self.running = False
+            self.stream = None
+            if stream is not None:
+                for cleanup in (stream.stop, stream.close):
+                    try:
+                        cleanup()
+                    except Exception:
+                        pass
+
+            if self.target_source.lower() != "default":
+                if stream is None:
+                    raise RuntimeError(
+                        f"Could not open configured audio input source "
+                        f"'{self.target_source}' (device {self.pulse_idx}): {e}"
+                    ) from e
+                raise
+
+            print(
+                f"[Audio] Notice: Could not open/start PulseAudio input device "
+                f"{self.pulse_idx} ({e}); retrying with the system default source.",
+                flush=True,
+            )
+            orig_pulse_source = os.environ.get("PULSE_SOURCE")
+            os.environ.pop("PULSE_SOURCE", None)
+            try:
+                stream = sd.InputStream(
+                    samplerate=self.sample_rate,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=self.chunk_size,
+                    device=None,
+                    callback=self._audio_callback
+                )
+            finally:
+                if orig_pulse_source is not None:
+                    os.environ["PULSE_SOURCE"] = orig_pulse_source
+                else:
+                    os.environ.pop("PULSE_SOURCE", None)
+
+            self.stream = stream
+            self.running = True
+            try:
+                stream.start()
+            except Exception:
+                # PortAudio may have partially opened the device before
+                # start() raises. Release it and reset state before returning.
+                self.running = False
+                self.stream = None
+                for cleanup in (stream.stop, stream.close):
+                    try:
+                        cleanup()
+                    except Exception:
+                        pass
+                raise
         if self.ref_monitor:
             self.ref_monitor.start()
 

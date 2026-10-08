@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="theme-color" content="#16191f">
+  <meta name="theme-color" content="#0b0e14">
   <meta name="description" content="Adam - Voice-First Autonomous Linux Desktop Assistant Web Interface">
   <title>Adam // Assistant Dashboard</title>
   <link rel="stylesheet" href="/static/style.css">
@@ -17,7 +17,7 @@
       <div class="brand">
         <div class="brand-logo" aria-hidden="true">
           <svg viewBox="0 0 32 32" fill="none" class="brand-svg">
-            <path d="M16 3L28 27H21.5L16 15L10.5 27H4L16 3Z" fill="currentColor"/>
+            <path d="M16 3.5L28 26.5H21.5L16 15L10.5 26.5H4L16 3.5Z" fill="currentColor"/>
             <circle cx="16" cy="19" r="2.5" fill="var(--plasma-cyan)"/>
           </svg>
         </div>
@@ -27,36 +27,40 @@
         </div>
       </div>
 
-      <!-- Header Status Cluster -->
+      <!-- Header Status Indicators -->
       <div class="header-badges" role="region" aria-label="System status indicators">
-        <div id="connBadge" class="badge badge-offline" role="status" aria-label="Connection status">
-          <span class="indicator-dot" aria-hidden="true"></span>
-          <span id="connText">Connecting...</span>
+        <div class="badge-cluster badge-cluster-status">
+          <div id="connBadge" class="badge badge-offline" role="status" aria-label="Connection status" title="WebSocket connection to local daemon">
+            <span class="indicator-dot" aria-hidden="true"></span>
+            <span id="connText">Connecting...</span>
+          </div>
+
+          <div id="stateBadge" class="badge badge-state" role="status" aria-label="Runtime state" title="Adam arbiter execution state">
+            <span class="indicator-dot" aria-hidden="true"></span>
+            <span id="stateText">IDLE</span>
+          </div>
         </div>
 
-        <div id="stateBadge" class="badge badge-state" role="status" aria-label="Runtime state">
-          <span class="indicator-dot" aria-hidden="true"></span>
-          <span id="stateText">IDLE</span>
-        </div>
+        <div class="badge-cluster badge-cluster-meta">
+          <button id="authBadge" type="button" class="badge badge-auth badge-auth-off" title="Authentication status (click to configure token)" aria-haspopup="dialog" aria-expanded="false" aria-label="Authentication settings">
+            <span class="indicator-dot" aria-hidden="true"></span>
+            <span id="authText">Auth: Checking...</span>
+          </button>
 
-        <button id="authBadge" type="button" class="badge badge-auth badge-auth-off" title="Authentication status (click to configure token)" aria-haspopup="dialog" aria-expanded="false" aria-label="Authentication settings">
-          <span class="indicator-dot" aria-hidden="true"></span>
-          <span id="authText">Auth: Checking...</span>
-        </button>
+          <div class="badge badge-voice" title="Adam prioritizes voice interaction with microphone barge-in">
+            <svg class="badge-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path d="M8 1a2.5 2.5 0 0 0-2.5 2.5v5A2.5 2.5 0 0 0 8 11a2.5 2.5 0 0 0 2.5-2.5v-5A2.5 2.5 0 0 0 8 1z"/>
+              <path d="M4 7.5a.5.5 0 0 0-1 0A5 5 0 0 0 7.5 12.45V14H6a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1H8.5v-1.55A5 5 0 0 0 13 7.5a.5.5 0 0 0-1 0 4 4 0 0 1-8 0z"/>
+            </svg>
+            <span>Voice: Primary</span>
+          </div>
 
-        <div class="badge badge-voice" title="Adam prioritizes voice interaction with microphone barge-in">
-          <svg class="badge-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path d="M8 1a2.5 2.5 0 0 0-2.5 2.5v5A2.5 2.5 0 0 0 8 11a2.5 2.5 0 0 0 2.5-2.5v-5A2.5 2.5 0 0 0 8 1z"/>
-            <path d="M4 7.5a.5.5 0 0 0-1 0A5 5 0 0 0 7.5 12.45V14H6a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1H8.5v-1.55A5 5 0 0 0 13 7.5a.5.5 0 0 0-1 0 4 4 0 0 1-8 0z"/>
-          </svg>
-          <span>Voice: Primary</span>
-        </div>
-
-        <div class="badge badge-loopback" title="Bound strictly to loopback interface">
-          <svg class="badge-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path d="M8 0c-.3 0-.6.1-.8.3L2.2 4.3C1.5 4.9 1 5.8 1 6.8V11c0 3.3 3.5 5 7 5s7-1.7 7-5V6.8c0-1-.5-1.9-1.2-2.5L8.8.3C8.6.1 8.3 0 8 0zm0 1.5l5 4.2c.4.3.7.8.7 1.3V11c0 2.5-2.7 3.8-5.7 3.8S2.3 13.5 2.3 11V7c0-.5.3-1 .7-1.3l5-4.2z"/>
-          </svg>
-          <span id="hostText">127.0.0.1</span>
+          <div class="badge badge-loopback" title="Bound strictly to loopback interface">
+            <svg class="badge-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+              <path d="M8 0c-.3 0-.6.1-.8.3L2.2 4.3C1.5 4.9 1 5.8 1 6.8V11c0 3.3 3.5 5 7 5s7-1.7 7-5V6.8c0-1-.5-1.9-1.2-2.5L8.8.3C8.6.1 8.3 0 8 0zm0 1.5l5 4.2c.4.3.7.8.7 1.3V11c0 2.5-2.7 3.8-5.7 3.8S2.3 13.5 2.3 11V7c0-.5.3-1 .7-1.3l5-4.2z"/>
+            </svg>
+            <span id="hostText">127.0.0.1</span>
+          </div>
         </div>
       </div>
     </header>
@@ -112,7 +116,10 @@
               </svg>
               <span>Clear View</span>
             </button>
-            <span class="live-pill" title="Live bidirectional session via WebSocket">Live ReAct</span>
+            <span class="live-pill" title="Live bidirectional session via WebSocket">
+              <span class="live-pill-dot" aria-hidden="true"></span>
+              <span>Live ReAct</span>
+            </span>
           </div>
         </div>
 
@@ -122,13 +129,21 @@
             <!-- Welcome / Architecture Notice -->
             <div class="system-notice" role="note">
               <div class="notice-icon" aria-hidden="true">
-                <svg viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1zm0 2.5a1 1 0 1 1 0 2 1 1 0 0 1 0-2zm1.2 8.5H6.8v-1h1.2V7.5H7V6.5h2.2v5.5z"/>
+                <svg viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clip-rule="evenodd"/>
                 </svg>
               </div>
               <div class="notice-content">
-                <strong>Adam Assistant Active</strong>
+                <div class="notice-header">
+                  <strong>Adam Assistant Active</strong>
+                  <span class="notice-badge">Autonomous Linux Assistant</span>
+                </div>
                 <p>Conversation and desktop tools execute through Adam's live ReAct engine. Microphone audio remains the primary interaction channel with real-time barge-in interruption. Meeting mode provides continuous recording with speaker diarization.</p>
+                <div class="notice-pills">
+                  <span class="notice-pill">🎤 Voice Barge-in</span>
+                  <span class="notice-pill">🖥️ Grounded Desktop Control</span>
+                  <span class="notice-pill">👥 Meeting Diarization</span>
+                </div>
               </div>
             </div>
           </div>
@@ -138,7 +153,7 @@
             <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
               <path fill-rule="evenodd" d="M8 1a.5.5 0 0 1 .5.5v11.793l3.146-3.147a.5.5 0 0 1 .708.708l-4 4a.5.5 0 0 1-.708 0l-4-4a.5.5 0 0 1 .708-.708L7.5 13.293V1.5A.5.5 0 0 1 8 1z"/>
             </svg>
-            <span>Latest</span>
+            <span>Jump to latest</span>
           </button>
         </div>
 
@@ -150,19 +165,36 @@
 
         <!-- Quick Actions & Meeting Controls Bar -->
         <div class="quick-prompts-container" role="region" aria-label="Quick actions and controls">
-          <div class="quick-prompts-label" aria-hidden="true">Suggestions &amp; Controls:</div>
+          <div class="quick-prompts-label" aria-hidden="true">Suggestions:</div>
           <div class="quick-prompts" role="group">
-            <button type="button" class="prompt-chip chip-action" data-prompt="meeting mode on" title="Start continuous meeting recording and speaker diarization">
-              <span class="chip-icon" aria-hidden="true">▶</span> Meeting mode on
+            <button type="button" class="prompt-chip chip-action chip-action-start" data-prompt="meeting mode on" title="Start continuous meeting recording and speaker diarization">
+              <span class="chip-icon" aria-hidden="true">▶</span>
+              <span>Meeting mode on</span>
             </button>
-            <button type="button" class="prompt-chip chip-action" data-prompt="meeting mode off" title="Stop meeting recording and save transcript">
-              <span class="chip-icon" aria-hidden="true">⏹</span> Meeting mode off
+            <button type="button" class="prompt-chip chip-action chip-action-stop" data-prompt="meeting mode off" title="Stop meeting recording and save transcript">
+              <span class="chip-icon" aria-hidden="true">⏹</span>
+              <span>Meeting mode off</span>
             </button>
-            <button type="button" class="prompt-chip" data-prompt="Check system status">Check system status</button>
-            <button type="button" class="prompt-chip" data-prompt="List active desktop windows">Active windows</button>
-            <button type="button" class="prompt-chip" data-prompt="What time is it?">What time is it?</button>
-            <button type="button" class="prompt-chip" data-prompt="What is the weather report?">Weather report</button>
-            <button type="button" class="prompt-chip" data-prompt="Check battery level">Battery level</button>
+            <button type="button" class="prompt-chip" data-prompt="system status">
+              <span class="chip-icon-dim" aria-hidden="true">📊</span>
+              <span>System status</span>
+            </button>
+            <button type="button" class="prompt-chip" data-prompt="List active desktop windows">
+              <span class="chip-icon-dim" aria-hidden="true">🪟</span>
+              <span>Active windows</span>
+            </button>
+            <button type="button" class="prompt-chip" data-prompt="What time is it?">
+              <span class="chip-icon-dim" aria-hidden="true">🕒</span>
+              <span>Current time</span>
+            </button>
+            <button type="button" class="prompt-chip" data-prompt="What is the weather report?">
+              <span class="chip-icon-dim" aria-hidden="true">🌤️</span>
+              <span>Weather report</span>
+            </button>
+            <button type="button" class="prompt-chip" data-prompt="Check battery level">
+              <span class="chip-icon-dim" aria-hidden="true">🔋</span>
+              <span>Battery level</span>
+            </button>
           </div>
         </div>
 
@@ -172,12 +204,14 @@
             <label for="chatInput" class="sr-only">Type a message to Adam</label>
             <textarea
               id="chatInput"
-              placeholder="Type a message to Adam... (Enter to send, Shift+Enter for newline)"
+              placeholder="Type a message or instruction to Adam... (Enter to send, Shift+Enter for newline)"
               rows="1"
               required
             ></textarea>
             <div class="composer-footer">
-              <span class="keyboard-hint" aria-hidden="true">Press <strong>Enter ↵</strong> to send &bull; <strong>Shift+Enter</strong> for newline</span>
+              <span class="keyboard-hint" aria-hidden="true">
+                <kbd>Enter ↵</kbd> to send &bull; <kbd>Shift + Enter</kbd> for newline
+              </span>
               <button id="sendBtn" type="submit" class="btn btn-primary" aria-label="Send message">
                 <span>Send</span>
                 <svg class="send-icon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
@@ -204,7 +238,7 @@
             <span class="card-badge badge-control">Continuous</span>
           </div>
           <div class="card-body">
-            <p class="meeting-desc">Continuous ambient capture with speaker diarization. Meeting speech is transcribed to session logs without routing through the LLM turn loop.</p>
+            <p class="meeting-desc">Continuous ambient capture with speaker diarization. Meeting speech is transcribed directly to session logs without routing through the LLM turn loop.</p>
             <div class="meeting-btn-group">
               <button type="button" id="meetingStartBtn" class="btn btn-control btn-start" title="Start continuous meeting recording">
                 <span class="btn-icon-dot dot-green" aria-hidden="true"></span>
@@ -233,7 +267,7 @@
             <span class="card-badge">Live Stream</span>
           </div>
           <div id="toolActivity" class="tool-activity-list" aria-live="polite">
-            <p id="toolActivityEmpty" class="tool-activity-empty">Waiting for tool calls.</p>
+            <p id="toolActivityEmpty" class="tool-activity-empty">Waiting for tool calls...</p>
           </div>
         </div>
 
@@ -268,7 +302,7 @@
           </div>
         </div>
 
-        <!-- Long-Running Tasks Card (Planned Feature - P3 Gate) -->
+        <!-- Long-Running Tasks Card (Roadmap Boundary - P3 Gate) -->
         <div class="card card-unavailable">
           <div class="card-header">
             <div class="card-title-group">
@@ -295,7 +329,7 @@
           </div>
         </div>
 
-        <!-- Approvals Card (Planned Feature - P4 Gate) -->
+        <!-- Approvals Card (Roadmap Boundary - P4 Gate) -->
         <div class="card card-unavailable">
           <div class="card-header">
             <div class="card-title-group">
@@ -331,10 +365,18 @@
         <button id="closeAuthModalBtn" type="button" class="btn-icon" aria-label="Close authentication dialog">&times;</button>
       </div>
       <div class="modal-body">
-        <p class="modal-desc">If Adam is configured with an authentication token (<code>webui.auth_token</code>), enter it below to authenticate this browser session.</p>
+        <p class="modal-desc">If Adam is configured with an authentication token (<code>webui.auth_token</code> in config), enter it below to authenticate this browser session.</p>
         <div class="form-group">
           <label for="tokenInput">Bearer Token</label>
-          <input type="password" id="tokenInput" placeholder="Enter webui.auth_token..." autocomplete="off">
+          <div class="input-with-toggle">
+            <input type="password" id="tokenInput" placeholder="Enter webui.auth_token..." autocomplete="off">
+            <button type="button" id="toggleTokenVisibilityBtn" class="btn-input-toggle" aria-label="Toggle token visibility" title="Show/hide token">
+              <svg viewBox="0 0 16 16" fill="currentColor" class="icon-toggle-pass" aria-hidden="true">
+                <path d="M16 8s-3-5.5-8-5.5S0 8 0 8s3 5.5 8 5.5S16 8 16 8zM1.173 8a13.133 13.133 0 0 1 1.66-2.043C4.12 4.668 5.88 3.5 8 3.5c2.12 0 3.879 1.168 5.168 2.457A13.133 13.133 0 0 1 14.828 8c-.058.087-.122.183-.195.288-.335.48-.83 1.12-1.465 1.755C11.879 11.332 10.119 12.5 8 12.5c-2.12 0-3.879-1.168-5.168-2.457A13.134 13.134 0 0 1 1.172 8z"/>
+                <path d="M8 5.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zM4.5 8a3.5 3.5 0 1 1 7 0 3.5 3.5 0 0 1-7 0z"/>
+              </svg>
+            </button>
+          </div>
         </div>
         <div id="authModalStatus" class="auth-modal-status hidden" role="status" aria-live="polite"></div>
       </div>

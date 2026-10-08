@@ -83,6 +83,20 @@ def test_plain_browser_inspection_is_fast_but_app_transition_keeps_browser_wait(
     assert waits == [3.0]
 
 
+def test_downscaled_model_image_coordinates_map_to_original_capture(monkeypatch):
+    monkeypatch.setattr(computer.time, "sleep", lambda *_args: None)
+    controller = computer.ComputerController(screenshot_fn=lambda: _valid_png(2000, 1000))
+    controller._read_active_window_state = lambda: ("test-window", (0, 0, 2000, 1000))
+
+    inspected = controller.run("inspect", include_ocr=False)
+
+    assert inspected.status == "ok"
+    assert computer._png_size(inspected.screenshot) == (1600, 800)
+    assert "capture=2000x1000" in inspected.message
+    assert "model_image=1600x800" in inspected.message
+    assert controller._click_coordinates_to_pixels(800, 400) == (1000, 500)
+
+
 def test_ocr_only_follow_up_inspection_keeps_browser_wait(monkeypatch):
     waits = []
     monkeypatch.setattr(computer, "screenshot_delay_for_focused_window", lambda *_args: 3.0)

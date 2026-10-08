@@ -18,8 +18,8 @@ wake:
 
 stt:
   provider: "local"        # "local" | "openai" | "openrouter" | "custom"
-  model_size: "small.en" # Faster-Whisper small.en is the portable CPU default
-  language: ""             # Qwen3-ASR auto-detects; transcribe.cpp currently rejects explicit language hints
+  model_size: "small.en" # Faster-Whisper small.en is the portable CPU default; or "qwen3-asr-1.7b" for Vulkan GPU
+  language: ""             # Qwen3-ASR auto-detects; leave empty for auto-detection or language code for whisper
   device: "cpu"
   device_index: -1
   compute_type: "int8"
@@ -33,6 +33,8 @@ stt:
 speaker_verification:
   enabled: true # Activates only after a local voice profile is enrolled
   threshold: 0.25
+  # profile_path: "" # Optional custom path; defaults to ~/.local/state/adam/speaker-profile.npz
+  # users: []        # Optional multi-user voice profiles (e.g. [{"name": "User", "profiles": {"default": "path.npz"}}])
 
 speaker_diarization:
   enabled: false # Optional; setup installs NVIDIA's Transformers runtime when enabled
@@ -79,6 +81,7 @@ computer_control:
   jev_timeout_seconds: 20.0
   jev_min_confidence: 0.65
   ocr_max_regions: 100
+  ocr_max_candidates: 800 # Candidate text boxes parsed from OCR before candidate ranking
   ocr_max_image_dimension: 1280 # Downscale larger screenshots before local OCR; reported boxes map back to screenshot pixels
   ocr_model_size: small # PP-OCRv6 small for lower CPU/RAM; select medium for extra text accuracy
   ocr_preload_on_startup: false # Load OCR on the first screen read to save idle RAM and CPU; enabling reduces first-read latency
@@ -88,6 +91,7 @@ computer_control:
 computer_vision:
   enabled: false # Optional OmniParser detector; overlays numbered candidate controls on computer_control screenshots
   backend: "omniparser" # Detector-only: boxes are provided; text labels come from the screenshot/accessibility data
+  preload_on_startup: false # Preload OmniParser model on startup; false keeps it lazy-loaded on first visual action
   device: "cuda" # "cuda" or "cpu"; the Ultralytics runtime does not support Vulkan.
   gpu_uuid: "" # Required for CUDA; exact NVIDIA GPU UUID from nvidia-smi -L, so Adam never picks another GPU
   python_path: "~/.local/share/adam/omniparser-runtime/bin/python" # Isolated runtime; keeps Torch out of Adam's main environment
@@ -97,22 +101,26 @@ computer_vision:
   timeout_seconds: 15.0
 
 tts:
-  engine: "kokoro"             # "kokoro" | "openai" (cloud speech) | "silent" (desktop notifications)
+  engine: "kokoro"             # "kokoro" | "openai" (cloud speech) | "piper" | "cosyvoice" | "silent" (desktop notifications)
   silent_restore_engine: "kokoro" # Engine restored when silent mode is explicitly disabled
   model_path: "assets/voices/kokoro/kokoro-v1.0.onnx"
   voices_path: "assets/voices/kokoro/voices-v1.0.bin"
-  voice: "af_nicole"             # Natural studio-quality voice matching wake word 'Hey Adam'
-  device_id: -1                 # CPU; choose an explicit CUDA device only when wanted
+  voice: "af_nicole"             # Kokoro voice (e.g. "af_nicole", "am_adam", "am_michael", "af_bella")
+  device_id: -1                 # -1 for CPU (AVX-optimized); 0, 1... for explicit CUDA GPU device ID
   speed: 1.1
   sample_rate: 24000
   cloud_model: "gpt-4o-mini-tts"
   cloud_voice: "marin"
   api_key: ""
+  # cosyvoice_api_url: "http://localhost:50000"
+  # cosyvoice_model_dir: "pretrained_models/CosyVoice2-0.5B"
+  # piper_bin: "piper"
+  # config_path: "assets/voices/en_US-ryan-high.onnx.json"
 
 llm:
-  provider: "local"         # "local" | "groq" | "gemini" | "anthropic" | "openai" | "custom"
+  provider: "local"         # "local" (Ollama) | "groq" | "gemini" | "anthropic" | "openai" | "custom" / "openai_compatible"
   local_model: "qwen3.5:4b"
-  cloud_model: "llama-3.3-70b-versatile" # or "gemini-2.5-flash"
+  cloud_model: "llama-3.3-70b-versatile" # or "gemini-2.5-flash", "claude-3-5-sonnet-20241022", "gpt-4o-mini"
   ollama_host: "http://localhost:11434"
   api_base: ""              # Base URL for custom OpenAI-compatible providers
   api_key: ""               # Optional API key for cloud/custom providers
@@ -122,9 +130,11 @@ llm:
   tool_free_model: ""        # Optional model for short, generic, tool-free requests
   tool_free_provider_only: []
   tool_free_allow_provider_fallbacks: true
+  # disable_reasoning_for_tool_free: false # Set true to omit reasoning tokens for fast tool-free turns
+  # tool_free_reasoning_effort: null       # "max" | "xhigh" | "high" | "medium" | "low" | "minimal" | "none"
   num_ctx: 65536             # 64k context window
   temperature: 0.3
-  think: false                # Disable model thinking
+  think: false                # Disable model thinking / reasoning prefix (false, true, or level string)
   max_tool_rounds: 64 # Generous per-request model/tool rounds; a ceiling reports partial progress
   request_timeout_seconds: 45.0 # Stop a stalled text request instead of leaving the voice turn hanging
   vision_request_timeout_seconds: 90.0 # Larger bounded budget for screenshot-based reasoning
@@ -135,6 +145,10 @@ execution:
   jobs_log_dir: "~/.local/state/adam/jobs"
   max_log_mb: 50
   preferred_video_codec: "av1"
+
+telemetry:
+  enabled: false # Optional JSONL runtime event logging for latency and token telemetry
+  path: "~/.local/state/adam/telemetry/events.jsonl"
 
 # Desktop application & window aliases (user-customizable)
 desktop:

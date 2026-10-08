@@ -50,8 +50,8 @@ _LETTER_KEYCODES = {
 _MODIFIER_CODES = {"ctrl": 29, "alt": 56, "shift": 42, "super": 125}
 _ALLOWED_COMBOS = {
     "ctrl+a", "ctrl+c", "ctrl+v", "ctrl+x", "ctrl+z", "ctrl+y",
-    "ctrl+f", "ctrl+l", "ctrl+t", "ctrl+w", "ctrl+s", "ctrl+plus", "ctrl+minus",
-    "ctrl+shift+a", "shift+tab", "shift+home", "shift+end", "alt+left", "alt+right",
+    "ctrl+f", "ctrl+h", "ctrl+l", "ctrl+t", "ctrl+w", "ctrl+s", "ctrl+plus", "ctrl+minus",
+    "ctrl+shift+a", "ctrl+shift+left", "shift+tab", "shift+home", "shift+end", "alt+left", "alt+right",
 }
 
 
@@ -90,6 +90,26 @@ def _png_size(image: bytes) -> tuple[int, int]:
     if len(image) >= 24 and image[:8] == b"\x89PNG\r\n\x1a\n":
         return int.from_bytes(image[16:20], "big"), int.from_bytes(image[20:24], "big")
     raise RuntimeError("Screenshot did not contain a valid PNG image.")
+
+
+def _model_image(image: bytes, max_dimension: int = 1600) -> tuple[bytes, tuple[int, int]]:
+    """Bound model-facing image dimensions and return the exact pixel frame."""
+    width, height = _png_size(image)
+    if max(width, height) <= max_dimension:
+        return image, (width, height)
+    try:
+        from io import BytesIO
+        from PIL import Image
+
+        with Image.open(BytesIO(image)) as source:
+            ratio = max_dimension / max(source.width, source.height)
+            size = (max(1, round(source.width * ratio)), max(1, round(source.height * ratio)))
+            resized = source.resize(size, Image.Resampling.LANCZOS)
+            output = BytesIO()
+            resized.save(output, format="PNG")
+        return output.getvalue(), size
+    except Exception as exc:
+        raise RuntimeError(f"Could not prepare an exact model-facing screenshot: {type(exc).__name__}.") from exc
 
 
 def _screens_visually_unchanged(previous: bytes, current: bytes) -> bool:
@@ -216,6 +236,7 @@ class ComputerController:
         self._last_screenshot: bytes | None = None
         self._has_captured_frame = False
         self._width = self._height = 0
+        self._model_width = self._model_height = 0
         self._origin_x = self._origin_y = 0
         self._capture_scale = (1.0, 1.0)
         self._active_bounds: tuple[int, int, int, int] | None = None
@@ -498,6 +519,10 @@ class ComputerController:
                     f"OmniParser grounding unavailable ({type(exc).__name__}: {str(exc)[:180]}). "
                     "Use the screenshot and available accessibility/browser data directly."
                 )
+        if image_for_model is not None:
+            image_for_model, (self._model_width, self._model_height) = _model_image(image_for_model)
+        else:
+            self._model_width = self._model_height = 0
         bounds_text = ""
         if self._active_bounds and not self.ocr_only:
             left, top, right, bottom = self._active_bounds
@@ -511,9 +536,9 @@ class ComputerController:
             else "In OCR-only mode, use OCR text as target_text. Coordinates are unavailable."
             if self.ocr_only
             else (
-                "Click, drag waypoint, and drop coordinates use normalized values from 0 to 1000 across the screenshot width/height."
+                "Click, drag waypoint, and drop coordinates use normalized values from 0 to 1000 across the capture width/height."
                 if self.coordinate_mode == "normalized_1000"
-                else "Click, drag waypoint, and drop coordinates use screenshot pixels from the top-left."
+                else "Click, drag waypoint, and drop coordinates use pixels from the top-left of the model-facing image; the controller maps them to the original capture."
             )
         )
         token_text = (
@@ -532,7 +557,8 @@ class ComputerController:
         self._has_captured_frame = True
         return ComputerControlResult(
             f"{prefix} Capture: scope={self._scope}, target={self._capture_target}, "
-            f"backend={self._capture_backend}, image={self._width}x{self._height}, "
+            f"backend={self._capture_backend}, capture={self._width}x{self._height}, "
+            f"model_image={f'{self._model_width}x{self._model_height}' if image_for_model is not None else 'withheld'}, "
             f"origin=({self._origin_x},{self._origin_y}).\n"
             f"{token_text}"
             f"{bounds_text}"
@@ -676,6 +702,14 @@ class ComputerController:
                 raise ValueError("Normalized click coordinates must be between 0 and 1000.")
             x = round(x * (self._width - 1) / 1000)
             y = round(y * (self._height - 1) / 1000)
+        else:
+            if not (0 <= x < self._model_width and 0 <= y < self._model_height):
+                raise ValueError(
+                    f"Coordinates must be within the latest model image "
+                    f"(0–{self._model_width - 1}, 0–{self._model_height - 1})."
+                )
+            x = round(x * (self._width - 1) / max(1, self._model_width - 1))
+            y = round(y * (self._height - 1) / max(1, self._model_height - 1))
         return x, y
 
     def _screenshot_to_desktop(self, x: int, y: int) -> tuple[int, int]:
@@ -811,7 +845,7 @@ class ComputerController:
             self._call(["ydotool", "mousemove", "--", str(correction_x), str(correction_y)])
             time.sleep(0.06)
             current = cursor()
-        if max(abs(end_x - current[0]), abs(end_y - current[1])) > 8:
+        if max(abs(end_x - current[0]), abs(end_y - current[1])) > 3:
             raise RuntimeError(
                 f"Pointer reached ({current[0]}, {current[1]}), not requested position ({end_x}, {end_y})."
             )
@@ -1245,6 +1279,7 @@ class ComputerController:
         latest: ComputerControlResult | None = None
         any_dispatched: bool | None = False
         last_concrete_action = ""
+        last_press_key = ""
         for index, step in enumerate(actions):
             if cancel_event and cancel_event.is_set():
                 return ComputerControlResult(
@@ -1299,6 +1334,17 @@ class ComputerController:
                 and action == "press"
                 and key_name == "shift+end"
             )
+            select_previous_word = (
+                last_concrete_action == "press"
+                and last_press_key == "end"
+                and action == "press"
+                and key_name == "ctrl+shift+left"
+            )
+            type_after_word_selection = (
+                last_concrete_action == "press"
+                and last_press_key == "ctrl+shift+left"
+                and action == "type"
+            )
             coordinate_free_continuation = (
                 action == "wait"
             ) or (
@@ -1307,6 +1353,8 @@ class ComputerController:
             ) or (
                 last_concrete_action == "text_selected"
                 and action == "type"
+            ) or type_after_word_selection or (
+                select_previous_word
             ) or (
                 move_to_text_start_after_ocr_target
                 or select_text_to_line_end
@@ -1340,6 +1388,7 @@ class ComputerController:
                     raw_screenshot=latest.raw_screenshot if latest else None,
                 )
             if action == "wait":
+                last_press_key = ""
                 delay_sec = min(max(float(step.get("seconds") or step.get("amount") or 1.0), 0.0), 10.0)
                 time.sleep(delay_sec)
                 results.append(f"Step {index + 1}/{len(actions)} (wait): ok; Waited {delay_sec:g}s.")
@@ -1361,6 +1410,7 @@ class ComputerController:
                 and bool(include_ocr or self._include_ocr)
                 else action
             )
+            last_press_key = key_name if action == "press" else ""
             kwargs = {key: value for key, value in step.items() if key != "action"}
             if include_ocr is not None:
                 kwargs.setdefault("include_ocr", include_ocr)

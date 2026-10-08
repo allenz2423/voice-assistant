@@ -121,6 +121,8 @@ def _ensure_nvidia_libs():
         from pathlib import Path
         venv_dir = Path(__file__).resolve().parent.parent.parent / ".venv"
         for lib in sorted(venv_dir.glob("lib/python*/site-packages/nvidia/*/lib/*.so*")):
+            if "nvblas" in lib.name:
+                continue
             try:
                 ctypes.CDLL(str(lib), mode=ctypes.RTLD_GLOBAL)
             except Exception:
@@ -240,7 +242,7 @@ class StreamingVoiceSynthesizer:
             available = ort.get_available_providers()
             sess = None
 
-            if self.device_id >= 0 and "CUDAExecutionProvider" in available:
+            if self.device_id is not None and self.device_id >= 0 and "CUDAExecutionProvider" in available:
                 try:
                     providers = [("CUDAExecutionProvider", {"device_id": self.device_id})]
                     sess = ort.InferenceSession(self.model_path, sess_opt, providers=providers)

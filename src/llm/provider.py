@@ -322,8 +322,15 @@ class UniversalLLMClient:
             else:
                 base = self.ollama_host.rstrip("/")
                 url = f"{base}/v1/chat/completions" if not base.endswith("/v1") else f"{base}/chat/completions"
-        elif not url.endswith("/chat/completions"):
-            url = f"{url.rstrip('/')}/chat/completions"
+        else:
+            hostname = (urlparse(url).hostname or "").lower()
+            provider_domains = ("openrouter.ai", "api.openai.com", "api.groq.com", "api.anthropic.com")
+            if url.startswith("http://") and any(
+                hostname == domain or hostname.endswith(f".{domain}") for domain in provider_domains
+            ):
+                url = "https://" + url[len("http://"):]
+            if not url.endswith("/chat/completions"):
+                url = f"{url.rstrip('/')}/chat/completions"
 
         key = self.api_key
         if not key:

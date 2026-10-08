@@ -49,17 +49,18 @@ Adam setup
 
 Usage: ./setup.sh [OPTIONS]
 
-Interactive mode installs dependencies and runs the configuration wizard.
-Use --yes for a noninteractive bootstrap: it configures the requested flags,
-installs dependencies and models, and never enables or starts a service.
+Interactive mode installs dependencies, downloads accepted model assets, and
+runs the configuration wizard. Use --yes for a noninteractive bootstrap: it
+uses CPU packages by default, applies requested feature flags, installs
+dependencies and default Kokoro assets, and never enables or starts a service.
 
 Options:
   -y, --yes                    Noninteractive bootstrap; no service start
       --dry-run                Print the plan without running commands or writing files
       --skip-sys-pkgs           Do not call a system package manager
       --skip-python-deps        Use an already prepared .venv; do not run uv sync
-      --skip-models             Skip Kokoro model and voice downloads
-      --skip-ollama             Do not offer to install/pull Ollama in the wizard
+      --skip-models             Skip Kokoro and optional diarization/OmniParser weight downloads
+      --skip-ollama             Skip the Ollama model pull prompt in the wizard
       --skip-speaker-verification
                                 Disable speaker verification and omit its extra
       --skip-enrollment         Skip microphone enrollment in the wizard
@@ -68,15 +69,16 @@ Options:
       --idea-routing            Enable local idea routing and install its extra
       --browser-navigation      Enable isolated browser navigation and install its extra
       --diarization             Enable Nemotron diarization and install its extra
-      --omniparser              Enable OmniParser screenshot grounding and install runtime
+      --omniparser              Enable optional OmniParser grounding and install its isolated runtime
       --disable-computer-control
                                 Disable screenshot-guided desktop control in config
       --install-desktop-tools   Also install optional X11/Wayland desktop packages
-      --skip-service            Skip systemd user-service setup
+      --skip-service            Skip systemd user-service setup in the wizard/bootstrap
   -h, --help                    Show this help and exit
 
 Requirements:
-  Run as a regular user. Install Astral uv before starting setup:
+  Run as the desktop user that will run Adam, not as root. Install Astral uv
+  before starting setup:
   https://docs.astral.sh/uv/getting-started/installation/
 
 System package support: Debian/Ubuntu, Fedora/RHEL, openSUSE, Arch, Gentoo,

@@ -669,25 +669,45 @@ class AdamDaemon:
             score_text = f" (voice score={score:.3f})" if score is not None else ""
             print(f"[Meeting] {label}{score_text}: {text}", flush=True)
 
-    async def _dispatch_meeting_command(self, command: str, *, cleanup: bool = True) -> bool:
-        """Handle a recognized meeting-mode command before normal LLM routing."""
+    async def _dispatch_meeting_command(
+        self, command: str, *, cleanup: bool = True
+    ) -> tuple[bool, bool]:
+        """Return (handled, succeeded) for a meeting-mode command."""
         action = meeting_command_kind(command)
         if action is None:
-            return False
+            return False, False
 
+        succeeded = True
         try:
             if action == "start":
                 await self._start_meeting()
             elif self.meeting_session.active:
                 await self._stop_meeting("voice command")
             else:
-                await self.tts.speak_async("Meeting mode is already off.")
+                await self._speak_meeting_already_off()
+        except Exception as exc:
+            succeeded = False
+            verb = "start" if action == "start" else "stop"
+            print(f"[Meeting] Failed to {verb} recording ({type(exc).__name__}: {exc}).", flush=True)
+            try:
+                await self.tts.speak_async(f"Meeting mode failed to {verb}.")
+            except Exception as speech_exc:
+                print(f"[Meeting] Failure acknowledgment failed ({type(speech_exc).__name__}).", flush=True)
         finally:
             if cleanup and self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
-                await self.arbiter.set_state("IDLE_LISTENING")
-                self.stream.flush()
-                self.stream.quench(duration=0.4)
-        return True
+                try:
+                    await self.arbiter.set_state("IDLE_LISTENING")
+                except Exception as exc:
+                    print(f"[Meeting] State cleanup failed ({type(exc).__name__}: {exc}).", flush=True)
+                try:
+                    self.stream.flush()
+                except Exception as exc:
+                    print(f"[Meeting] Audio flush failed ({type(exc).__name__}: {exc}).", flush=True)
+                try:
+                    self.stream.quench(duration=0.4)
+                except Exception as exc:
+                    print(f"[Meeting] Audio quench failed ({type(exc).__name__}: {exc}).", flush=True)
+        return True, succeeded
 
     async def _meeting_turn_response(self, command: str, *, cleanup: bool = True) -> str | None:
         """Dispatch meeting controls and provide a local response to non-voice callers."""
@@ -695,11 +715,19 @@ class AdamDaemon:
         if action is None or not hasattr(self, "meeting_session"):
             return None
         was_active = self.meeting_session.active
-        if not await self._dispatch_meeting_command(command, cleanup=cleanup):
+        handled, succeeded = await self._dispatch_meeting_command(command, cleanup=cleanup)
+        if not handled:
             return None
+        if not succeeded:
+            verb = "start" if action == "start" else "stop"
+            return f"Meeting mode failed to {verb}."
 
         if action == "start":
-            return "Meeting mode is already on." if was_active else "Meeting mode is on. Recording now."
+            if self.meeting_session.active:
+                return "Meeting mode is already on." if was_active else "Meeting mode is on. Recording now."
+            return "Meeting mode failed to start."
+        if was_active and self.meeting_session.active:
+            return "Meeting mode failed to stop."
 
         if not was_active:
             return "Meeting mode is already off."
@@ -713,44 +741,91 @@ class AdamDaemon:
         action = str(action or "").strip().casefold()
         if action == "start":
             was_active = self.meeting_session.active
-            await self._start_meeting()
+            try:
+                await self._start_meeting()
+            except Exception as exc:
+                print(f"[Meeting] Structured start failed ({type(exc).__name__}: {exc}).", flush=True)
+                return "Meeting mode failed to start."
             return "Meeting mode is already on." if was_active else "Meeting mode is on. Recording now."
         if action == "stop":
             was_active = self.meeting_session.active
             directory = self.meeting_session.session_dir
             if was_active:
-                await self._stop_meeting("voice command")
+                try:
+                    await self._stop_meeting("voice command")
+                except Exception as exc:
+                    print(f"[Meeting] Structured stop failed ({type(exc).__name__}: {exc}).", flush=True)
+                    return "Meeting mode failed to stop."
                 if directory is not None:
                     return f"Meeting mode is off. I saved the recording and transcript in {directory}."
                 return "Meeting mode is off. Recording stopped."
-            await self.tts.speak_async("Meeting mode is already off.")
+            await self._speak_meeting_already_off()
             return "Meeting mode is already off."
         return "Meeting mode action must be 'start' or 'stop'."
 
+    async def _speak_meeting_already_off(self) -> None:
+        try:
+            await self.tts.speak_async("Meeting mode is already off.")
+        except Exception as exc:
+            print(f"[Meeting] Already-off acknowledgment failed ({type(exc).__name__}: {exc}).", flush=True)
+
     async def _execute_pretrained_wake_command(self, command: str) -> None:
         """Route pretrained-wake transcripts through meeting controls or Brain."""
-        if await self._dispatch_meeting_command(command):
+        handled, _ = await self._dispatch_meeting_command(command)
+        if handled:
             return
         memory_context = self.memory_manager.retrieve_context(command)
         await self._execute_turn(command, memory_context=memory_context)
 
     async def _start_meeting(self) -> None:
         if self.meeting_session.active:
-            await self.tts.speak_async("Meeting mode is already on.")
+            await self._speak_meeting_acknowledgement("Meeting mode is already on.")
             return
         self.meeting_speaker_registry = MeetingSpeakerRegistry(
             self.meeting_voice_encoder,
             enrolled_verifier=self.speaker_verifier,
             similarity_threshold=self.config.meeting.speaker_similarity_threshold,
         )
-        # Speak before capture starts so Adam's acknowledgement is not stored
-        # as a meeting participant turn.
-        await self.tts.speak_async("Meeting mode is on. Recording now.")
-        directory = self.meeting_session.start()
+        try:
+            directory = self.meeting_session.start()
+        except Exception:
+            self.meeting_speaker_registry = None
+            raise
         self.conversation_deadline = 0.0
         print(f"[Meeting] Recording and transcription started: {directory}", flush=True)
         if self.speaker_diarizer is None:
             print("[Meeting] Speaker diarization is unavailable; turns will be labeled Unknown or by voice similarity.", flush=True)
+        # Keep Adam's acknowledgement out of the meeting tap, then quench room
+        # reflections before allowing capture to resume.
+        await self._speak_meeting_acknowledgement("Meeting mode is on. Recording now.")
+
+    async def _speak_meeting_acknowledgement(self, message: str) -> None:
+        session = self.meeting_session
+        suspension_id = session.suspend_capture()
+        try:
+            await self.tts.speak_async(message)
+        except Exception as exc:
+            # The recording has already started. Keep it active and let callers
+            # report success truthfully even if speech output failed.
+            print(f"[Meeting] Acknowledgment failed ({type(exc).__name__}: {exc}).", flush=True)
+        finally:
+            quench_duration = 0.4
+            quenched = False
+            try:
+                self.stream.quench(duration=quench_duration)
+                quenched = True
+            except Exception as exc:
+                print(f"[Meeting] Acknowledgment audio cleanup failed ({type(exc).__name__}: {exc}).", flush=True)
+            finally:
+                if quenched:
+                    # The stream invokes the meeting tap before applying its
+                    # quench, so keep the tap suspended through that interval.
+                    try:
+                        await asyncio.sleep(quench_duration)
+                    finally:
+                        session.resume_capture(suspension_id)
+                else:
+                    session.resume_capture(suspension_id)
 
     async def _stop_meeting(self, reason: str = "voice command") -> None:
         if not self.meeting_session.active:
@@ -759,7 +834,12 @@ class AdamDaemon:
         self.conversation_deadline = 0.0
         self.meeting_speaker_registry = None
         print(f"[Meeting] Recording stopped ({reason}). Files saved in {directory}", flush=True)
-        await self.tts.speak_async(f"Meeting mode is off. I saved the recording and transcript in {directory}.")
+        try:
+            await self.tts.speak_async(f"Meeting mode is off. I saved the recording and transcript in {directory}.")
+        except Exception as exc:
+            # stop() completed successfully, so speech failure does not change
+            # the saved recording's outcome reported to callers.
+            print(f"[Meeting] Stop acknowledgment failed ({type(exc).__name__}: {exc}).", flush=True)
 
     def _contains_registered_voice(self, audio_data: np.ndarray) -> tuple[bool, float]:
         """Check short windows so background-only utterances never reach ASR."""
@@ -1784,7 +1864,8 @@ class AdamDaemon:
                                     if matched_memory_context is not None:
                                         print(f"[Memory] Matched saved memory context for command.", flush=True)
 
-                                if await self._dispatch_meeting_command(target_cmd):
+                                meeting_handled, _ = await self._dispatch_meeting_command(target_cmd)
+                                if meeting_handled:
                                     continue
                                 ensure_gui_environment()
                                 self.earcon.play("captured")

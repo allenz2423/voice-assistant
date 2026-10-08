@@ -8,11 +8,11 @@ Build Adam into a responsive, general-purpose voice and desktop assistant that r
 
 The current [handoff](desktop-handoff-2026-10-05.md) already records opt-in browser DOM/navigation, scoped screenshot/OCR, AT-SPI, a model/tool loop, memory-date handling, lazy imports, retry/progress plumbing, and narrow synthetic wins. It also records unresolved whole-task GUI success, real-microphone voice latency and quality, concurrent memory peak, reliable power attribution, and a matched OmniParser comparison. Do not reimplement completed foundations merely because an older plan describes them as proposed. [Computer-use handoff](computer-use-plan.md) calls for observed failure-driven changes, with the model retaining task strategy.
 
-**Access boundary:** Use the current checkout for code and synthetic fixtures. Desky remains read-only and unmodified until the user explicitly lifts the pause after the crash. The laptop path must stand on its own; the agent can continue any work that does not depend on unavailable hardware.
+**Access boundary:** The user lifted the Desky pause and authorized live Desky testing at Checkpoint 89 in the [implementation log](implementation-log-2026-10-05.md). Before any further Desky work, perform a fresh status/read-only audit and ensure the configuration is recoverable. Keep Desky and laptop evidence separate; the laptop path must stand on its own, and unavailable laptop hardware does not block independent work.
 
 ## Loop map and routing
 
-The agent begins with **Loop 0** and **Loop 1** so every later change has a reproducible comparison. It then selects the next loop from the largest observed failure or resource burden. Loops 2–5 can interleave; none has a reserved slot or deadline. After a retained change, rerun its relevant baseline and consider **Loop 6** for integration. **Loop 7** is gated by the existing Desky pause. A failed gate returns the agent to the relevant loop rather than advancing by sequence number.
+The agent begins with **Loop 0** and **Loop 1** so every later change has a reproducible comparison. It then selects the next loop from the largest observed failure or resource burden. Loops 2–5 can interleave; none has a reserved slot or deadline. After a retained change, rerun its relevant baseline and consider **Loop 6** for integration. The Desky pause for live testing was lifted at Checkpoint 89, so the paired-host comparison portion of **Loop 7** may proceed after its fresh status/read-only audit and recoverable-configuration check. The final Shenzhen I/O stress case has a separate authorization gate. A failed gate returns the agent to the relevant loop rather than advancing by sequence number.
 
 | Loop | Entry signal | Work until | Exit evidence |
 | --- | --- | --- | --- |
@@ -23,11 +23,11 @@ The agent begins with **Loop 0** and **Loop 1** so every later change has a repr
 | 4. Visual evidence | Observation quality or cost drives a desktop failure | Evidence route is kept, narrowed, or rejected | Matched task and resource results. |
 | 5. Voice and memory | Real speech or recall failure appears | Focused fix is kept or rejected | Real-voice or dated-recall comparison. |
 | 6. Integration | One or more changes have survived their local loops | Cross-feature regression is resolved | Laptop acceptance report and integrated checkpoint. |
-| 7. Paired host/final stress | Desky pause is lifted and ordinary apps pass | Host comparison and final stress result are recorded | Paired report and final checkpoint. |
+| 7. Paired host/final stress | Ordinary apps pass; before Desky work, fresh status/read-only audit and recoverable configuration are confirmed | Record host comparison; run Shenzhen I/O only after its separate authorization and ordinary-app gate | Paired report, authorized stress result if run, and final checkpoint. |
 
 **Selection rule:** Favor a reproducible user-visible failure over speculative optimization. Among similar failures, choose the one with the largest effect on task success, first response, or laptop resource headroom. If a candidate is inconclusive, either gather the missing evidence or close it; do not keep cycling indefinitely without a sharper hypothesis.
 
-**Agent continuation rule:** At every checkpoint, record the last measured result, the current blocker if any, the next loop to run, and the exact task/fixture that will decide it. Continue into that loop without requiring a new planning pass. A missing optional model, rate-limited provider, or unavailable app should lead to another useful eligible loop; only work dependent on that missing condition waits. Preserve the user's Desky pause and any direct stop instruction.
+**Agent continuation rule:** At every checkpoint, record the last measured result, the current blocker if any, the next loop to run, and the exact task/fixture that will decide it. Continue into that loop without requiring a new planning pass. A missing optional model, rate-limited provider, or unavailable app should lead to another useful eligible loop; only work dependent on that missing condition waits. Respect the current Desky authorization boundary, perform the required fresh audit before Desky work, and follow any direct stop instruction.
 
 ## The repeated implementation loop
 
@@ -106,11 +106,11 @@ Run the full ordinary-app, voice, memory, browser, tool, and mixed-request suite
 
 **Exit gate:** selected tasks pass repeatedly, no severe false-success or capture-scope regression remains, and the laptop stays usable under concurrent work. Where the 5-second acknowledgment or 10-second progress target remains unmet, document the precise outlier path (for example provider 429) and whether it is controllable. Update [PLAN](PLAN.md), [codebase status](codebase-status.md), and the dated progress report, then commit the integrated checkpoint.
 
-## Loop 7 — compare hosts and run the final stress case (authorization-dependent)
+## Loop 7 — compare hosts and run the final stress case
 
-After the user lifts Desky's pause, begin with a fresh status/read-only audit and a recoverable configuration. Repeat the selected *same* suite with host-specific resources reported separately. Do not average away the 16 GB laptop result. Keep shared changes in code; keep installation, GPU, driver, and app availability in host config.
+The user lifted the Desky pause and authorized live Desky testing at Checkpoint 89. Before any new Desky operation, begin with a fresh status/read-only audit and confirm a recoverable configuration. The paired-host comparison can proceed under that authorization when both hosts and the selected tasks are available. Repeat the selected *same* suite with host-specific resources reported separately. Do not average away the 16 GB laptop result. Keep shared changes in code; keep installation, GPU, driver, and app availability in host config.
 
-Only after general computer-use success, attempt one or two Shenzhen I/O levels as an unguided stress test on a visible authorized session. Use one fixed prompt and record navigation, failures, recovery, latency, and exact outcome. Do not add game-specific behavior or use the game result as the sole release gate. Finish with a final cross-host report, live-service status, remaining risks, and a checkpoint commit. Until authorization arrives, the laptop-only work can complete and be reported without this stage.
+The Shenzhen I/O stress case remains separately gated: only after general computer-use success and explicit authorization for this game task, attempt one or two levels on a visible authorized session. The Checkpoint 89 authorization for live Desky testing does not by itself authorize Shenzhen I/O. Use one fixed prompt and record navigation, failures, recovery, latency, and exact outcome. Do not add game-specific behavior or use the game result as the sole release gate. Finish with a final cross-host report, live-service status, remaining risks, and a checkpoint commit. The laptop-only work can complete and be reported without the paired-host or Shenzhen I/O stage.
 
 ## What triggers a loop, pause, or direction change
 
@@ -122,6 +122,6 @@ Only after general computer-use success, attempt one or two Shenzhen I/O levels 
 | Change helps one fixture but breaks a mixed request | Keep broad capability as the default. | Narrow the trigger or revert; rerun both fixtures. |
 | New model is lighter but fails real speech or task state | Do not ship it as default. | Tune only a focused cause, compare again, or close the candidate. |
 | No material difference after matched repeats | Mark inconclusive or no benefit. | Stop the candidate and move to the next measured bottleneck. |
-| Desky remains paused | Continue laptop-only work and read-only document/code review. | Revisit Loop 7 only after explicit authorization. |
+| Desky operation is proposed without the required fresh audit or recoverable configuration | Do not begin the operation. | Perform the status/read-only audit and confirm recoverability, then continue the authorized paired-host work. |
 
-The agent continues selecting and repeating loops until the integrated laptop exit gate is met. The commits and dated evidence should show which changes survived each loop and why. Desky's gate remains separate from laptop completion.
+The agent continues selecting and repeating loops until the integrated laptop exit gate is met. The commits and dated evidence should show which changes survived each loop and why. Desky's host-comparison evidence remains separate from laptop completion; Shenzhen I/O remains subject to its separate authorization gate.

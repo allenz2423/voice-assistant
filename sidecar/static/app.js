@@ -9,6 +9,10 @@
   let pendingChatMessage = null;
   let pendingChatTimeout = null;
   let isSending = false;
+  let taskProgressTimer = null;
+  let taskProgressStartedAt = null;
+  let taskProgressMessage = "";
+  let taskProgressAwaitingConfirmation = false;
   let historyLoaded = false;
   let historyLoading = false;
   let historyGeneration = 0;
@@ -85,6 +89,7 @@
   const clearTokenBtn = document.getElementById("clearTokenBtn");
   const closeAuthModalBtn = document.getElementById("closeAuthModalBtn");
   const authModalStatus = document.getElementById("authModalStatus");
+  const toggleTokenVisibilityBtn = document.getElementById("toggleTokenVisibilityBtn");
 
   // Format timestamp helper
   function formatTime(isoStr) {
@@ -97,7 +102,7 @@
     }
   }
 
-  // Safe HTML Escaping & Markdown-like Formatter
+  // Safe HTML Escaping & Markdown Formatter
   function escapeHtml(str) {
     if (!str) return "";
     return String(str)
@@ -110,26 +115,40 @@
 
   function copyToClipboard(text, triggerEl) {
     if (!text) return;
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).catch(() => {});
-    } else {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      ta.style.position = "fixed";
-      ta.style.opacity = "0";
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand("copy"); } catch {}
-      document.body.removeChild(ta);
-    }
+    const doCopy = () => {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        return navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        try { document.execCommand("copy"); } catch {}
+        document.body.removeChild(ta);
+        return Promise.resolve();
+      }
+    };
 
-    if (triggerEl) {
-      const originalHtml = triggerEl.innerHTML;
-      triggerEl.textContent = "Copied!";
-      setTimeout(() => {
-        triggerEl.innerHTML = originalHtml;
-      }, 1500);
-    }
+    doCopy()
+      .then(() => {
+        if (triggerEl) {
+          const originalContent = triggerEl.innerHTML;
+          triggerEl.classList.add("copied");
+          triggerEl.innerHTML = `
+            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12" aria-hidden="true">
+              <path d="M13.854 3.646a.5.5 0 0 1 0 .708l-7 7a.5.5 0 0 1-.708 0l-3.5-3.5a.5.5 0 1 1 .708-.708L6.5 10.293l6.646-6.647a.5.5 0 0 1 .708 0z"/>
+            </svg>
+            <span>Copied!</span>
+          `;
+          setTimeout(() => {
+            triggerEl.innerHTML = originalContent;
+            triggerEl.classList.remove("copied");
+          }, 1800);
+        }
+      })
+      .catch(() => {});
   }
 
   function renderFormattedMessage(rawText) {
@@ -138,18 +157,52 @@
 
     // Extract code blocks first to protect their content
     const codeBlocks = [];
-    let processed = escaped.replace(/```([a-zA-Z0-9_-]*)\n([\s\S]*?)```/g, (match, lang, code) => {
+    let processed = escaped.replace(/```([a-zA-Z0-9_-]*)[^\S\r\n]*\r?\n([\s\S]*?)```/g, (match, lang, code) => {
       const id = codeBlocks.length;
-      codeBlocks.push({ lang, code });
+      codeBlocks.push({ lang: lang.trim(), code });
       return `\n\n@@CODE_BLOCK_${id}@@\n\n`;
     });
 
-    // Inline code
-    processed = processed.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+    // Extract markdown tables
+    processed = processed.replace(/(?:^\|.+?\|[^\S\r\n]*(?:\r?\n|$)){2,}/gm, (tableMatch) => {
+      const lines = tableMatch.trim().split(/\r?\n/).filter(Boolean);
+      if (lines.length < 2) return tableMatch;
 
-    // Bold & Italics
+      const parseCells = (line) => line.trim().replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+      const headerCells = parseCells(lines[0]);
+      const sep = lines[1];
+      if (!sep.includes("-")) return tableMatch;
+
+      const bodyRows = lines.slice(2).map(parseCells);
+      let tableHtml = '<div class="table-container"><table class="markdown-table"><thead><tr>';
+      headerCells.forEach((h) => {
+        tableHtml += `<th>${h}</th>`;
+      });
+      tableHtml += "</tr></thead><tbody>";
+      bodyRows.forEach((row) => {
+        tableHtml += "<tr>";
+        row.forEach((cell) => {
+          tableHtml += `<td>${cell}</td>`;
+        });
+        tableHtml += "</tr>";
+      });
+      tableHtml += "</tbody></table></div>";
+      return `\n\n${tableHtml}\n\n`;
+    });
+
+    // Inline code
+    processed = processed.replace(/`([^`\n]+)`/g, '<code class="inline-code">$1</code>');
+
+    // Bold & Italics & Strikethrough
     processed = processed.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     processed = processed.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    processed = processed.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+
+    // Safe Markdown Links: [text](https://...)
+    processed = processed.replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      '<a href="$2" class="msg-link" target="_blank" rel="noopener noreferrer">$1</a>'
+    );
 
     // Blockquotes (lines starting with &gt; )
     processed = processed.replace(/^&gt;\s+(.*)$/gm, "\n\n<blockquote>$1</blockquote>\n\n");
@@ -158,14 +211,14 @@
     processed = processed.replace(/^[-*]\s+(.*)$/gm, "<!--ul--><li>$1</li>");
     processed = processed.replace(/(?:<!--ul--><li>.*<\/li>(?:\n|$))+/g, (match) => {
       const items = match.replace(/<!--ul-->/g, "").trimEnd();
-      return `\n\n<ul>\n${items}\n</ul>\n\n`;
+      return `\n\n<ul class="msg-list">\n${items}\n</ul>\n\n`;
     });
 
     // Numbered lists (lines starting with 1. )
     processed = processed.replace(/^\d+\.\s+(.*)$/gm, "<!--ol--><li>$1</li>");
     processed = processed.replace(/(?:<!--ol--><li>.*<\/li>(?:\n|$))+/g, (match) => {
       const items = match.replace(/<!--ol-->/g, "").trimEnd();
-      return `\n\n<ol>\n${items}\n</ol>\n\n`;
+      return `\n\n<ol class="msg-list">\n${items}\n</ol>\n\n`;
     });
 
     // Paragraphs and breaks
@@ -178,8 +231,12 @@
           trimmed.startsWith("@@CODE_BLOCK_") ||
           trimmed.startsWith("<pre>") ||
           trimmed.startsWith("<ul>") ||
+          trimmed.startsWith("<ul class=\"msg-list\">") ||
           trimmed.startsWith("<ol>") ||
-          trimmed.startsWith("<blockquote>")
+          trimmed.startsWith("<ol class=\"msg-list\">") ||
+          trimmed.startsWith("<blockquote>") ||
+          trimmed.startsWith("<div class=\"table-container\"") ||
+          trimmed.startsWith("<table")
         ) {
           return trimmed;
         }
@@ -188,11 +245,24 @@
       .filter(Boolean)
       .join("");
 
-    // Re-insert code blocks
+    // Re-insert code blocks with header and copy button
     processed = processed.replace(/@@CODE_BLOCK_(\d+)@@/g, (match, idx) => {
       const block = codeBlocks[Number(idx)];
       if (!block) return "";
-      return `<pre><code>${block.code}</code></pre>`;
+      const langName = block.lang || "text";
+      return `<div class="code-block-wrapper">
+        <div class="code-block-header">
+          <span class="code-lang-tag">${escapeHtml(langName)}</span>
+          <button type="button" class="btn-copy-code" title="Copy code" aria-label="Copy code snippet">
+            <svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12" aria-hidden="true">
+              <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+              <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+            </svg>
+            <span>Copy</span>
+          </button>
+        </div>
+        <pre><code class="code-content">${block.code}</code></pre>
+      </div>`;
     });
 
     return processed;
@@ -226,6 +296,20 @@
     });
   }
 
+  // Delegate click for code snippet copy buttons
+  document.addEventListener("click", (e) => {
+    const copyCodeBtn = e.target.closest(".btn-copy-code");
+    if (copyCodeBtn) {
+      const wrapper = copyCodeBtn.closest(".code-block-wrapper");
+      if (wrapper) {
+        const codeEl = wrapper.querySelector("code");
+        if (codeEl) {
+          copyToClipboard(codeEl.textContent, copyCodeBtn);
+        }
+      }
+    }
+  });
+
   // Append a message to the chat container
   function appendMessage(role, content, toolCalls, timestamp) {
     const wasNearBottom = isUserScrolledNearBottom();
@@ -235,6 +319,24 @@
     const header = document.createElement("div");
     header.className = "message-header";
 
+    const avatarInline = document.createElement("span");
+    avatarInline.className = `message-avatar-inline avatar-${role}`;
+    avatarInline.setAttribute("aria-hidden", "true");
+    if (role === "assistant") {
+      avatarInline.innerHTML = `
+        <svg viewBox="0 0 32 32" fill="none" class="avatar-svg">
+          <path d="M16 3.5L28 26.5H21.5L16 15L10.5 26.5H4L16 3.5Z" fill="currentColor"/>
+          <circle cx="16" cy="19" r="2.5" fill="var(--plasma-cyan)"/>
+        </svg>
+      `;
+    } else {
+      avatarInline.innerHTML = `
+        <svg viewBox="0 0 16 16" fill="currentColor" class="avatar-svg">
+          <path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm2-3a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm4 8c0 1-1 1-1 1H3s-1 0-1-1 1-4 6-4 6 3 6 4zm-1-.004c-.001-.246-.154-.986-.832-1.664C11.516 10.68 10.289 10 8 10c-2.29 0-3.516.68-4.168 1.332-.678.678-.83 1.418-.832 1.664h10z"/>
+        </svg>
+      `;
+    }
+
     const author = document.createElement("span");
     author.className = "message-author";
     author.textContent = role === "user" ? "You" : "Adam";
@@ -243,6 +345,7 @@
     time.className = "message-time";
     time.textContent = formatTime(timestamp);
 
+    header.appendChild(avatarInline);
     header.appendChild(author);
     header.appendChild(time);
     row.appendChild(header);
@@ -266,6 +369,7 @@
         copyBtn.type = "button";
         copyBtn.className = "btn-msg-action";
         copyBtn.title = "Copy message text";
+        copyBtn.setAttribute("aria-label", "Copy message text");
         copyBtn.innerHTML = `
           <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
             <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
@@ -283,9 +387,13 @@
       const toolContainer = document.createElement("div");
       toolContainer.className = "tool-calls-container";
       toolCalls.forEach((tc) => {
+        let toolName = tc;
+        if (typeof tc === "object" && tc !== null) {
+          toolName = tc.function?.name || tc.name || JSON.stringify(tc);
+        }
         const badge = document.createElement("span");
         badge.className = "tool-badge";
-        badge.textContent = `⚡ ${tc}`;
+        badge.innerHTML = `<span class="tool-bolt" aria-hidden="true">⚡</span> <span>${escapeHtml(String(toolName))}</span>`;
         toolContainer.appendChild(badge);
       });
       row.appendChild(toolContainer);
@@ -334,6 +442,8 @@
     const running = data.phase === "started";
     row.dataset.toolRunning = running ? "true" : "false";
     row.dataset.toolName = data.tool;
+    row.dataset.outcome = running ? "running" : (data.outcome || "finished");
+
     const outcome = running ? "Running" : (labels[data.outcome] || data.outcome || "Finished");
     const duration = !running && data.duration_ms != null ? ` (${data.duration_ms} ms)` : "";
     const badgeEl = row.querySelector(".tool-badge");
@@ -341,28 +451,78 @@
       badgeEl.textContent = `⚡ ${data.tool} · ${outcome}${duration}`;
     }
     if (isSending) {
-      statusMessage.textContent = running
+      const message = running
         ? `Adam is using ${data.tool}…`
         : "Adam is processing the result…";
+      if (taskProgressStartedAt !== null) {
+        setTaskProgressMessage(message);
+      } else {
+        statusMessage.textContent = message;
+      }
     }
     toolActivity.scrollTop = toolActivity.scrollHeight;
   }
 
-  // Show live task retry / recovery progress
+  function clearTaskProgress() {
+    if (taskProgressTimer) {
+      clearInterval(taskProgressTimer);
+      taskProgressTimer = null;
+    }
+    taskProgressStartedAt = null;
+    taskProgressMessage = "";
+    taskProgressAwaitingConfirmation = false;
+  }
+
+  function renderTaskProgress() {
+    if (!isSending || taskProgressStartedAt === null || !taskProgressMessage) return;
+    if (taskProgressAwaitingConfirmation) {
+      statusMessage.textContent = "Adam is awaiting verbal confirmation (via mic)...";
+      return;
+    }
+    const elapsedSeconds = Math.floor((Date.now() - taskProgressStartedAt) / 1000);
+    statusMessage.textContent = elapsedSeconds > 0
+      ? `${taskProgressMessage} (${elapsedSeconds}s elapsed)`
+      : taskProgressMessage;
+  }
+
+  function setTaskProgressMessage(message) {
+    if (!isSending || taskProgressStartedAt === null) return;
+    taskProgressMessage = message;
+    renderTaskProgress();
+  }
+
+  function startTaskProgress() {
+    if (!isSending) return;
+    if (taskProgressStartedAt === null) {
+      taskProgressStartedAt = Date.now();
+      taskProgressMessage = "Adam is working on your request…";
+    }
+    if (!taskProgressTimer) {
+      taskProgressTimer = setInterval(renderTaskProgress, 10000);
+    }
+    renderTaskProgress();
+  }
+
+  // Show live turn, model request, retry, and recovery progress.
   function showTaskProgress(data) {
     if (!isSending) return;
     const count = Number.isInteger(data.attempt) && Number.isInteger(data.max_attempts)
       ? ` (${data.attempt}/${data.max_attempts})`
       : "";
-    if (data.event === "llm.retrying") {
+    if (data.event === "turn.started") {
+      startTaskProgress();
+    } else if (data.event === "llm.request_started") {
+      startTaskProgress();
+      setTaskProgressMessage("Sending a request to the model…");
+    } else if (data.event === "llm.retrying") {
       const reason = data.reason === "429" ? "rate limited the request" : "request failed";
-      statusMessage.textContent = `Model ${reason}; retrying${count}…`;
+      setTaskProgressMessage(`Model ${reason}; retrying${count}…`);
     } else if (data.event === "brain.tool_recovery") {
-      statusMessage.textContent = `A tool failed; asking Adam to recover safely${count}…`;
+      setTaskProgressMessage(`A tool failed; asking Adam to recover safely${count}…`);
     } else if (data.event === "brain.empty_completion_recovery") {
-      statusMessage.textContent = `Adam received no usable model response; retrying${count}…`;
+      setTaskProgressMessage(`Adam received no usable model response; retrying${count}…`);
     } else if (data.event === "brain.capability_recovery") {
-      statusMessage.textContent = `Adam is re-checking available tools${count}…`;
+      setTaskProgressMessage(`Adam is re-checking available tools${count}…`);
     }
   }
 
@@ -371,12 +531,15 @@
     if (connected && mode === "daemon") {
       connBadge.className = "badge badge-online";
       connText.textContent = "Connected (Daemon)";
+      connBadge.title = "Connected to live Adam daemon";
     } else if (connected) {
       connBadge.className = "badge badge-online";
       connText.textContent = "Connected (Loopback)";
+      connBadge.title = "Connected to loopback server";
     } else {
       connBadge.className = "badge badge-offline";
       connText.textContent = extra || "Disconnected";
+      connBadge.title = extra || "Disconnected from Adam";
     }
   }
 
@@ -384,10 +547,15 @@
   function setRuntimeState(state) {
     const s = state || "IDLE";
     stateText.textContent = s;
+    taskProgressAwaitingConfirmation = s === "AWAITING_CONFIRMATION" && isSending;
     if (s === "PROCESSING_REACT") {
       stateBadge.className = "badge badge-state state-processing";
       statusBar.classList.remove("hidden");
-      statusMessage.textContent = "Adam is reasoning and executing tools...";
+      if (isSending && taskProgressStartedAt !== null) {
+        renderTaskProgress();
+      } else {
+        statusMessage.textContent = "Adam is reasoning and executing tools...";
+      }
     } else if (s === "AWAITING_CONFIRMATION") {
       stateBadge.className = "badge badge-state state-confirm";
       statusBar.classList.remove("hidden");
@@ -445,12 +613,15 @@
         if (!data.auth_required) {
           authBadge.className = "badge badge-auth badge-auth-off";
           authText.textContent = "Auth: Off (Loopback)";
+          authBadge.title = "Authentication disabled (Loopback binding)";
         } else if (data.authenticated) {
           authBadge.className = "badge badge-auth badge-auth-valid";
           authText.textContent = "Auth: Active";
+          authBadge.title = "Session authenticated with valid token";
         } else {
           authBadge.className = "badge badge-auth badge-auth-required";
           authText.textContent = "Auth: Required";
+          authBadge.title = "Authentication token required. Click to configure.";
         }
         return data;
       }
@@ -570,6 +741,7 @@
 
   function openAuthModal(msg) {
     lastFocusedElement = document.activeElement;
+    setTokenVisibility(false);
     tokenInput.value = getStoredToken();
     if (msg) {
       authModalStatus.textContent = msg;
@@ -585,6 +757,7 @@
   }
 
   function closeAuthModal() {
+    setTokenVisibility(false);
     authModal.classList.add("hidden");
     authBadge.setAttribute("aria-expanded", "false");
     document.removeEventListener("keydown", handleModalKeyDown);
@@ -593,10 +766,36 @@
     }
   }
 
+  function setTokenVisibility(visible) {
+    tokenInput.setAttribute("type", visible ? "text" : "password");
+    toggleTokenVisibilityBtn.setAttribute(
+      "aria-label",
+      visible ? "Hide token" : "Show token"
+    );
+  }
+
+  // Toggle token input password / text visibility
+  if (toggleTokenVisibilityBtn) {
+    toggleTokenVisibilityBtn.addEventListener("click", () => {
+      const isPassword = tokenInput.getAttribute("type") === "password";
+      setTokenVisibility(isPassword);
+    });
+  }
+
+  if (tokenInput) {
+    tokenInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        saveTokenBtn.click();
+      }
+    });
+  }
+
   // Initialize WebSocket connection
   async function connectWebSocket(force = false) {
     if (!force && ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
     if (!force && wsConnecting) return;
+    clearTaskProgress();
     const generation = ++wsGeneration;
     wsConnecting = true;
 
@@ -702,11 +901,13 @@
             appendMessage("assistant", `❌ Error: ${res.error || "Unknown execution error"}`);
           }
           isSending = false;
+          clearTaskProgress();
           sendBtn.disabled = false;
           statusBar.classList.add("hidden");
         } else if (data.type === "error") {
           appendMessage("assistant", `❌ Error: ${data.error || "WebSocket error"}`);
           isSending = false;
+          clearTaskProgress();
           sendBtn.disabled = false;
           statusBar.classList.add("hidden");
         }
@@ -718,6 +919,7 @@
     socket.onclose = (event) => {
       if (ws !== socket || generation !== wsGeneration) return;
       wsConnecting = false;
+      clearTaskProgress();
       if (heartbeatTimer) {
         clearInterval(heartbeatTimer);
         heartbeatTimer = null;
@@ -730,6 +932,7 @@
             badgeEl.textContent = `⚡ ${row.dataset.toolName} · Connection lost (outcome unknown)`;
           }
           row.dataset.toolRunning = "false";
+          row.dataset.outcome = "cancelled";
         }
       }
       if (event.code === 4001 || event.code === 4401) {
@@ -754,6 +957,7 @@
     socket.onerror = () => {
       if (ws !== socket || generation !== wsGeneration) return;
       wsConnecting = false;
+      clearTaskProgress();
       setConnectionStatus(false, "offline", "Connection Error");
       if (isSending && pendingChatMessage === null) {
         isSending = false;
@@ -768,6 +972,7 @@
   async function sendMessage(text) {
     if (!text || isSending) return;
 
+    clearTaskProgress();
     isSending = true;
     sendBtn.disabled = true;
     chatInput.value = "";
@@ -790,9 +995,13 @@
         pendingChatMessage = null;
         pendingChatTimeout = null;
         isSending = false;
+        clearTaskProgress();
         sendBtn.disabled = false;
         statusBar.classList.add("hidden");
-        appendMessage("assistant", "❌ Could not connect to Adam's live activity stream. Your message was not sent; please try again when the connection is restored.");
+        appendMessage(
+          "assistant",
+          "❌ Could not connect to Adam's live activity stream. Your message was not sent; please try again when the connection is restored."
+        );
       }, 15000);
       if (!wsConnecting && (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING)) {
         connectWebSocket();
@@ -954,7 +1163,7 @@
     chatInput.style.height = `${Math.min(chatInput.scrollHeight, 140)}px`;
   });
 
-  // Auth modal handlers - Rely on native click for button triggers
+  // Auth modal handlers
   authBadge.addEventListener("click", () => {
     openAuthModal();
   });
@@ -1018,4 +1227,6 @@
   fetchStatus();
   loadHistory();
   connectWebSocket();
+
+  window.addEventListener("pagehide", clearTaskProgress);
 })();
