@@ -1,4 +1,5 @@
 from io import BytesIO
+import socket
 
 import pytest
 from PIL import Image
@@ -99,3 +100,44 @@ def test_capture_rejects_invalid_png(monkeypatch):
 
     with pytest.raises(RuntimeError, match="could not be decoded"):
         desktop.capture_screenshot_with_origin("desktop")
+
+
+def test_hyprland_window_capture_rejects_focus_aba_events(monkeypatch):
+    backend = FakeBackend(name="hyprland", image=_png((20, 20)))
+    monitor = ("1", "DP-1", 0, 0, 20, 20, 1.0)
+    backend.last_screenshot_monitor_id = "1"
+    backend.last_screenshot_target = "DP-1"
+    backend.last_screenshot_origin = (0, 0)
+    backend.last_screenshot_bounds = (0, 0, 20, 20)
+    backend.last_screenshot_scale = (1.0, 1.0)
+    monkeypatch.setattr(desktop, "ensure_gui_environment", lambda: None)
+    monkeypatch.setattr(desktop, "wait_for_application_ready", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(desktop, "get_active_backend", lambda **_kwargs: backend)
+    snapshot = ("window-A", (0, 0, 10, 10), monitor)
+    monkeypatch.setattr(desktop, "_active_window_snapshot", lambda **_kwargs: snapshot)
+    monkeypatch.setattr(desktop, "_active_hyprland_monitor_snapshot", lambda **_kwargs: monitor)
+    event_reader, event_writer = socket.socketpair()
+    event_reader.setblocking(False)
+    monkeypatch.setattr(
+        desktop, "_connect_hyprland_focus_event_socket", lambda **_kwargs: event_reader
+    )
+    select_ready = desktop.select.select
+
+    def finish_split_event(readers, writers, errors, timeout):
+        event_writer.sendall(
+            b"A\nactivewindowv2>>window-B\nactivewindowv2>>window-A\n"
+        )
+        return select_ready(readers, writers, errors, timeout)
+
+    monkeypatch.setattr(desktop.select, "select", finish_split_event)
+
+    def capture_with_focus_aba():
+        event_writer.sendall(b"activewindowv2>>window-")
+        return backend.image
+
+    monkeypatch.setattr(backend, "capture_screenshot", capture_with_focus_aba)
+    try:
+        with pytest.raises(RuntimeError, match="focus or focused monitor changed"):
+            desktop.capture_screenshot_with_origin("window")
+    finally:
+        event_writer.close()

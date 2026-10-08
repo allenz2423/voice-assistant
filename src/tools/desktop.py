@@ -1,8 +1,10 @@
 import os
 import json
 import re
+import select
 import shlex
 import shutil
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -2357,6 +2359,61 @@ def _active_hyprland_monitor_snapshot(
     return _hyprland_monitor_snapshot(active.get("monitor"), environ=environ)
 
 
+def _connect_hyprland_focus_event_socket(
+    *, environ: dict[str, str] | None = None
+) -> socket.socket:
+    """Subscribe to this Hyprland instance's focus events for a capture interval."""
+    env = os.environ if environ is None else environ
+    signature = str(env.get("HYPRLAND_INSTANCE_SIGNATURE") or "").strip()
+    runtime_dir = str(env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}")
+    if not signature:
+        raise RuntimeError("Hyprland instance identity is unavailable for focus-event monitoring.")
+    path = Path(runtime_dir) / "hypr" / signature / ".socket2.sock"
+    event_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        event_socket.settimeout(2)
+        event_socket.connect(str(path))
+        event_socket.setblocking(False)
+        return event_socket
+    except OSError as exc:
+        event_socket.close()
+        raise RuntimeError("Could not monitor Hyprland focus events during screenshot capture.") from exc
+
+
+def _hyprland_focus_changed(event_socket: socket.socket) -> bool:
+    """Drain Hyprland events and report any focus or focused-monitor transition."""
+    data = bytearray()
+    partial_frame_deadline = time.monotonic() + 0.1
+    try:
+        while True:
+            try:
+                chunk = event_socket.recv(4096)
+            except BlockingIOError:
+                if not data or data[-1] == ord("\n"):
+                    break
+                remaining = partial_frame_deadline - time.monotonic()
+                if remaining <= 0 or not select.select([event_socket], [], [], remaining)[0]:
+                    raise RuntimeError(
+                        "Hyprland focus-event monitoring returned an incomplete event."
+                    )
+                continue
+            if not chunk:
+                raise RuntimeError("Hyprland focus-event monitoring ended during screenshot capture.")
+            data.extend(chunk)
+    except (OSError, ValueError) as exc:
+        raise RuntimeError("Hyprland focus-event monitoring failed during screenshot capture.") from exc
+
+    lines = data.split(b"\n")
+    for line in lines[:-1]:
+        event_name, separator, _payload = line.partition(b">>")
+        if not separator:
+            raise RuntimeError("Hyprland focus-event monitoring returned an invalid event.")
+        event_name = bytes(event_name)
+        if event_name in {b"activewindow", b"activewindowv2", b"focusedmon", b"focusedmonv2"}:
+            return True
+    return False
+
+
 def _verify_hyprland_capture_monitor(
     backend: BaseDesktopBackend,
     expected: tuple[str, str, int, int, int, int, float],
@@ -2587,12 +2644,24 @@ def capture_screenshot_with_origin(
         monitor_snapshot_before = window_snapshot_before[2]
     elif scope == "monitor":
         monitor_snapshot_before = _active_hyprland_monitor_snapshot(environ=environ)
-    with timed_stage("desktop.capture.backend"):
-        image = (
-            backend.capture_desktop_screenshot()
-            if scope == "desktop"
-            else backend.capture_screenshot()
-        )
+    focus_event_socket = None
+    if scope in {"window", "monitor"} and backend.name == "hyprland":
+        focus_event_socket = _connect_hyprland_focus_event_socket(environ=environ)
+    try:
+        with timed_stage("desktop.capture.backend"):
+            image = (
+                backend.capture_desktop_screenshot()
+                if scope == "desktop"
+                else backend.capture_screenshot()
+            )
+        if focus_event_socket and _hyprland_focus_changed(focus_event_socket):
+            raise RuntimeError(
+                "Hyprland focus or focused monitor changed during screenshot capture; "
+                "refusing to attach a potentially mismatched image."
+            )
+    finally:
+        if focus_event_socket:
+            focus_event_socket.close()
     if scope == "window":
         window_snapshot_after = _active_window_snapshot(environ=environ, backend=backend)
         if window_snapshot_after != window_snapshot_before:
