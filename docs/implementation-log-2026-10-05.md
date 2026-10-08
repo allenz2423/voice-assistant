@@ -1493,3 +1493,10 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - One live focused Edge UI acceptance used Adam's existing sidecar page in the same window, `hyprland:0x55e8d048a150` (PID **1219402**), at **(1,721)** with size **1278×718**. Exact prompt: `Compare rigatoni and penne in two short sentences.` Adam replied in exactly two short sentences: `Rigatoni are wider, straight-cut ridged tubes that hold chunky meat and vegetable sauces well. Penne are narrower with angled, pointed ends, so they trap lighter, thinner sauces more effectively.` The response meets the shape and sauce/texture oracle.
 - UI timestamps were **4:32:25 PM** for the prompt and **4:32:28 PM** for the answer, about **3 seconds**. No tool badge was visible for this turn. Focused-window proof is `/tmp/adam-edge-f1-attempt1/step-05.png` (mode **0600**).
 - Pre/post API status was `IDLE_LISTENING`, meeting mode false, and `active_tool=null`; TTS was Silent. DP-5 began off, was enabled and verified on for capture, then restored and verified off. No page navigation, other-tab inspection or switching, `/api/chat` prompt, or pytest was used.
+
+
+## Checkpoint 208 — focused Edge system-status quickpath
+
+- One live UI sample used the existing Adam sidecar page in the same focused Edge window, `hyprland:0x55e8d048a150` (PID **1219402**), at **(1,721)** with size **1278×718**. Exact prompt: `System status`. Exact visible answer: `CPU is 9%, memory is 35%, and GPU utilization is 0% on GPU 0 and 39% on GPU 1.` This meets the concise current CPU, memory, and available GPU overview oracle in one sentence. The visible tool badge was `get_system_status`.
+- UI timestamps were **4:34:13 PM** for the prompt and **4:34:14 PM** for the answer, about **1 second**. Focused-window proof is `/tmp/adam-edge-system-status-attempt1/step-04.png` (mode **0600**).
+- Pre/post API state was `IDLE_LISTENING`, meeting mode false, and `active_tool=null`; TTS was Silent. DP-5 began off, was enabled and verified on for capture, then restored and verified off. No `/api/chat` prompt, tab inspection or navigation, or pytest was used.
