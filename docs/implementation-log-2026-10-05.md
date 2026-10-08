@@ -1035,3 +1035,8 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - OmniParser now defaults to CPU. `--omniparser` writes the installed device, a valid discovered NVIDIA GPU UUID when using the NVIDIA runtime, and runtime/model paths under XDG data; it enables the feature only after installation and config writes succeed. Combining `--omniparser` with `--skip-models` is rejected before installation. `README.md` now documents these setup choices and limits.
 - `bash -n setup.sh`, `git diff --check`, and parsing `config.yaml.example` as YAML passed. Independent review found no concrete issue in `setup.sh` or the example config; README review confirmed the OmniParser paragraph matches setup and defaults. No tests, setup, downloads, or services were run.
+
+## Checkpoint 138 — 30-minute passive T1 safe-window watch
+
+- Checks at **5, 10, 15, 20, 25, and 30 minutes** all found Gedit count **1**, fixture ports **8766, 8767, 8768, 41112, and 18765** listening, and WebUI `IDLE_LISTENING`. The safe-window gate never passed, so prepared rep 1 T1 was not run.
+- No model, provider, UI, or microphone action occurred. No tests were run.
