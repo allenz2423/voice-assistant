@@ -1020,3 +1020,8 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - The F1 run sheet now clarifies at `docs/implementation-evaluation-run-sheet-2026-10-05.md:43` that CP123's unqualified “better for lighter sauces” wording triggers the already-existing `categorical_sauce_comparison` rejection rule. This applies the existing rule to the documented wording; it makes no oracle change and does not rescore earlier results.
 - `git diff --check` passed. No tests or live runs were performed.
+
+## Checkpoint 135 — fresh T1 fixtures prepared; provider turns deferred
+
+- Three new private synthetic T1 fixtures were generated, each fresh with the answer target absent: prep `t1-prep-20261008-8c4f6d2a` (`/tmp/adam-implementation-fixtures/t1-prep-20261008-8c4f6d2a`), rep 2 `t1-rep2-20261008-b73d91a4` (`/tmp/adam-implementation-fixtures/t1-rep2-20261008-b73d91a4`), and rep 3 `t1-rep3-20261008-c04a6e2f` (`/tmp/adam-implementation-fixtures/t1-rep3-20261008-c04a6e2f`). Each uses the exact answer oracle `b'3\n'`; the source is **75 bytes**, SHA-256 `93f34a32e679cfef4549e00f54d56c693a76875a4ef357c7e76b08e7a94c60ee`.
+- T1 provider turns were deferred because Gedit remained open and the same five fixture servers continued listening on ports **8766, 8767, 8768, 41112, and 18765**. The daemon reported `IDLE_LISTENING`, but the shared executor made overlap unsafe. No model/provider turn, browser activity, microphone capture, or test was run; no config was read and no existing fixture was touched. No commit was made.
