@@ -1118,12 +1118,20 @@ _EXPLICIT_PAST_MARKER_RE = (
     r"\d+\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s+ago|"
     r"(?:in|during|over)\s+the\s+past)"
 )
+_OPTIONAL_CLAUSE_CONJUNCTION_RE = r"(?:(?:and|but|so|yet)\s+)?"
 _PAST_RESOURCE_USAGE_RE = re.compile(
     rf"\b{_EXPLICIT_PAST_MARKER_RE}\b[^\n.!?]{{0,60}}\b{_RESOURCE_METRIC_RE}\b|"
     rf"\b{_RESOURCE_METRIC_RE}\b[^\n.!?]{{0,60}}\b{_EXPLICIT_PAST_MARKER_RE}\b|"
-    rf"\b(?:what|when|why|how|where)(?:\s+\w+){{0,3}}\s+(?:was|were|did|had)\b"
+    rf"\b{_OPTIONAL_CLAUSE_CONJUNCTION_RE}(?:tell\s+me\s+why|explain\s+why|what|when|why|how|where)"
+    rf"(?:\s+\w+){{0,3}}\s+(?:was|were|did|had)\b"
     rf"[^\n.!?]{{0,40}}\b{_RESOURCE_METRIC_RE}\b|"
-    rf"(?:\A|[.!?]\s*)(?:was|were|did|had)\b[^\n.!?]{{0,40}}\b{_RESOURCE_METRIC_RE}\b",
+    rf"(?:\A|[.!?]\s*){_OPTIONAL_CLAUSE_CONJUNCTION_RE}"
+    rf"(?:was|were|did|had)\b[^\n.!?]{{0,40}}\b{_RESOURCE_METRIC_RE}\b",
+    re.IGNORECASE,
+)
+_QUESTION_START_RE = re.compile(
+    rf"^\s*{_OPTIONAL_CLAUSE_CONJUNCTION_RE}"
+    r"(?:tell\s+me\s+why|explain\s+why|why|what|how|when|where|is|are|does|do|did|was|were|can|could)\b",
     re.IGNORECASE,
 )
 
@@ -1131,9 +1139,16 @@ _PAST_RESOURCE_USAGE_RE = re.compile(
 def _guard_unrequested_earlier_spike_fallback(user_text: str, response_text: str) -> str:
     """Use the earlier-spike fallback only when the current request is historical."""
     response = str(response_text or "")
+    request = str(user_text or "")
+    clauses = re.split(r"[,—–]", request)
+    has_historical_question = any(
+        _PAST_RESOURCE_USAGE_RE.search(clause)
+        and _QUESTION_START_RE.search(clause)
+        for clause in clauses
+    )
     if (
         _EARLIER_SPIKE_NO_CAUSE_SENTENCE in response
-        and not _PAST_RESOURCE_USAGE_RE.search(str(user_text or ""))
+        and not has_historical_question
     ):
         return response.replace(
             _EARLIER_SPIKE_NO_CAUSE_SENTENCE,
