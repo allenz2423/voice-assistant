@@ -1040,3 +1040,9 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - Checks at **5, 10, 15, 20, 25, and 30 minutes** all found Gedit count **1**, fixture ports **8766, 8767, 8768, 41112, and 18765** listening, and WebUI `IDLE_LISTENING`. The safe-window gate never passed, so prepared rep 1 T1 was not run.
 - No model, provider, UI, or microphone action occurred. No tests were run.
+
+## Checkpoint 139 — context-only resource sample with fixture infrastructure open
+
+- Read-only 10 s sample **2026-10-08 13:16:58–13:17:08 UTC** (**09:16:58–09:17:08 EDT**), labeled `fixture_infrastructure_open_daemon_idle`: user `adam.service` was active (PID **709499**), system-level unit inactive/dead, with one service process. RSS was **1,633,788 KiB** at both endpoints; PSS **1,612,264→1,612,263 KiB**. Cgroup `memory.current` was **1,165,168,640→1,165,672,448 B**, `memory.peak` **1,271,926,784 B**; cgroup CPU usage **29,550,573→29,605,171 usec** (delta **54,598** over about 10 s). System CPU was **0.60%**.
+- `MemAvailable` was **21,765,104→21,750,272 KiB** of **32,772,236 KiB**; swap used **3,852 KiB** of **32,772,092 KiB** (free **32,768,240 KiB**). `powerprofilesctl` reported `performance`; there was no energy meter or instrument. Gedit count remained **1**, with five Python fixture-server children. Application state was not independently measured during this sample.
+- This is context-only, not a clean idle or task sample. Do not infer a cause for the memory difference from earlier snapshots. No tests or application requests were made.
