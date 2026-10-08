@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -52,7 +53,11 @@ def _read_atspi(windows: list[dict]) -> list[dict]:
         return []
     helper = Path(__file__).with_name("atspi_reader.py")
     python = os.environ.get("ADAM_ATSPI_PYTHON", "/usr/bin/python3")
-    payload = json.dumps(windows[:30], ensure_ascii=False)
+    requested = [
+        {**window, "browser_document_only": _is_chromium_browser(window.get("app"))}
+        for window in windows[:30]
+    ]
+    payload = json.dumps(requested, ensure_ascii=False)
     try:
         result = subprocess.run([python, str(helper), payload], capture_output=True, text=True, timeout=8)
         data = json.loads(result.stdout) if result.stdout.strip() else []
@@ -61,10 +66,18 @@ def _read_atspi(windows: list[dict]) -> list[dict]:
         return [{"ok": False, "error": str(exc)}]
 
 
+def _is_chromium_browser(app: object) -> bool:
+    """Recognize browser app identifiers without matching names like Edgecase."""
+    tokens = set(re.findall(r"[a-z0-9]+", str(app or "").casefold()))
+    return bool(tokens & {
+        "chrome", "chromium", "edge", "msedge", "brave", "vivaldi", "opera",
+    })
+
+
 def _read_browser_dom(active: dict) -> tuple[str | None, str]:
     """Read an explicitly configured or browser-advertised local CDP endpoint."""
     app = str(active.get("app") or "").casefold()
-    if not any(browser in app for browser in ("edge", "chrome", "chromium", "brave", "vivaldi", "opera")):
+    if not _is_chromium_browser(app):
         return None, "Active window is not a Chromium browser"
 
     endpoint = os.environ.get("ADAM_CDP_ENDPOINT", "").strip()
@@ -150,8 +163,11 @@ def _observe_desktop_impl(scope: str = "window", include_screenshot: bool = True
         row = accessibility[index] if index < len(accessibility) else {"ok": False, "error": "no AT-SPI result"}
         sections.append(f"\n{label}\nAT-SPI: {row.get('tree') if row.get('ok') else row.get('error', 'unavailable')}")
 
-    with timed_stage("observer.browser_dom"):
-        dom, dom_status = _read_browser_dom(active)
+    if _is_chromium_browser(active.get("app")):
+        dom, dom_status = None, "Skipped; browser content is read only from the scoped AT-SPI document"
+    else:
+        with timed_stage("observer.browser_dom"):
+            dom, dom_status = _read_browser_dom(active)
     sections.append(f"\nBrowser DOM: {dom_status}.")
     if dom:
         sections.append(dom)
