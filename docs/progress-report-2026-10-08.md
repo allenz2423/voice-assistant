@@ -84,3 +84,7 @@ One live UI acceptance used the existing focused Edge window and Adam sidecar. P
 Using the repository `ComputerController` with focused-window scope, each bounded action used a fresh screenshot/snapshot: Ctrl+L, type the known sidecar URL, Enter, click the visible composer at screenshot-grounded **(300,696)**, type exactly `What's my CPU usage? Keep it brief.`, and press Enter once. The visible answer was `CPU is at 4% (load 0.93 across 32 cores).` The `get_system_status` badge was visible, with `Returned (100 ms)` in the tool panel. UI timestamps were **4:28:03 PM** for the prompt and **4:28:06 PM** for the answer, about **3 seconds**. Focused-window proof is `/tmp/adam-edge-cpu-acceptance-attempt2/step-08.png`, mode **0600**; it shows the prompt, answer, and badge.
 
 Ctrl+L briefly exposed an address-bar suggestions popup; no suggestion was clicked or inspected, and no other tab was inspected. This is one live UI acceptance sample, not an aggregate reliability claim. No pytest was run.
+
+## CP205 — CP203 headless-release configuration clarification
+
+A sanitized active-service configuration check printed only `browser_navigation.enabled=true` and `browser_navigation.headless=false`. The automatic read-only BrowserNavigator release path requires `headless=true`, so CP203's retained processes are consistent with visible mode. This does not justify an unload or code change; no other configuration fields were printed.
