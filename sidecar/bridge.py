@@ -96,6 +96,27 @@ class DaemonBridge(RuntimeBridge):
         self._lock = asyncio.Lock()
         self._event_task = None
         self._unsubscribe_events = None
+        # Browser-only local quickpaths belong in the displayed transcript, not
+        # in AdamBrain's model context.
+        self._display_only_exchanges: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _display_exchange_anchor(
+        exchange: dict[str, Any], messages: list[dict[str, Any]]
+    ) -> int:
+        """Resolve a local exchange's insertion point across Brain history compaction."""
+        before_ids = exchange["before_message_ids"]
+        if (
+            len(messages) >= len(before_ids)
+            and all(id(messages[index]) == message_id for index, message_id in enumerate(before_ids))
+        ):
+            return min(exchange["after_message_index"], len(messages))
+
+        # Brain compaction rebuilds messages as fresh dictionaries and has no
+        # timestamps or stable IDs. Text signatures can match a later repeated
+        # turn, so fail safe by placing the local exchange before the retained
+        # history instead of moving it past newer Brain messages.
+        return 1
 
     async def start_live_events(self) -> None:
         if self._event_task is not None:
@@ -230,18 +251,114 @@ class DaemonBridge(RuntimeBridge):
 
     async def get_history(self) -> list[dict[str, Any]]:
         brain = getattr(self.daemon, "brain", None)
-        if brain is None or not hasattr(brain, "messages"):
-            return []
+        messages = list(getattr(brain, "messages", []) or []) if brain is not None else []
 
         history: list[dict[str, Any]] = []
+        local_exchanges = sorted(
+            (
+                (self._display_exchange_anchor(exchange, messages), exchange)
+                for exchange in self._display_only_exchanges
+            ),
+            key=lambda anchored: anchored[0],
+        )
+        local_index = 0
+
+        def append_local_exchanges_through(message_index: int) -> None:
+            nonlocal local_index
+            while (
+                local_index < len(local_exchanges)
+                and local_exchanges[local_index][0] <= message_index
+            ):
+                exchange = local_exchanges[local_index][1]
+                history.extend((
+                    {
+                        "role": "user",
+                        "content": exchange["user"],
+                        "tool_calls": None,
+                        "timestamp": exchange["timestamp"],
+                    },
+                    {
+                        "role": "assistant",
+                        "content": exchange["assistant"],
+                        "tool_calls": None,
+                        "timestamp": exchange["timestamp"],
+                    },
+                ))
+                local_index += 1
+
         # messages[0] is system prompt; messages[1:] contain conversational turns
-        for msg in list(brain.messages)[1:]:
+        for message_index, msg in enumerate(messages[1:], start=1):
+            append_local_exchanges_through(message_index)
             role = msg.get("role")
             if role not in ("user", "assistant"):
                 continue
             content = msg.get("content", "")
             if role == "user" and isinstance(content, str):
                 content = re.sub(r"^\[Current Desktop State\].*?\[Local Time:[^\]]+\]\s*\n", "", content, flags=re.S).strip()
+                context_headers = (
+                    "[Current Desktop State]",
+                    "[Current User Request",
+                    "[Retrieved user memory]",
+                    "[Relevant Specialized Skill Context]",
+                    "[Fresh Desktop Screenshot]",
+                    "[Fresh Adam Browser Snapshot]",
+                )
+                # Brain stores request context (retrieved skills, memory, and
+                # desktop observations) alongside the user's request. Keep that
+                # context in the model history, but expose only the request in
+                # the WebUI conversation transcript.
+                request = re.search(r"\[Current User Request[^\]]*\]\s*", content)
+                if request:
+                    end_marker = "[End Current User Request]"
+                    closing_positions = []
+                    search_from = request.end()
+                    while (position := content.find(end_marker, search_from)) >= 0:
+                        closing_positions.append(position)
+                        search_from = position + len(end_marker)
+
+                    closing_position = None
+                    for position in closing_positions:
+                        suffix = content[position + len(end_marker):].lstrip()
+                        if not suffix or suffix.startswith(context_headers[2:]):
+                            closing_position = position
+                            break
+                    compacted_truncation = content.endswith("...")
+                    if closing_position is None and closing_positions and not compacted_truncation:
+                        # Keep malformed or older wrapped messages readable; the
+                        # final marker is less likely to be part of user text.
+                        closing_position = closing_positions[-1]
+                    if closing_position is not None:
+                        content = content[request.end():closing_position].strip()
+                    else:
+                        # Brain compaction can cut off the wrapper's closing
+                        # marker. In that case only the retained request prefix
+                        # is safe to display; discard any context-looking suffix.
+                        request_content = content[request.end():]
+                        context_positions = [
+                            position
+                            for header in context_headers[2:]
+                            if (position := request_content.find(header)) >= 0
+                        ]
+                        if context_positions:
+                            request_content = request_content[:min(context_positions)]
+                        request_content = request_content.strip()
+                        if compacted_truncation and request_content.endswith("..."):
+                            request_content = request_content[:-3].rstrip()
+                        content = request_content
+                else:
+                    # A compacted prompt can end before the request header is
+                    # reached. Never render the remaining automatic context as
+                    # if it were user-authored text.
+                    if content.startswith(context_headers):
+                        content = ""
+                    else:
+                        context_positions = [
+                            position
+                            for header in context_headers
+                            if (position := content.find(header)) >= 0
+                        ]
+                        if context_positions:
+                            content = content[:min(context_positions)].strip()
             tool_calls = msg.get("tool_calls")
             formatted_tc = None
             if tool_calls:
@@ -251,13 +368,16 @@ class DaemonBridge(RuntimeBridge):
                     name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", "tool")
                     formatted_tc.append(name)
 
-            if content or formatted_tc:
+            if (content or formatted_tc) and not (
+                role == "user" and not str(content or "").strip()
+            ):
                 history.append({
                     "role": role,
                     "content": content,
                     "tool_calls": formatted_tc,
                     "timestamp": msg.get("timestamp") or datetime.now(timezone.utc).isoformat(),
                 })
+        append_local_exchanges_through(len(messages))
         return history
 
     async def handle_user_message(self, text: str) -> dict[str, Any]:
@@ -291,7 +411,8 @@ class DaemonBridge(RuntimeBridge):
                     }
             await self.broadcast_state({"type": "state", "system_state": "PROCESSING_REACT"})
 
-            prev_len = len(brain.messages)
+            brain_messages_before_turn = list(brain.messages)
+            prev_len = len(brain_messages_before_turn)
             silent_mode_action = _explicit_silent_mode_action(text)
             tts = getattr(brain, "tts", None)
             if tts is None:
@@ -373,6 +494,17 @@ class DaemonBridge(RuntimeBridge):
                         "error": "Adam's turn ended without a text reply. It may have been interrupted or failed; no completion was confirmed.",
                         "tool_calls": tool_calls_executed,
                     }
+
+                if isinstance(turn_response, str) and not any(
+                    m.get("role") in ("user", "assistant") for m in new_messages
+                ):
+                    self._display_only_exchanges.append({
+                        "after_message_index": prev_len,
+                        "before_message_ids": tuple(id(message) for message in brain_messages_before_turn),
+                        "user": text,
+                        "assistant": str(final_response).strip(),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
 
                 return {
                     "status": "completed",

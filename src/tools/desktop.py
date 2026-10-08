@@ -10,7 +10,22 @@ from typing import Optional, Any, Dict, List, Set
 
 from src.tools.desktop_timing import log_duration, timed_stage
 
-_HYPRLAND_LUA_DISPATCH: Optional[bool] = None
+_HYPRLAND_LUA_DISPATCH: dict[str, bool] = {}
+
+
+def _which(command: str, environ: dict[str, str] | None = None) -> str | None:
+    """Resolve executables using the PATH belonging to the selected session."""
+    if environ is None:
+        return shutil.which(command)
+    return shutil.which(command, path=environ.get("PATH", ""))
+
+
+def _is_native_wayland_session(environ: dict[str, str] | None = None) -> bool:
+    env = os.environ if environ is None else environ
+    return (
+        env.get("XDG_SESSION_TYPE", "").strip().lower() == "wayland"
+        or bool(env.get("WAYLAND_DISPLAY"))
+    )
 
 
 def _lua_string(value: str) -> str:
@@ -19,24 +34,30 @@ def _lua_string(value: str) -> str:
     return f'"{escaped}"'
 
 
-def _hyprland_dispatch(legacy_dispatch: str, legacy_args: str = "", *, lua_expression: str) -> subprocess.CompletedProcess:
+def _hyprland_dispatch(
+    legacy_dispatch: str, legacy_args: str = "", *, lua_expression: str,
+    environ: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     """Run a dispatcher on both legacy hyprlang and Lua-config Hyprland versions."""
-    global _HYPRLAND_LUA_DISPATCH
-    if _HYPRLAND_LUA_DISPATCH is None:
+    env = os.environ if environ is None else environ
+    hyprctl = _which("hyprctl", environ)
+    if not hyprctl:
+        raise RuntimeError("hyprctl is unavailable on the selected desktop session PATH.")
+    if hyprctl not in _HYPRLAND_LUA_DISPATCH:
         try:
-            version = subprocess.run(["hyprctl", "version"], capture_output=True, text=True, timeout=2).stdout
+            version = subprocess.run([hyprctl, "version"], capture_output=True, text=True, timeout=2, env=env).stdout
             match = re.search(r"Hyprland\s+(\d+)\.(\d+)", version)
-            _HYPRLAND_LUA_DISPATCH = bool(match and tuple(map(int, match.groups())) >= (0, 55))
+            _HYPRLAND_LUA_DISPATCH[hyprctl] = bool(match and tuple(map(int, match.groups())) >= (0, 55))
         except Exception:
-            _HYPRLAND_LUA_DISPATCH = False
+            _HYPRLAND_LUA_DISPATCH[hyprctl] = False
 
-    if _HYPRLAND_LUA_DISPATCH:
-        command = ["hyprctl", "dispatch", lua_expression]
+    if _HYPRLAND_LUA_DISPATCH[hyprctl]:
+        command = [hyprctl, "dispatch", lua_expression]
     else:
-        command = ["hyprctl", "dispatch", legacy_dispatch]
+        command = [hyprctl, "dispatch", legacy_dispatch]
         if legacy_args:
             command.append(legacy_args)
-    return subprocess.run(command, capture_output=True, text=True, timeout=3)
+    return subprocess.run(command, capture_output=True, text=True, timeout=3, env=env)
 
 def ensure_gui_environment():
     """Dynamically acquires GUI display variables (WAYLAND_DISPLAY, DISPLAY, HYPRLAND_INSTANCE_SIGNATURE,
@@ -116,14 +137,17 @@ def ensure_gui_environment():
                 break
 
 
-def detect_desktop_environment(refresh_env: bool = True) -> str:
+def detect_desktop_environment(
+    refresh_env: bool = True, *, environ: dict[str, str] | None = None
+) -> str:
     """Detects the currently running Desktop Environment or Window Manager."""
-    if refresh_env:
+    if refresh_env and environ is None:
         ensure_gui_environment()
 
-    xdg_current = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
-    desktop_session = os.environ.get("DESKTOP_SESSION", "").lower()
-    gdm_session = os.environ.get("GDMSESSION", "").lower()
+    env = os.environ if environ is None else environ
+    xdg_current = env.get("XDG_CURRENT_DESKTOP", "").lower()
+    desktop_session = env.get("DESKTOP_SESSION", "").lower()
+    gdm_session = env.get("GDMSESSION", "").lower()
 
     # 1. Primary check: XDG_CURRENT_DESKTOP
     if "hyprland" in xdg_current:
@@ -143,21 +167,21 @@ def detect_desktop_environment(refresh_env: bool = True) -> str:
 
     # 2. Compositor / WM specific sockets and signatures
     # If swaymsg is mocked or present and SWAYSOCK is set
-    if os.environ.get("SWAYSOCK") and (shutil.which("swaymsg") or not shutil.which("hyprctl")):
+    if env.get("SWAYSOCK") and (_which("swaymsg", env) or not _which("hyprctl", env)):
         return "sway"
-    if os.environ.get("I3SOCK") and (shutil.which("i3-msg") or not shutil.which("hyprctl")):
+    if env.get("I3SOCK") and (_which("i3-msg", env) or not _which("hyprctl", env)):
         return "i3"
-    if os.environ.get("NIRI_SOCKET"):
+    if env.get("NIRI_SOCKET"):
         return "niri"
-    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and (shutil.which("hyprctl") or not shutil.which("swaymsg")):
+    if env.get("HYPRLAND_INSTANCE_SIGNATURE") and (_which("hyprctl", env) or not _which("swaymsg", env)):
         return "hyprland"
-    if os.environ.get("KDE_SESSION_VERSION"):
+    if env.get("KDE_SESSION_VERSION"):
         return "kde_plasma"
 
     # 3. Session variables
-    if "sway" in desktop_session and (shutil.which("swaymsg") or not shutil.which("hyprctl")):
+    if "sway" in desktop_session and (_which("swaymsg", env) or not _which("hyprctl", env)):
         return "sway"
-    if "i3" in desktop_session and (shutil.which("i3-msg") or not shutil.which("hyprctl")):
+    if "i3" in desktop_session and (_which("i3-msg", env) or not _which("hyprctl", env)):
         return "i3"
     if "niri" in desktop_session:
         return "niri"
@@ -172,11 +196,11 @@ def detect_desktop_environment(refresh_env: bool = True) -> str:
 
     # A compositor CLI may be installed for occasional remote control while a
     # different desktop is active. Session identity or its socket is required.
-    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+    if env.get("HYPRLAND_INSTANCE_SIGNATURE"):
         return "hyprland"
-    if os.environ.get("SWAYSOCK"):
+    if env.get("SWAYSOCK"):
         return "sway"
-    if os.environ.get("I3SOCK"):
+    if env.get("I3SOCK"):
         return "i3"
 
     return "generic_desktop"
@@ -189,16 +213,19 @@ def _clean_str(s: str) -> str:
     return s.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "").replace("\ufeff", "").strip()
 
 
-def _get_app_directories() -> list[Path]:
+def _get_app_directories(environ: dict[str, str] | None = None) -> list[Path]:
     """Returns standard XDG application directories compliant with Freedesktop spec."""
     dirs = []
-    data_home = os.environ.get("XDG_DATA_HOME")
+    env = os.environ if environ is None else environ
+    data_home = env.get("XDG_DATA_HOME")
     if data_home:
         dirs.append(Path(data_home) / "applications")
-    else:
+    elif environ is None:
         dirs.append(Path.home() / ".local" / "share" / "applications")
 
-    data_dirs = os.environ.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share")
+    # Scoped environments must opt in to each registry; silently falling back
+    # to the host user's or system's app registry would identify the wrong app.
+    data_dirs = env.get("XDG_DATA_DIRS", "/usr/local/share:/usr/share" if environ is None else "")
     for d in data_dirs.split(":"):
         if d.strip():
             dirs.append(Path(d.strip()) / "applications")
@@ -266,10 +293,10 @@ def _scan_steam_entries(home: Optional[Path] = None) -> dict[str, dict]:
     return apps
 
 
-def _scan_desktop_entries() -> dict[str, dict]:
+def _scan_desktop_entries(environ: dict[str, str] | None = None) -> dict[str, dict]:
     """Scans all standard desktop entries across the system."""
     apps = {}
-    for app_dir in _get_app_directories():
+    for app_dir in _get_app_directories(environ):
         for p in app_dir.glob("*.desktop"):
             try:
                 name, exec_cmd, comment, nodisplay = None, None, "", False
@@ -302,8 +329,9 @@ def _scan_desktop_entries() -> dict[str, dict]:
                         }
             except Exception:
                 continue
-    for key, entry in _scan_steam_entries().items():
-        apps.setdefault(key, entry)
+    if environ is None:
+        for key, entry in _scan_steam_entries().items():
+            apps.setdefault(key, entry)
     return apps
 
 
@@ -426,7 +454,9 @@ def load_desktop_config(config_path: str = "config.yaml"):
 load_desktop_config()
 
 
-def _resolve_browser_entry(apps: dict[str, dict]) -> Optional[dict]:
+def _resolve_browser_entry(
+    apps: dict[str, dict], environ: dict[str, str] | None = None
+) -> Optional[dict]:
     """Resolves the default browser application entry, searching desktop entries and system PATH."""
     target_browser = DEFAULT_BROWSER.strip()
     if not target_browser:
@@ -454,7 +484,7 @@ def _resolve_browser_entry(apps: dict[str, dict]) -> Optional[dict]:
             return v
 
     # 3. Direct scan of .desktop files for matching Exec or desktop_id (handles shadowed entries)
-    for app_dir in _get_app_directories():
+    for app_dir in _get_app_directories(environ):
         for p in app_dir.glob("*.desktop"):
             if not p.is_file():
                 continue
@@ -486,7 +516,7 @@ def _resolve_browser_entry(apps: dict[str, dict]) -> Optional[dict]:
                 continue
 
     # 4. Fallback to shutil.which in system PATH
-    bin_path = shutil.which(target_browser) or shutil.which(target_stem)
+    bin_path = _which(target_browser, environ) or _which(target_stem, environ)
     if bin_path:
         return {
             "name": target_browser,
@@ -516,7 +546,9 @@ def _is_default_browser_target(target: str) -> bool:
     return bool(default_name) and any(canonical(name) == default_name for name in target_names)
 
 
-def _resolve_application_entry(target: str, apps: dict[str, dict]) -> Optional[dict]:
+def _resolve_application_entry(
+    target: str, apps: dict[str, dict], environ: dict[str, str] | None = None
+) -> Optional[dict]:
     """Resolves an app name to a desktop entry using exact matches, aliases, length-ranked substrings, and PATH fallback."""
     clean_target = (target or "").strip().lower()
     if not clean_target:
@@ -524,7 +556,7 @@ def _resolve_application_entry(target: str, apps: dict[str, dict]) -> Optional[d
 
     # Check if target is a generic browser request or matches the default browser directly
     if clean_target in ["browser", "web browser", "web-browser", "default browser", "internet"]:
-        browser_entry = _resolve_browser_entry(apps)
+        browser_entry = _resolve_browser_entry(apps, environ)
         if browser_entry:
             return browser_entry
     elif (
@@ -532,7 +564,7 @@ def _resolve_application_entry(target: str, apps: dict[str, dict]) -> Optional[d
         or clean_target == Path(DEFAULT_BROWSER.lower()).stem
         or _is_default_browser_target(clean_target)
     ):
-        browser_entry = _resolve_browser_entry(apps)
+        browser_entry = _resolve_browser_entry(apps, environ)
         if browser_entry:
             return browser_entry
 
@@ -576,7 +608,7 @@ def _resolve_application_entry(target: str, apps: dict[str, dict]) -> Optional[d
         return candidates[0][2]
 
     # 4. Check system PATH binary
-    bin_path = shutil.which(clean_target)
+    bin_path = _which(clean_target, environ)
     if bin_path:
         return {
             "name": clean_target,
@@ -654,11 +686,16 @@ def _find_qdbus() -> Optional[str]:
 class BaseDesktopBackend:
     name: str = "generic_desktop"
 
-    def __init__(self) -> None:
+    def __init__(self, environ: dict[str, str] | None = None) -> None:
+        # Keep capture subprocesses on the same display session used to choose
+        # this backend. Controllers and isolated GUI evaluations may provide a
+        # private Xvfb environment that differs from the process environment.
+        self.environ = os.environ if environ is None else environ
         self.last_screenshot_origin = (0, 0)
         self.last_screenshot_bounds: tuple[int, int, int, int] | None = None
         self.last_screenshot_target = ""
         self.last_screenshot_scale = (1.0, 1.0)
+        self.last_screenshot_monitor_id: str | None = None
 
     def get_capabilities(self) -> set[str]:
         return {
@@ -718,11 +755,11 @@ class HyprlandBackend(BaseDesktopBackend):
         }
 
     @staticmethod
-    def _run_grim(command: list[str], *, full_desktop: bool = False) -> bytes:
+    def _run_grim(command: list[str], *, full_desktop: bool = False, environ: dict[str, str] | None = None) -> bytes:
         label = "Full-desktop" if full_desktop else "Focused-monitor"
         try:
             result = subprocess.run(
-                command, capture_output=True, timeout=3, env=os.environ,
+        command, capture_output=True, timeout=3, env=os.environ if environ is None else environ,
             )
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError(
@@ -976,14 +1013,14 @@ class HyprlandBackend(BaseDesktopBackend):
         try:
             active_result = subprocess.run(
                 ["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=2,
-                env=os.environ,
+                env=self.environ,
             )
             if active_result.returncode != 0:
                 raise RuntimeError("Hyprland did not report the focused window.")
             monitor_id = json.loads(active_result.stdout or "{}").get("monitor")
             monitors_result = subprocess.run(
                 ["hyprctl", "monitors", "-j"], capture_output=True, text=True, timeout=2,
-                env=os.environ,
+                env=self.environ,
             )
             if monitors_result.returncode != 0:
                 raise RuntimeError("Hyprland did not report its monitor layout.")
@@ -1004,6 +1041,7 @@ class HyprlandBackend(BaseDesktopBackend):
         if geometry is None:
             raise RuntimeError("Could not verify the focused Hyprland monitor; refusing an unscoped screenshot.")
         x, y, width, height = geometry
+        self.last_screenshot_monitor_id = str(monitor.get("id"))
         self._record_monitor_scale(monitor)
         self.last_screenshot_origin = (x, y)
         self.last_screenshot_bounds = (x, y, x + width, y + height)
@@ -1015,14 +1053,15 @@ class HyprlandBackend(BaseDesktopBackend):
             if output_name
             else ["grim", "-l", "1", "-g", f"{x},{y} {width}x{height}", "-"]
         )
-        return self._run_grim(command)
+        return self._run_grim(command, environ=self.environ)
 
     def capture_desktop_screenshot(self) -> bytes:
         self.last_screenshot_origin = (0, 0)
         self.last_screenshot_bounds = None
         self.last_screenshot_target = "full desktop"
         self.last_screenshot_scale = (1.0, 1.0)
-        return self._run_grim(["grim", "-l", "1", "-"], full_desktop=True)
+        self.last_screenshot_monitor_id = None
+        return self._run_grim(["grim", "-l", "1", "-"], full_desktop=True, environ=self.environ)
 
     def get_default_macros(self) -> dict[str, str]:
         return {
@@ -1215,7 +1254,7 @@ class SwayBackend(BaseDesktopBackend):
             ["grim", "-"],
             capture_output=True,
             timeout=15,
-            env=os.environ,
+            env=self.environ,
         )
         if result.returncode != 0:
             error = result.stderr.decode("utf-8", errors="replace").strip()
@@ -1322,8 +1361,8 @@ class I3Backend(BaseDesktopBackend):
 
     def capture_screenshot(self) -> bytes:
         for tool, args in [("maim", ["maim"]), ("scrot", ["scrot", "-"]), ("import", ["import", "-window", "root", "png:-"]), ("grim", ["grim", "-"])]:
-            if shutil.which(tool):
-                res = subprocess.run(args, capture_output=True, timeout=15, env=os.environ)
+            if _which(tool, self.environ):
+                res = subprocess.run(args, capture_output=True, timeout=15, env=self.environ)
                 if res.returncode == 0 and res.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
                     return res.stdout
         raise RuntimeError("Screenshot capture failed in i3. Please install maim or scrot.")
@@ -1455,8 +1494,8 @@ class NiriBackend(BaseDesktopBackend):
         return self.list_windows()
 
     def capture_screenshot(self) -> bytes:
-        if shutil.which("grim"):
-            res = subprocess.run(["grim", "-"], capture_output=True, timeout=15, env=os.environ)
+        if _which("grim", self.environ):
+            res = subprocess.run(["grim", "-"], capture_output=True, timeout=15, env=self.environ)
             if res.returncode == 0 and res.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
                 return res.stdout
         raise RuntimeError("Screenshot capture failed in Niri. 'grim' is required.")
@@ -1729,7 +1768,7 @@ class KdePlasmaBackend(BaseDesktopBackend):
         return "Reordering or swapping windows is not supported on KDE Plasma (kwin)."
 
     def capture_screenshot(self) -> bytes:
-        if shutil.which("spectacle"):
+        if _which("spectacle", self.environ):
             import tempfile
             tmp_path = None
             try:
@@ -1739,7 +1778,7 @@ class KdePlasmaBackend(BaseDesktopBackend):
                     ["spectacle", "-b", "-n", "-o", tmp_path],
                     capture_output=True,
                     timeout=15,
-                    env=os.environ
+                    env=self.environ,
                 )
                 if res.returncode == 0 and os.path.exists(tmp_path):
                     with open(tmp_path, "rb") as f:
@@ -1755,14 +1794,14 @@ class KdePlasmaBackend(BaseDesktopBackend):
                     except OSError:
                         pass
 
-        if shutil.which("grim"):
-            res = subprocess.run(["grim", "-"], capture_output=True, timeout=15, env=os.environ)
+        if _which("grim", self.environ):
+            res = subprocess.run(["grim", "-"], capture_output=True, timeout=15, env=self.environ)
             if res.returncode == 0 and res.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
                 return res.stdout
 
         for tool, args in [("maim", ["maim"]), ("scrot", ["scrot", "-"]), ("import", ["import", "-window", "root", "png:-"])]:
-            if shutil.which(tool):
-                res = subprocess.run(args, capture_output=True, timeout=15, env=os.environ)
+            if _which(tool, self.environ):
+                res = subprocess.run(args, capture_output=True, timeout=15, env=self.environ)
                 if res.returncode == 0 and res.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
                     return res.stdout
 
@@ -1844,13 +1883,13 @@ class GnomeBackend(BaseDesktopBackend):
         return f"Closed processes matching '{app_name}'."
 
     def capture_screenshot(self) -> bytes:
-        if shutil.which("gnome-screenshot"):
+        if _which("gnome-screenshot", self.environ):
             import tempfile
             tmp_path = None
             try:
                 with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
                     tmp_path = tmp.name
-                res = subprocess.run(["gnome-screenshot", "-f", tmp_path], capture_output=True, timeout=15, env=os.environ)
+                res = subprocess.run(["gnome-screenshot", "-f", tmp_path], capture_output=True, timeout=15, env=self.environ)
                 if res.returncode == 0 and os.path.exists(tmp_path):
                     with open(tmp_path, "rb") as f:
                         data = f.read()
@@ -1865,8 +1904,8 @@ class GnomeBackend(BaseDesktopBackend):
                     except OSError:
                         pass
 
-        if shutil.which("grim"):
-            res = subprocess.run(["grim", "-"], capture_output=True, timeout=15, env=os.environ)
+        if _which("grim", self.environ):
+            res = subprocess.run(["grim", "-"], capture_output=True, timeout=15, env=self.environ)
             if res.returncode == 0 and res.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
                 return res.stdout
 
@@ -1905,12 +1944,12 @@ class CosmicBackend(BaseDesktopBackend):
         return f"Could not focus window for '{t}' in COSMIC."
 
     def capture_screenshot(self) -> bytes:
-        if shutil.which("grim"):
-            res = subprocess.run(["grim", "-"], capture_output=True, timeout=15, env=os.environ)
+        if _which("grim", self.environ):
+            res = subprocess.run(["grim", "-"], capture_output=True, timeout=15, env=self.environ)
             if res.returncode == 0 and res.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
                 return res.stdout
-        if shutil.which("cosmic-screenshot"):
-            res = subprocess.run(["cosmic-screenshot"], capture_output=True, timeout=15, env=os.environ)
+        if _which("cosmic-screenshot", self.environ):
+            res = subprocess.run(["cosmic-screenshot"], capture_output=True, timeout=15, env=self.environ)
             if res.returncode == 0 and res.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
                 return res.stdout
         raise RuntimeError("Screenshot capture failed on COSMIC.")
@@ -2034,8 +2073,8 @@ class GenericDesktopBackend(BaseDesktopBackend):
 
     def capture_screenshot(self) -> bytes:
         for tool, args in [("grim", ["grim", "-"]), ("maim", ["maim"]), ("scrot", ["scrot", "-"]), ("import", ["import", "-window", "root", "png:-"])]:
-            if shutil.which(tool):
-                res = subprocess.run(args, capture_output=True, timeout=15, env=os.environ)
+            if _which(tool, self.environ):
+                res = subprocess.run(args, capture_output=True, timeout=15, env=self.environ)
                 if res.returncode == 0 and res.stdout.startswith(b"\x89PNG\r\n\x1a\n"):
                     return res.stdout
         raise RuntimeError("Screenshot capture failed. Please install grim, maim, or scrot.")
@@ -2069,58 +2108,64 @@ TOOL_CAPABILITY_MAP = {
 }
 
 
-def get_active_backend(refresh_env: bool = True) -> BaseDesktopBackend:
+def get_active_backend(
+    refresh_env: bool = True, *, environ: dict[str, str] | None = None
+) -> BaseDesktopBackend:
     """Returns the backend instance for the active desktop environment."""
-    if refresh_env:
+    if refresh_env and environ is None:
         ensure_gui_environment()
-    xdg_current = os.environ.get("XDG_CURRENT_DESKTOP", "").lower()
-    desktop_session = os.environ.get("DESKTOP_SESSION", "").lower()
+    env = os.environ if environ is None else environ
+    xdg_current = env.get("XDG_CURRENT_DESKTOP", "").lower()
+    desktop_session = env.get("DESKTOP_SESSION", "").lower()
+
+    def backend(cls: type[BaseDesktopBackend]) -> BaseDesktopBackend:
+        return cls(environ=env)
 
     # 1. Direct tool and socket matches
     # Hyprland
-    if shutil.which("hyprctl") and (os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") or (os.environ.get("WAYLAND_DISPLAY") and "hyprland" in xdg_current)):
-        return HyprlandBackend()
+    if _which("hyprctl", environ) and (env.get("HYPRLAND_INSTANCE_SIGNATURE") or (env.get("WAYLAND_DISPLAY") and "hyprland" in xdg_current)):
+        return backend(HyprlandBackend)
 
     # Sway
     is_sway_session = (
-        bool(os.environ.get("SWAYSOCK"))
+        bool(env.get("SWAYSOCK"))
         or "sway" in xdg_current
         or "sway" in desktop_session
     )
-    if shutil.which("swaymsg") and is_sway_session:
-        return SwayBackend()
+    if _which("swaymsg", environ) and is_sway_session:
+        return backend(SwayBackend)
 
     # i3
     # The i3 CLI can be installed on any X11 session. DISPLAY alone is not
     # evidence that the active window manager is i3 (for example, private Xvfb
     # sessions use DISPLAY with Openbox or no window manager).
     is_i3_session = (
-        bool(os.environ.get("I3SOCK"))
+        bool(env.get("I3SOCK"))
         or "i3" in xdg_current
         or "i3" in desktop_session
     )
-    if shutil.which("i3-msg") and is_i3_session:
-        return I3Backend()
+    if _which("i3-msg", environ) and is_i3_session:
+        return backend(I3Backend)
 
     # Niri
-    if shutil.which("niri") and (os.environ.get("NIRI_SOCKET") or "niri" in xdg_current):
-        return NiriBackend()
+    if _which("niri", environ) and (env.get("NIRI_SOCKET") or "niri" in xdg_current):
+        return backend(NiriBackend)
 
     # KDE Plasma
-    if "kde" in xdg_current or "plasma" in xdg_current or os.environ.get("KDE_SESSION_VERSION") or "kde" in desktop_session or "plasma" in desktop_session:
-        return KdePlasmaBackend()
+    if "kde" in xdg_current or "plasma" in xdg_current or env.get("KDE_SESSION_VERSION") or "kde" in desktop_session or "plasma" in desktop_session:
+        return backend(KdePlasmaBackend)
 
     # GNOME
     if "gnome" in xdg_current or "gnome" in desktop_session:
-        return GnomeBackend()
+        return backend(GnomeBackend)
 
     # COSMIC
     if "cosmic" in xdg_current or "cosmic" in desktop_session:
-        return CosmicBackend()
+        return backend(CosmicBackend)
 
-    de = detect_desktop_environment(refresh_env=refresh_env)
+    de = detect_desktop_environment(refresh_env=refresh_env, environ=env)
     backend_cls = _BACKEND_MAP.get(de, GenericDesktopBackend)
-    return backend_cls()
+    return backend(backend_cls)
 
 
 def is_capability_supported(capability: str) -> bool:
@@ -2156,47 +2201,71 @@ def get_active_capabilities() -> dict[str, bool]:
 # Public Desktop Tool API
 # ---------------------------------------------------------------------------
 
-def _active_window_geometry() -> tuple[int, int, int, int]:
+def _active_window_geometry(
+    *, environ: dict[str, str] | None = None, backend: BaseDesktopBackend | None = None
+) -> tuple[int, int, int, int]:
     """Return the focused window's desktop-space x, y, width, and height."""
-    if os.environ.get("HYPRLAND_INSTANCE_SIGNATURE") and shutil.which("hyprctl"):
-        result = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=2)
+    env = os.environ if environ is None else environ
+    selected_backend = backend or get_active_backend(environ=environ)
+    native_wayland = _is_native_wayland_session(environ)
+    if selected_backend.name == "hyprland" and _which("hyprctl", environ):
+        result = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=2, env=env)
         data = json.loads(result.stdout or "{}")
         x, y = map(int, data["at"])
         width, height = map(int, data["size"])
-    elif get_active_backend().name in {"sway", "i3"}:
-        bounds = _active_window_metadata().get("bounds")
+    elif selected_backend.name == "sway" or (selected_backend.name == "i3" and not native_wayland):
+        bounds = _active_window_metadata(environ=environ, backend=selected_backend).get("bounds")
         if not bounds or len(bounds) != 4:
             raise RuntimeError("The focused window has no capturable bounds.")
-        x, y, width, height = bounds
-    elif shutil.which("xdotool"):
+        x, y, width, height = map(int, bounds)
+    elif selected_backend.name == "niri":
+        bounds = _active_window_metadata(environ=environ, backend=selected_backend).get("bounds")
+        if not bounds or len(bounds) != 4:
+            raise RuntimeError("Niri did not report verified bounds for the focused window.")
+        x, y, width, height = map(int, bounds)
+    elif not native_wayland and _which("xdotool", environ):
         result = subprocess.run(
             ["xdotool", "getactivewindow", "getwindowgeometry", "--shell"],
             capture_output=True, text=True, timeout=2, check=True,
+            env=env,
         )
         values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
         x, y, width, height = (int(values[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
     else:
-        raise RuntimeError("Focused-window screenshots need Hyprland or xdotool window geometry support.")
+        if native_wayland:
+            raise RuntimeError(
+                f"Focused-window geometry is not verified for the {selected_backend.name} Wayland backend."
+            )
+        raise RuntimeError("Focused-window screenshots need a verified window-geometry source.")
     if width <= 0 or height <= 0:
         raise RuntimeError("The focused application has no capturable window size.")
     return x, y, width, height
 
 
-def _active_window_metadata() -> dict[str, Any]:
+def _active_window_metadata(
+    *, environ: dict[str, str] | None = None, backend: BaseDesktopBackend | None = None
+) -> dict[str, Any]:
     """Return identity for the focused window where the compositor exposes it."""
-    backend = get_active_backend()
+    env = os.environ if environ is None else environ
+    backend = backend or get_active_backend(environ=environ)
+    native_wayland = _is_native_wayland_session(environ)
     try:
         if backend.name == "hyprland":
-            result = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=2)
+            result = subprocess.run(["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=2, env=env)
             data = json.loads(result.stdout or "{}")
+            at = data.get("at") or ()
+            size = data.get("size") or ()
+            bounds = tuple(map(int, (*at, *size))) if len(at) == 2 and len(size) == 2 else (0, 0, 0, 0)
             return {
                 "id": str(data.get("address") or ""),
                 "class": str(data.get("class") or data.get("initialClass") or ""),
                 "title": str(data.get("title") or data.get("initialTitle") or ""),
+                "bounds": bounds,
+                "monitor_id": str(data.get("monitor")) if data.get("monitor") is not None else "",
             }
-        if backend.name in {"sway", "i3"}:
+        if backend.name == "sway" or (backend.name == "i3" and not native_wayland):
             command = ["swaymsg", "-t", "get_tree"] if backend.name == "sway" else ["i3-msg", "-t", "get_tree"]
-            result = subprocess.run(command, capture_output=True, text=True, timeout=2)
+            result = subprocess.run(command, capture_output=True, text=True, timeout=2, env=env)
             tree = json.loads(result.stdout or "{}")
             def focused(node: dict) -> Optional[dict]:
                 if node.get("focused") and (node.get("window") is not None or node.get("app_id") or node.get("window_properties")):
@@ -2216,42 +2285,147 @@ def _active_window_metadata() -> dict[str, Any]:
                 "bounds": (int(rect.get("x", 0)), int(rect.get("y", 0)), int(rect.get("width", 0)), int(rect.get("height", 0))),
             }
         if backend.name == "niri":
-            result = subprocess.run(["niri", "msg", "-j", "windows"], capture_output=True, text=True, timeout=2)
+            result = subprocess.run(["niri", "msg", "-j", "windows"], capture_output=True, text=True, timeout=2, env=env)
             windows = json.loads(result.stdout or "[]")
             node = next((w for w in windows if w.get("is_focused") or w.get("focused")), {})
+            rect = node.get("rect")
+            if isinstance(rect, dict):
+                bounds = tuple(int(rect.get(key, 0)) for key in ("x", "y", "width", "height"))
+            elif isinstance(rect, (list, tuple)) and len(rect) == 4:
+                bounds = tuple(map(int, rect))
+            else:
+                bounds = (0, 0, 0, 0)
             return {
                 "id": str(node.get("id") or ""),
                 "class": str(node.get("app_id") or ""),
                 "title": str(node.get("title") or ""),
-                "bounds": tuple(node.get("rect") or (0, 0, 0, 0)),
+                "bounds": bounds,
             }
-        if shutil.which("kdotool"):
-            result = subprocess.run(["kdotool", "getactivewindow", "getwindowname"], capture_output=True, text=True, timeout=2)
+        if (
+            (backend.name == "kde_plasma" or not native_wayland)
+            and _which("kdotool", environ)
+            and (native_wayland or not _which("xdotool", environ))
+        ):
+            result = subprocess.run(["kdotool", "getactivewindow", "getwindowname"], capture_output=True, text=True, timeout=2, env=env)
             if result.returncode == 0 and result.stdout.strip():
                 return {"id": "", "class": "", "title": result.stdout.strip().splitlines()[-1]}
-        if shutil.which("xdotool"):
-            result = subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True, timeout=2)
+        if not _is_native_wayland_session(environ) and _which("xdotool", environ):
+            result = subprocess.run(["xdotool", "getactivewindow"], capture_output=True, text=True, timeout=2, env=env)
             window_id = result.stdout.strip()
             if result.returncode == 0 and window_id:
-                name = subprocess.run(["xdotool", "getwindowname", window_id], capture_output=True, text=True, timeout=2)
-                cls = subprocess.run(["xdotool", "getwindowclassname", window_id], capture_output=True, text=True, timeout=2)
+                name = subprocess.run(["xdotool", "getwindowname", window_id], capture_output=True, text=True, timeout=2, env=env)
+                cls = subprocess.run(["xdotool", "getwindowclassname", window_id], capture_output=True, text=True, timeout=2, env=env)
                 return {"id": window_id, "class": cls.stdout.strip(), "title": name.stdout.strip()}
     except Exception:
         pass
     return {"id": "", "class": "", "title": ""}
 
 
+def _hyprland_monitor_snapshot(
+    monitor_id: str, *, environ: dict[str, str] | None = None
+) -> tuple[str, str, int, int, int, int, float]:
+    """Return identity, logical origin, pixel dimensions, and scale for one output."""
+    monitor_id = str(monitor_id or "").strip()
+    if not monitor_id:
+        raise RuntimeError("Hyprland did not report the focused monitor identity.")
+    env = os.environ if environ is None else environ
+    result = subprocess.run(
+        ["hyprctl", "monitors", "-j"], capture_output=True, text=True,
+        timeout=2, check=True, env=env,
+    )
+    monitors = json.loads(result.stdout or "[]")
+    monitor = next((item for item in monitors if str(item.get("id")) == monitor_id), None)
+    if not monitor:
+        raise RuntimeError("Hyprland did not report metadata for the focused monitor.")
+    scale = float(monitor.get("scale", 1.0) or 1.0)
+    x, y = int(monitor.get("x", 0)), int(monitor.get("y", 0))
+    width, height = int(monitor.get("width", 0)), int(monitor.get("height", 0))
+    if scale <= 0 or width <= 0 or height <= 0:
+        raise RuntimeError("Hyprland reported invalid focused-monitor bounds or scale.")
+    return (monitor_id, str(monitor.get("name") or ""), x, y, width, height, scale)
+
+
+def _active_hyprland_monitor_snapshot(
+    *, environ: dict[str, str] | None = None
+) -> tuple[str, str, int, int, int, int, float]:
+    env = os.environ if environ is None else environ
+    result = subprocess.run(
+        ["hyprctl", "activewindow", "-j"], capture_output=True, text=True,
+        timeout=2, check=True, env=env,
+    )
+    active = json.loads(result.stdout or "{}")
+    return _hyprland_monitor_snapshot(active.get("monitor"), environ=environ)
+
+
+def _verify_hyprland_capture_monitor(
+    backend: BaseDesktopBackend,
+    expected: tuple[str, str, int, int, int, int, float],
+) -> None:
+    monitor_id, name, x, y, width, height, scale = expected
+    expected_bounds = (x, y, x + width, y + height)
+    expected_target = name or f"monitor at {x},{y}"
+    if (
+        getattr(backend, "last_screenshot_monitor_id", None) != monitor_id
+        or getattr(backend, "last_screenshot_target", None) != expected_target
+        or getattr(backend, "last_screenshot_origin", None) != (x, y)
+        or getattr(backend, "last_screenshot_bounds", None) != expected_bounds
+        or getattr(backend, "last_screenshot_scale", None) != (scale, scale)
+    ):
+        raise RuntimeError(
+            "Captured Hyprland output identity, origin, bounds, or scale did not match "
+            "the verified focused monitor."
+        )
+
+
+def _active_window_snapshot(
+    *, environ: dict[str, str] | None = None, backend: BaseDesktopBackend | None = None
+) -> tuple[str, tuple[int, int, int, int], tuple[str, str, int, int, int, int, float] | None]:
+    """Return focused-window identity, bounds, and verified output metadata."""
+    selected_backend = backend or get_active_backend(environ=environ)
+    window = _active_window_metadata(environ=environ, backend=selected_backend)
+    bounds = window.get("bounds")
+    if not bounds or len(bounds) != 4:
+        # On X11, query geometry for the identified X window itself where the
+        # backend exposed its ID. This avoids pairing another active window's
+        # geometry with the metadata result if focus changes between queries.
+        window_id = str(window.get("id") or "").strip()
+        if not _is_native_wayland_session(environ) and window_id and _which("xdotool", environ):
+            env = os.environ if environ is None else environ
+            result = subprocess.run(
+                ["xdotool", "getwindowgeometry", "--shell", window_id],
+                capture_output=True, text=True, timeout=2, check=True, env=env,
+            )
+            values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+            bounds = tuple(int(values[key]) for key in ("X", "Y", "WIDTH", "HEIGHT"))
+        else:
+            bounds = _active_window_geometry(environ=environ, backend=selected_backend)
+    bounds = tuple(map(int, bounds))
+    if len(bounds) != 4 or bounds[2] <= 0 or bounds[3] <= 0:
+        raise RuntimeError("The focused window identity or bounds could not be verified.")
+    identity = str(window.get("id") or "").strip()
+    if not identity:
+        identity = f"{window.get('class', '')}:{window.get('title', '')}".strip(":")
+    if not identity:
+        raise RuntimeError("The focused window identity could not be verified.")
+
+    monitor_snapshot = None
+    if selected_backend.name == "hyprland":
+        monitor_snapshot = _hyprland_monitor_snapshot(window.get("monitor_id"), environ=environ)
+    return identity, bounds, monitor_snapshot
+
+
 def screenshot_delay_for_focused_window(
     default_seconds: float = 0.25,
     browser_seconds: float = 1.5,
     expected_application: str | None = None,
+    *, environ: dict[str, str] | None = None,
 ) -> float:
     """Choose a short deterministic screenshot settle delay from the focused app."""
     try:
         if expected_application:
             app_identity = str(expected_application)
         else:
-            window = _active_window_metadata()
+            window = _active_window_metadata(environ=environ)
             app_identity = f"{window.get('class', '')} {window.get('title', '')}"
         browser = re.search(
             r"\b(?:browser|firefox|mozilla|chrome|chromium|edge|msedge|brave|vivaldi|opera|zen)\b",
@@ -2265,11 +2439,13 @@ def screenshot_delay_for_focused_window(
         return 0.25
 
 
-def _expected_application_names(target: str) -> set[str]:
+def _expected_application_names(
+    target: str, environ: dict[str, str] | None = None
+) -> set[str]:
     names = {str(target or "").strip().lower()}
     try:
-        apps = _scan_desktop_entries()
-        selected = _resolve_application_entry(target, apps)
+        apps = _scan_desktop_entries(environ)
+        selected = _resolve_application_entry(target, apps, environ)
         if selected:
             names.add(str(selected.get("name") or "").lower())
             names.add(Path(shlex.split(str(selected.get("exec") or ""))[0]).name.lower())
@@ -2295,7 +2471,10 @@ def _window_matches_application(window: dict[str, str], expected_names: set[str]
     return False
 
 
-def wait_for_application_ready(target: Optional[str] = None, timeout: float | None = 15.0) -> None:
+def wait_for_application_ready(
+    target: Optional[str] = None, timeout: float | None = 15.0, *,
+    environ: dict[str, str] | None = None,
+) -> None:
     """Wait until a focused app window exists and its identity/bounds settle.
 
     A finite timeout is appropriate while starting an application. A focus
@@ -2303,11 +2482,12 @@ def wait_for_application_ready(target: Optional[str] = None, timeout: float | No
     ``None`` to keep waiting until the requested window is actually focused.
     """
     started = time.perf_counter()
-    with timed_stage("desktop.readiness.gui_environment"):
-        ensure_gui_environment()
+    if environ is None:
+        with timed_stage("desktop.readiness.gui_environment"):
+            ensure_gui_environment()
     deadline = time.monotonic() + max(0.5, timeout) if timeout is not None else None
     with timed_stage("desktop.readiness.target_resolution", target_requested=bool(target)):
-        expected_names = _expected_application_names(target) if target else set()
+        expected_names = _expected_application_names(target, environ) if target else set()
     previous: Optional[tuple[str, str, tuple[int, int, int, int]]] = None
     stable_polls = 0
     poll_count = 0
@@ -2317,7 +2497,7 @@ def wait_for_application_ready(target: Optional[str] = None, timeout: float | No
         try:
             poll_count += 1
             probe_started = time.perf_counter()
-            window = _active_window_metadata()
+            window = _active_window_metadata(environ=environ)
             metadata_ms += (time.perf_counter() - probe_started) * 1000
             if expected_names and not _window_matches_application(window, expected_names):
                 stable_polls = 0
@@ -2325,7 +2505,7 @@ def wait_for_application_ready(target: Optional[str] = None, timeout: float | No
             else:
                 try:
                     geometry_started = time.perf_counter()
-                    bounds = _active_window_geometry()
+                    bounds = _active_window_geometry(environ=environ)
                     geometry_ms += (time.perf_counter() - geometry_started) * 1000
                 except Exception:
                     bounds = tuple(window.get("bounds") or (0, 0, 0, 0))
@@ -2377,28 +2557,57 @@ class ScreenshotCapture(tuple):
 
 
 def capture_screenshot_with_origin(
-    scope: str = "window", *, expected_application: Optional[str] = None, wait_until_ready: bool = True
+    scope: str = "window", *, expected_application: Optional[str] = None, wait_until_ready: bool = True,
+    environ: dict[str, str] | None = None,
 ) -> ScreenshotCapture:
     """Capture the focused window, a verified single monitor, or explicit full desktop."""
     scope = (scope or "window").strip().lower()
     if scope not in {"window", "monitor", "desktop"}:
         raise ValueError("Screenshot scope must be 'window', 'monitor', or 'desktop'.")
-    ensure_gui_environment()
+    if environ is None:
+        ensure_gui_environment()
     if wait_until_ready:
-        wait_for_application_ready(expected_application)
+        wait_for_application_ready(expected_application, environ=environ)
     with timed_stage("desktop.capture.backend_selection"):
-        backend = get_active_backend()
+        backend = get_active_backend(environ=environ)
     if scope == "monitor" and backend.name != "hyprland":
         raise RuntimeError(
             f"Single-monitor capture is not verified for {backend.name}; "
             "request the focused window or explicitly request the full desktop."
         )
+    window_snapshot_before = None
+    monitor_snapshot_before = None
+    if scope == "window":
+        if backend.name in {"sway", "niri"}:
+            raise RuntimeError(
+                f"Focused-window screenshots are disabled for {backend.name} until its "
+                "screenshot pixel scale and desktop origin can be verified."
+            )
+        window_snapshot_before = _active_window_snapshot(environ=environ, backend=backend)
+        monitor_snapshot_before = window_snapshot_before[2]
+    elif scope == "monitor":
+        monitor_snapshot_before = _active_hyprland_monitor_snapshot(environ=environ)
     with timed_stage("desktop.capture.backend"):
         image = (
             backend.capture_desktop_screenshot()
             if scope == "desktop"
             else backend.capture_screenshot()
         )
+    if scope == "window":
+        window_snapshot_after = _active_window_snapshot(environ=environ, backend=backend)
+        if window_snapshot_after != window_snapshot_before:
+            raise RuntimeError(
+                "The focused window changed identity or bounds during screenshot capture; "
+                "refusing to attach a mismatched image."
+            )
+    if scope in {"window", "monitor"} and backend.name == "hyprland":
+        monitor_snapshot_after = _active_hyprland_monitor_snapshot(environ=environ)
+        if monitor_snapshot_after != monitor_snapshot_before:
+            raise RuntimeError(
+                "The focused Hyprland monitor or its layout changed during screenshot capture; "
+                "refusing to attach an image with an unverified origin or scale."
+            )
+        _verify_hyprland_capture_monitor(backend, monitor_snapshot_before)
     origin = getattr(backend, "last_screenshot_origin", (0, 0))
     scale = getattr(backend, "last_screenshot_scale", (1.0, 1.0))
     target = getattr(backend, "last_screenshot_target", "") or {
@@ -2432,11 +2641,19 @@ def capture_screenshot_with_origin(
             )
         return ScreenshotCapture(image, origin, scale, backend.name, target)
 
+    if scope == "window" and backend.name == "hyprland":
+        expected_monitor = monitor_snapshot_before
+        if not expected_monitor or (image_width, image_height) != (expected_monitor[4], expected_monitor[5]):
+            raise RuntimeError(
+                "Captured image dimensions do not match the verified focused Hyprland monitor; "
+                "refusing to attach an unverified window crop."
+            )
+
     if scope == "desktop":
         return ScreenshotCapture(image, origin, scale, backend.name, target)
 
     with timed_stage("desktop.capture.window_geometry"):
-        x, y, width, height = _active_window_geometry()
+        _, (x, y, width, height), _ = window_snapshot_before
         left = round((x - origin[0]) * scale[0])
         top = round((y - origin[1]) * scale[1])
         crop_width = round(width * scale[0])

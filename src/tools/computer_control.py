@@ -228,18 +228,34 @@ class ComputerController:
     def _wayland_window_adapter(self) -> str:
         env = os.environ if self._env is None else self._env
         desktops = " ".join((env.get(key, "") for key in ("XDG_CURRENT_DESKTOP", "DESKTOP_SESSION"))).casefold()
-        if (env.get("HYPRLAND_INSTANCE_SIGNATURE") or "hyprland" in desktops) and shutil.which("hyprctl"):
+        if (env.get("HYPRLAND_INSTANCE_SIGNATURE") or "hyprland" in desktops) and self._which("hyprctl"):
             return "hyprland"
-        if (env.get("SWAYSOCK") or "sway" in desktops) and shutil.which("swaymsg"):
+        if (env.get("SWAYSOCK") or "sway" in desktops) and self._which("swaymsg"):
             return "sway"
         return "unsupported"
+
+    def _which(self, command: str) -> str | None:
+        """Resolve tools from the controller's session PATH, never the host PATH."""
+        if self._env is None:
+            return shutil.which(command)
+        return shutil.which(command, path=self._env.get("PATH", ""))
+
+    def _command(self, command: str) -> str:
+        """Return a resolved executable or fail closed for a scoped session."""
+        if self._env is None:
+            return command
+        resolved = self._which(command)
+        if not resolved:
+            raise RuntimeError(f"{command} is unavailable on the selected desktop session PATH.")
+        return resolved
 
     def _read_active_window_state(self) -> tuple[str | None, tuple[int, int, int, int] | None]:
         try:
             wayland_adapter = self._wayland_window_adapter() if self.backend == "wayland" else ""
             if wayland_adapter == "hyprland":
                 active = self._runner(
-                    ["hyprctl", "activewindow", "-j"], capture_output=True, text=True, timeout=2,
+                    [self._command("hyprctl"), "activewindow", "-j"], capture_output=True, text=True, timeout=2,
+                    env=self._env,
                 )
                 data = json.loads(active.stdout or "{}")
                 identity = str(data.get("address") or "") or (
@@ -251,8 +267,9 @@ class ComputerController:
                 width, height = map(int, data.get("size", [0, 0]))
             elif wayland_adapter == "sway":
                 result = self._runner(
-                    ["swaymsg", "-t", "get_tree", "-r"],
+                    [self._command("swaymsg"), "-t", "get_tree", "-r"],
                     capture_output=True, text=True, timeout=2,
+                    env=self._env,
                 )
                 tree = json.loads(result.stdout or "{}")
 
@@ -270,14 +287,16 @@ class ComputerController:
                 identity = f"sway:{node.get('id')}" if node.get("id") is not None else None
                 x, y = int(rect.get("x", 0)), int(rect.get("y", 0))
                 width, height = int(rect.get("width", 0)), int(rect.get("height", 0))
-            elif self.backend == "x11" and shutil.which("xdotool"):
+            elif self.backend == "x11" and self._which("xdotool"):
                 active_id = self._runner(
-                    ["xdotool", "getactivewindow"], capture_output=True, text=True, timeout=2,
+                    [self._command("xdotool"), "getactivewindow"], capture_output=True, text=True, timeout=2,
+                    env=self._env,
                 )
                 window_id = (active_id.stdout or "").strip()
                 result = self._runner(
-                    ["xdotool", "getactivewindow", "getwindowgeometry", "--shell"],
+                    [self._command("xdotool"), "getactivewindow", "getwindowgeometry", "--shell"],
                     capture_output=True, text=True, timeout=2,
+                    env=self._env,
                 )
                 values = dict(
                     line.split("=", 1) for line in (result.stdout or "").splitlines() if "=" in line
@@ -321,13 +340,18 @@ class ComputerController:
         if not self.enabled:
             return False
         if backend == "wayland":
+            adapter = self._wayland_window_adapter()
+            if self._env is not None:
+                # wtype and Hyprland's shortcut API target the compositor named
+                # by this environment. ydotool's uinput device is system-wide.
+                return adapter != "unsupported" and (bool(self._which("wtype")) or adapter == "hyprland")
             return bool(
-                self._wayland_window_adapter() != "unsupported"
-                and shutil.which("ydotool")
-                and (shutil.which("wtype") or shutil.which("ydotool"))
+                adapter != "unsupported"
+                and self._which("ydotool")
+                and (self._which("wtype") or self._which("ydotool"))
             )
         if backend == "x11":
-            return bool(shutil.which("xdotool"))
+            return bool(self._which("xdotool"))
         return False
 
     def _capture(
@@ -341,13 +365,17 @@ class ComputerController:
     ) -> ComputerControlResult:
         if self._screenshot_fn is None and wait_until_ready:
             with timed_stage("controller.application_ready", expected_application=bool(expected_application)):
-                wait_for_application_ready(expected_application, timeout=readiness_timeout_seconds)
+                wait_for_application_ready(
+                    expected_application, timeout=readiness_timeout_seconds, environ=self._env,
+                )
         with timed_stage("controller.window_state_before"):
             before_identity, _ = self._read_active_window_state()
         with timed_stage("controller.capture"):
             captured = (
                 self._screenshot_fn() if self._screenshot_fn is not None
-                else capture_screenshot_with_origin(self._scope, wait_until_ready=False)
+                else capture_screenshot_with_origin(
+                    self._scope, wait_until_ready=False, environ=self._env,
+                )
             )
         if isinstance(captured, tuple):
             image, (self._origin_x, self._origin_y) = captured
@@ -577,25 +605,39 @@ class ComputerController:
         ]
 
     def _call(self, args: list[str], timeout: float = 5.0, **kwargs) -> subprocess.CompletedProcess:
-        result = self._runner(args, capture_output=True, text=True, timeout=timeout, **kwargs)
+        command = list(args)
+        if self._env is not None:
+            if not command:
+                raise RuntimeError("Cannot execute an empty desktop action.")
+            command[0] = self._command(command[0])
+            # Scoped controllers must never inherit the daemon's host display
+            # variables or PATH, even if an individual call supplied kwargs.
+            kwargs["env"] = self._env
+        result = self._runner(command, capture_output=True, text=True, timeout=timeout, **kwargs)
         if result.returncode != 0:
             detail = (getattr(result, "stderr", "") or getattr(result, "stdout", "") or "input tool failed")
             raise RuntimeError(str(detail).strip()[:240])
         return result
 
     def _ensure_ydotoold(self) -> bool:
+        if self._env is not None:
+            # ydotoold emits global uinput events. A private DISPLAY or runtime
+            # socket does not prove that its input device is isolated from the
+            # host session, so scoped controllers must not reuse or start it.
+            return False
         if self._ensure_wayland_daemon_override is not None:
             return self._ensure_wayland_daemon_override()
         socket_path = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / ".ydotool_socket"
         if socket_path.exists():
             return True
-        if shutil.which("systemctl"):
+        # For ordinary daemon operation, keep the existing user-service path.
+        if self._which("systemctl"):
             self._runner(["systemctl", "--user", "start", "ydotool.service"], capture_output=True, text=True, timeout=5)
             for _ in range(20):
                 if socket_path.exists():
                     return True
                 time.sleep(0.1)
-        daemon = shutil.which("ydotoold")
+        daemon = self._which("ydotoold")
         if daemon:
             try:
                 subprocess.Popen(
@@ -609,6 +651,13 @@ class ComputerController:
             except OSError:
                 pass
         return False
+
+    def _require_wayland_uinput_scope(self) -> None:
+        if self._env is not None:
+            raise RuntimeError(
+                "Wayland mouse input is unavailable for an explicitly scoped session: "
+                "ydotool uses global uinput and input-device isolation was not established."
+            )
 
     def _validate_snapshot(self, snapshot_id: str) -> None:
         if not self._snapshot_id:
@@ -654,6 +703,8 @@ class ComputerController:
         buttons = {"left": (1, "0xC0"), "right": (3, "0xC1"), "middle": (2, "0xC2")}
         if button not in buttons:
             raise ValueError("Mouse button must be left, right, or middle.")
+        if self.backend == "wayland":
+            self._require_wayland_uinput_scope()
         self._position_cursor(x, y)
         if self.backend == "x11":
             self._call(["xdotool", "click", "--delay", "80", str(buttons[button][0])])
@@ -671,9 +722,23 @@ class ComputerController:
             self._call(["xdotool", "mousemove", str(desktop_x), str(desktop_y)])
             return
         if self.backend == "wayland":
+            if self._env is not None:
+                if self._wayland_window_adapter() != "hyprland":
+                    self._require_wayland_uinput_scope()
+                from src.tools.desktop import _hyprland_dispatch
+
+                result = _hyprland_dispatch(
+                    "movecursor", f"{desktop_x} {desktop_y}",
+                    lua_expression=f"hl.dsp.cursor.move({{ x = {desktop_x}, y = {desktop_y} }})",
+                    environ=self._env,
+                )
+                if result.returncode != 0 or "ok" not in result.stdout.lower():
+                    raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Hyprland rejected cursor positioning.")
+                return
             if not self._ensure_ydotoold():
                 raise RuntimeError("Wayland mouse control needs ydotoold and access to /dev/uinput.")
-            if shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            env = os.environ if self._env is None else self._env
+            if self._which("hyprctl") and env.get("HYPRLAND_INSTANCE_SIGNATURE"):
                 self._move_wayland_cursor_to(desktop_x, desktop_y)
             else:
                 self._call([
@@ -690,6 +755,19 @@ class ComputerController:
         virtual input device at its previous location. Relative uinput motion
         keeps the pointer used for the click in sync with the visible cursor.
         """
+        if self._env is not None:
+            if self._wayland_window_adapter() != "hyprland":
+                self._require_wayland_uinput_scope()
+            from src.tools.desktop import _hyprland_dispatch
+
+            result = _hyprland_dispatch(
+                "movecursor", f"{end_x} {end_y}",
+                lua_expression=f"hl.dsp.cursor.move({{ x = {end_x}, y = {end_y} }})",
+                environ=self._env,
+            )
+            if result.returncode != 0 or "ok" not in result.stdout.lower():
+                raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Hyprland rejected cursor positioning.")
+            return
         if not self._ensure_ydotoold():
             raise RuntimeError("Wayland mouse control needs ydotoold and access to /dev/uinput.")
 
@@ -750,6 +828,8 @@ class ComputerController:
         buttons = {"left": (1, "0x40"), "right": (3, "0x41"), "middle": (2, "0x42")}
         if button not in buttons:
             raise ValueError("Mouse button must be left, right, or middle.")
+        if self.backend == "wayland":
+            self._require_wayland_uinput_scope()
         self._position_cursor(x, y)
         if self.backend == "x11":
             self._call(["xdotool", "mousedown", str(buttons[button][0])])
@@ -767,6 +847,8 @@ class ComputerController:
             raise ValueError("No drag is active; call drag first.")
         if not (0 <= x < self._width and 0 <= y < self._height):
             raise ValueError("Drag waypoint must be inside the latest screenshot.")
+        if self.backend == "wayland":
+            self._require_wayland_uinput_scope()
         end_x, end_y = self._screenshot_to_desktop(x, y)
         if self.backend == "x11":
             start_x, start_y = self._held_drag_position or (end_x, end_y)
@@ -783,7 +865,7 @@ class ComputerController:
         if not self._ensure_ydotoold():
             raise RuntimeError("Wayland dragging needs ydotoold and access to /dev/uinput.")
         env = os.environ if self._env is None else self._env
-        if not (shutil.which("hyprctl") and env.get("HYPRLAND_INSTANCE_SIGNATURE")):
+        if not (self._which("hyprctl") and env.get("HYPRLAND_INSTANCE_SIGNATURE")):
             self._call(["ydotool", "mousemove", "--absolute", str(end_x), str(end_y)])
             time.sleep(0.12)
             return
@@ -831,6 +913,8 @@ class ComputerController:
         button = self._held_drag_button
         if button is None:
             raise ValueError("No drag is active; nothing to drop.")
+        if self.backend == "wayland":
+            self._require_wayland_uinput_scope()
         buttons = {"left": (1, "0x80"), "right": (3, "0x81"), "middle": (2, "0x82")}
         try:
             if self.backend == "x11":
@@ -867,6 +951,8 @@ class ComputerController:
         buttons = {"left": (1, "0x40", "0x80"), "right": (3, "0x41", "0x81"), "middle": (2, "0x42", "0x82")}
         if button not in buttons:
             raise ValueError("Mouse button must be left, right, or middle.")
+        if self.backend == "wayland":
+            self._require_wayland_uinput_scope()
         sx, sy = self._screenshot_to_desktop(x, y)
         ex, ey = self._screenshot_to_desktop(end_x, end_y)
         if self.backend == "x11":
@@ -885,7 +971,8 @@ class ComputerController:
         if self.backend == "wayland":
             if not self._ensure_ydotoold():
                 raise RuntimeError("Wayland dragging needs ydotoold and access to /dev/uinput.")
-            if shutil.which("hyprctl") and os.environ.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            env = os.environ if self._env is None else self._env
+            if self._which("hyprctl") and env.get("HYPRLAND_INSTANCE_SIGNATURE"):
                 from src.tools.desktop import _hyprland_dispatch
 
                 # Hyprland gives exact screenshot-to-cursor positioning. Use
@@ -896,6 +983,7 @@ class ComputerController:
                 result = _hyprland_dispatch(
                     "movecursor", f"{sx} {sy}",
                     lua_expression=f"hl.dsp.cursor.move({{ x = {sx}, y = {sy} }})",
+                    environ=self._env,
                 )
                 if result.returncode != 0 or "ok" not in result.stdout.lower():
                     raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "Hyprland rejected drag positioning.")
@@ -964,7 +1052,7 @@ class ComputerController:
         """Infer the compositor's configured drag-to-move modifier where possible."""
         from src.tools.desktop import get_active_backend
 
-        backend = get_active_backend().name
+        backend = get_active_backend(environ=self._env).name
         candidates = {
             "hyprland": [Path.home() / ".config/hypr/hyprland.lua", Path.home() / ".config/hypr/hyprland.conf"],
             "sway": [Path.home() / ".config/sway/config"],
@@ -995,7 +1083,7 @@ class ComputerController:
         if self.backend == "x11":
             self._call(["xdotool", "type", "--clearmodifiers", "--delay", "1", "--", text], timeout=15)
         elif self.backend == "wayland":
-            if shutil.which("wtype"):
+            if self._which("wtype"):
                 self._call(["wtype", "--", text], timeout=15)
             elif self._ensure_ydotoold():
                 self._call(["ydotool", "type", "--", text], timeout=15)
@@ -1029,7 +1117,7 @@ class ComputerController:
             return
         if self.backend == "wayland":
             env = os.environ if self._env is None else self._env
-            if modifiers and shutil.which("hyprctl") and env.get("HYPRLAND_INSTANCE_SIGNATURE"):
+            if modifiers and self._which("hyprctl") and env.get("HYPRLAND_INSTANCE_SIGNATURE"):
                 from src.tools.desktop import _hyprland_dispatch
 
                 modifier = "+".join(item.upper() for item in modifiers)
@@ -1042,13 +1130,14 @@ class ComputerController:
                         f'mods = "{modifier}", key = "{key_name}"'
                         " })"
                     ),
+                    environ=self._env,
                 )
                 if result.returncode != 0 or "ok" not in result.stdout.lower():
                     raise RuntimeError(
                         result.stderr.strip() or result.stdout.strip() or "Hyprland rejected the keyboard shortcut."
                     )
                 return
-            if shutil.which("wtype"):
+            if self._which("wtype"):
                 prefix = []
                 for modifier in modifiers:
                     prefix.extend(["-M", modifier])
@@ -1080,6 +1169,8 @@ class ComputerController:
         if direction not in {"up", "down", "left", "right"}:
             raise ValueError("Scroll direction must be up, down, left, or right.")
         amount = min(max(int(amount), 1), 8)
+        if self.backend == "wayland":
+            self._require_wayland_uinput_scope()
         if self.backend == "x11":
             button = {"up": 4, "down": 5, "left": 6, "right": 7}[direction]
             self._call(["xdotool", "click", "--repeat", str(amount), str(button)])
@@ -1363,6 +1454,7 @@ class ComputerController:
                 self.screenshot_delay_seconds,
                 self.browser_screenshot_delay_seconds,
                 expected_application,
+                environ=self._env,
             )
             if screenshot_delay_seconds is None:
                 # The first observation reads the currently focused app, so it

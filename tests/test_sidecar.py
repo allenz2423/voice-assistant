@@ -200,6 +200,25 @@ async def test_daemon_bridge_history_strips_desktop_headers():
 
 
 @pytest.mark.asyncio
+async def test_daemon_bridge_history_shows_request_without_automatic_context():
+    arbiter = MockArbiter()
+    brain = MockBrain()
+    brain.messages[1]["content"] = (
+        "[Current Desktop State]\nWindow: Terminal\n"
+        "[Local Time: 12:00:00]\n"
+        "[Current User Request — active task for this run]\n"
+        "Check the meeting notes.\n[End Current User Request]"
+        "\n\n[Relevant Specialized Skill Context]\n"
+        "Automatically loaded implementation details."
+    )
+    daemon = MagicMock(arbiter=arbiter, brain=brain)
+
+    history = await DaemonBridge(daemon).get_history()
+
+    assert history[0]["content"] == "Check the meeting notes."
+
+
+@pytest.mark.asyncio
 async def test_daemon_bridge_refuses_when_awaiting_verbal_confirmation():
     # If Adam is awaiting verbal confirmation via mic, WebUI MUST NOT bypass confirmation
     arbiter = MockArbiter(SystemState.AWAITING_CONFIRMATION)
