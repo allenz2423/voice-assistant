@@ -253,7 +253,7 @@ install_package_group() {
     (($#)) || return 0
     log_info "Installing $label packages with $PKG_MANAGER."
     if [[ "$PKG_MANAGER" == apt ]]; then
-        "${SUDO_CMD[@]}" apt-get update
+        "${SUDO_CMD[@]}" apt-get update || return 1
     fi
     if pkg_install "$@"; then
         log_ok "$label packages installed."
@@ -410,25 +410,28 @@ PY
     [[ -f "$config" ]] || { log_error "config.yaml is not a regular file."; return 1; }
 
     if [[ "$SKIP_SPEAKER_VERIFICATION" == true ]]; then
-        set_config_scalar speaker_verification enabled false
+        set_config_scalar speaker_verification enabled false || return 1
     fi
     if [[ "$ENABLE_IDEA_ROUTING" == true ]]; then
-        set_config_scalar idea_routing enabled true
+        set_config_scalar idea_routing enabled true || return 1
     fi
     if [[ "$ENABLE_BROWSER_NAVIGATION" == true ]]; then
-        set_config_scalar browser_navigation enabled true
+        set_config_scalar browser_navigation enabled true || return 1
     fi
     if [[ "$ENABLE_DIARIZATION" == true ]]; then
-        set_config_scalar speaker_diarization enabled true
+        set_config_scalar speaker_diarization enabled true || return 1
     fi
     if [[ "$ENABLE_OMNIPARSER" == true ]]; then
-        set_config_scalar computer_vision enabled true
-        set_config_scalar computer_vision backend omniparser
+        set_config_scalar computer_vision enabled true || return 1
+        set_config_scalar computer_vision backend omniparser || return 1
     fi
     if [[ "$DISABLE_COMPUTER_CONTROL" == true ]]; then
-        set_config_scalar computer_control enabled false
+        set_config_scalar computer_control enabled false || return 1
     fi
-    chmod 600 -- "$config"
+    chmod 600 -- "$config" || {
+        log_error "Could not restrict config.yaml permissions to owner-only (0600)."
+        return 1
+    }
     log_ok "Configuration is private (mode 0600); existing settings were preserved except explicit flags."
 }
 
@@ -442,7 +445,7 @@ download_asset() {
     local temp="${destination}.part.$$"
     TEMP_FILES+=("$temp")
     log_info "Downloading $label."
-    curl --fail --location --retry 3 --output "$temp" "$url"
+    curl --fail --location --retry 3 --output "$temp" "$url" || return 1
     [[ -s "$temp" ]] || { log_error "$label download was empty."; return 1; }
     mv -- "$temp" "$destination"
     log_ok "Downloaded $label."
@@ -459,10 +462,10 @@ download_models() {
     fi
     download_asset \
         "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx" \
-        "$SCRIPT_DIR/assets/voices/kokoro/kokoro-v1.0.onnx" "Kokoro ONNX model"
+        "$SCRIPT_DIR/assets/voices/kokoro/kokoro-v1.0.onnx" "Kokoro ONNX model" || return 1
     download_asset \
         "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin" \
-        "$SCRIPT_DIR/assets/voices/kokoro/voices-v1.0.bin" "Kokoro voice embeddings"
+        "$SCRIPT_DIR/assets/voices/kokoro/voices-v1.0.bin" "Kokoro voice embeddings" || return 1
 }
 
 sync_python_environment() {
@@ -550,11 +553,13 @@ install_optional_feature_assets() {
         fi
     fi
     if [[ "$ENABLE_IDEA_ROUTING" == true ]]; then
-        uv run --no-sync python -m src.intent.idea_router --download
+        uv run --no-sync python -m src.intent.idea_router --download || return 1
     fi
     if [[ "$ENABLE_DIARIZATION" == true && "$SKIP_MODELS" != true ]]; then
         log_info "Downloading Nemotron diarization model..."
-        uv run --no-sync python -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='nvidia/Nemotron-3-Diarization', allow_patterns=['config.json', 'model.safetensors', 'processor_config.json', 'preprocessor_config.json', 'tokenizer_config.json', 'special_tokens_map.json'])"
+        uv run --no-sync python -c \
+            "from huggingface_hub import snapshot_download; snapshot_download(repo_id='nvidia/Nemotron-3-Diarization', allow_patterns=['config.json', 'model.safetensors', 'processor_config.json', 'preprocessor_config.json', 'tokenizer_config.json', 'special_tokens_map.json'])" \
+            || return 1
     fi
     if [[ "$ENABLE_BROWSER_NAVIGATION" == true ]]; then
         local browser selection
@@ -582,12 +587,12 @@ browser = (b.get("browser") or "default").lower()
 default_browser = (c.get("desktop", {}).get("default_browser") or "chromium").lower()
 print(f"{browser}|{default_browser}")
 PY
-)"
+        )" || return 1
         browser="${selection%%|*}"
         local default_browser="${selection#*|}"
         [[ "$browser" == default ]] && browser="$default_browser"
         case "$browser" in
-            firefox|*firefox*) uv run --no-sync playwright install firefox ;;
+            firefox|*firefox*) uv run --no-sync playwright install firefox || return 1 ;;
             *)
                 local channel_or_binary=""
                 case "$browser" in
@@ -603,7 +608,7 @@ PY
                     log_info "Using installed browser: $channel_or_binary"
                 else
                     log_info "Installing Playwright Chromium build..."
-                    uv run --no-sync playwright install chromium
+                    uv run --no-sync playwright install chromium || return 1
                 fi
                 ;;
         esac
@@ -708,7 +713,15 @@ print_dry_run() {
     printf 'Python dependencies: %s\n' "$([[ "$SKIP_PYTHON" == true ]] && printf 'skipped' || printf 'uv sync%s' "$extras_str")"
     printf 'Kokoro assets: %s\n' "$([[ "$SKIP_MODELS" == true ]] && printf 'skipped' || printf 'download if accepted/defaulted')"
     printf 'Config: initialize if absent; preserve existing values except explicit flags\n'
-    printf 'Service: %s\n' "$([[ "$ASSUME_YES" == true && "$SKIP_SERVICE" != true ]] && printf 'install only if absent; never enable or start' || printf 'interactive wizard owns service setup')"
+    local service_plan
+    if [[ "$SKIP_SERVICE" == true ]]; then
+        service_plan="skipped (--skip-service)"
+    elif [[ "$ASSUME_YES" == true ]]; then
+        service_plan="install only if absent; never enable or start"
+    else
+        service_plan="interactive wizard owns service setup"
+    fi
+    printf 'Service: %s\n' "$service_plan"
     printf 'Requested flags: idea-routing=%s browser-navigation=%s diarization=%s omniparser=%s disable-computer-control=%s install-desktop-tools=%s speaker-verification-skip=%s\n' \
         "$ENABLE_IDEA_ROUTING" "$ENABLE_BROWSER_NAVIGATION" "$ENABLE_DIARIZATION" "$ENABLE_OMNIPARSER" "$DISABLE_COMPUTER_CONTROL" "$INSTALL_DESKTOP_TOOLS" "$SKIP_SPEAKER_VERIFICATION"
 }

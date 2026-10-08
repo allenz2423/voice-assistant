@@ -238,18 +238,70 @@ def test_systemd_refuses_to_start_when_kokoro_assets_are_missing(tmp_path, monke
     _systemd_fixture(project, home, tts_engine="kokoro")
     _prepare_systemd_wizard(monkeypatch, wizard, project, home)
     commands = []
+
+    def run(*args):
+        commands.append(args)
+        if args in (("is-active", "adam-kev.service"), ("is-enabled", "adam-kev.service")):
+            return subprocess.CompletedProcess(args, 0, "active", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(wizard, "_run_user_systemctl", run)
+    prompts = []
     monkeypatch.setattr(
         wizard,
-        "_run_user_systemctl",
-        lambda *args: commands.append(args) or subprocess.CompletedProcess(args, 3, "", "inactive"),
+        "prompt_yes_no",
+        lambda _prompt, default_yes=True: prompts.append(default_yes) or True,
     )
-    monkeypatch.setattr(wizard, "prompt_yes_no", lambda *_args, **_kwargs: True)
 
     wizard.configure_systemd()
 
-    assert not any(command[0] in {"enable", "daemon-reload"} for command in commands)
+    assert prompts == [False]
+    assert commands == []
     assert not (home / ".config/systemd/user/adam.service").exists()
     assert "Kokoro assets are missing" in capsys.readouterr().out
+
+
+def test_systemd_runtime_preflight_failure_does_not_inspect_or_stop_legacy_service(
+    tmp_path, monkeypatch
+):
+    import tools.setup_wizard as wizard
+
+    project, home = tmp_path / "adam", tmp_path / "home"
+    _systemd_fixture(project, home)
+    _prepare_systemd_wizard(monkeypatch, wizard, project, home)
+    runtime_checks = []
+    monkeypatch.setattr(
+        wizard,
+        "ensure_onnxruntime",
+        lambda: runtime_checks.append("onnxruntime") or False,
+    )
+    monkeypatch.setattr(
+        wizard,
+        "ensure_torchaudio",
+        lambda: runtime_checks.append("torchaudio") or True,
+    )
+    commands = []
+
+    def run(*args):
+        commands.append(args)
+        if args in (("is-active", "adam-kev.service"), ("is-enabled", "adam-kev.service")):
+            return subprocess.CompletedProcess(args, 0, "active", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(wizard, "_run_user_systemctl", run)
+    prompts = []
+    monkeypatch.setattr(
+        wizard,
+        "prompt_yes_no",
+        lambda _prompt, default_yes=True: prompts.append(default_yes) or True,
+    )
+
+    wizard.configure_systemd()
+
+    assert runtime_checks == ["onnxruntime"]
+    assert prompts == [False]
+    assert commands == []
+    assert not (home / ".config/systemd/user/adam.service").exists()
 
 
 def test_systemd_replacement_keeps_backup_and_checks_command_failures(tmp_path, monkeypatch, capsys):
@@ -347,17 +399,26 @@ def test_systemd_skips_unit_when_project_path_cannot_be_represented(tmp_path, mo
     _systemd_fixture(project, home)
     _prepare_systemd_wizard(monkeypatch, wizard, project, home)
     commands = []
+
+    def run(*args):
+        commands.append(args)
+        if args in (("is-active", "adam-kev.service"), ("is-enabled", "adam-kev.service")):
+            return subprocess.CompletedProcess(args, 0, "active", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(wizard, "_run_user_systemctl", run)
+    prompts = []
     monkeypatch.setattr(
         wizard,
-        "_run_user_systemctl",
-        lambda *args: commands.append(args) or subprocess.CompletedProcess(args, 3, "", "inactive"),
+        "prompt_yes_no",
+        lambda _prompt, default_yes=True: prompts.append(default_yes) or True,
     )
-    monkeypatch.setattr(wizard, "prompt_yes_no", lambda *_args, **_kwargs: True)
 
     wizard.configure_systemd()
 
     assert not (home / ".config/systemd/user/adam.service").exists()
-    assert not any(command[0] in {"daemon-reload", "enable"} for command in commands)
+    assert prompts == [False]
+    assert commands == []
     assert "cannot safely represent" in capsys.readouterr().out
 
 

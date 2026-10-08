@@ -1488,19 +1488,6 @@ def configure_systemd():
         print(f"{CLR_YELLOW}Service setup skipped. You can start Adam manually with 'uv run python -m src.main'.{CLR_RESET}")
         return
 
-    legacy_active = _run_user_systemctl("is-active", "adam-kev.service")
-    legacy_enabled = _run_user_systemctl("is-enabled", "adam-kev.service")
-    if legacy_active.returncode == 0 or legacy_enabled.returncode == 0:
-        print(f"{CLR_CYAN}A retired adam-kev.service is active or enabled.{CLR_RESET}")
-        if prompt_yes_no("Stop and disable adam-kev.service?", default_yes=False):
-            result = _run_user_systemctl("disable", "--now", "adam-kev.service")
-            if result.returncode != 0:
-                _report_systemctl_failure("stop and disable adam-kev.service", result)
-                return
-            print(f"{CLR_GREEN}adam-kev.service was stopped and disabled.{CLR_RESET}")
-        else:
-            print(f"{CLR_YELLOW}Leaving adam-kev.service unchanged as requested.{CLR_RESET}")
-
     if get_current_config_value("engine", "kokoro", section="tts").lower() == "kokoro":
         missing_assets = [path for path in _configured_tts_asset_paths() if not path.is_file()]
         if missing_assets:
@@ -1521,6 +1508,7 @@ def configure_systemd():
 
     unit_exists = service_path.is_file()
     should_write = not unit_exists
+    rendered = None
     if unit_exists:
         if prompt_yes_no(
             "Replace the existing adam.service? A backup will be kept beside it.",
@@ -1529,15 +1517,6 @@ def configure_systemd():
             rendered = render_systemd_unit()
             if rendered is None:
                 return
-            backup_path = backup_existing_unit(service_path)
-            if backup_path is None:
-                return
-            print(f"{CLR_CYAN}Backed up the previous unit to {backup_path}.{CLR_RESET}")
-            try:
-                _atomic_write_text(service_path, rendered)
-            except OSError as exc:
-                print(f"{CLR_RED}Could not replace adam.service ({exc}). The backup is available at {backup_path}.{CLR_RESET}")
-                return
             should_write = True
         else:
             print(f"{CLR_CYAN}Keeping the existing adam.service unchanged and using it.{CLR_RESET}")
@@ -1545,12 +1524,38 @@ def configure_systemd():
         rendered = render_systemd_unit()
         if rendered is None:
             return
+
+    # Do not disrupt a legacy service until the replacement has passed every
+    # startup preflight, including validation of the unit path and template.
+    legacy_active = _run_user_systemctl("is-active", "adam-kev.service")
+    legacy_enabled = _run_user_systemctl("is-enabled", "adam-kev.service")
+    if legacy_active.returncode == 0 or legacy_enabled.returncode == 0:
+        print(f"{CLR_CYAN}A retired adam-kev.service is active or enabled.{CLR_RESET}")
+        if prompt_yes_no("Stop and disable adam-kev.service?", default_yes=False):
+            result = _run_user_systemctl("disable", "--now", "adam-kev.service")
+            if result.returncode != 0:
+                _report_systemctl_failure("stop and disable adam-kev.service", result)
+                return
+            print(f"{CLR_GREEN}adam-kev.service was stopped and disabled.{CLR_RESET}")
+        else:
+            print(f"{CLR_YELLOW}Leaving adam-kev.service unchanged as requested.{CLR_RESET}")
+
+    if should_write:
+        if unit_exists:
+            backup_path = backup_existing_unit(service_path)
+            if backup_path is None:
+                return
+            print(f"{CLR_CYAN}Backed up the previous unit to {backup_path}.{CLR_RESET}")
         try:
             _atomic_write_text(service_path, rendered)
         except OSError as exc:
-            print(f"{CLR_RED}Could not install adam.service ({exc}).{CLR_RESET}")
+            if unit_exists:
+                print(f"{CLR_RED}Could not replace adam.service ({exc}). The backup is available at {backup_path}.{CLR_RESET}")
+            else:
+                print(f"{CLR_RED}Could not install adam.service ({exc}).{CLR_RESET}")
             return
-        print(f"{CLR_GREEN}Installed {service_path}.{CLR_RESET}")
+        if not unit_exists:
+            print(f"{CLR_GREEN}Installed {service_path}.{CLR_RESET}")
 
     if should_write:
         result = _run_user_systemctl("daemon-reload")
