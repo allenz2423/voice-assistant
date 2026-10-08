@@ -1265,3 +1265,21 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - On **2026-10-08**, one live model-mediated diagnostic turn was sent in silent mode through the real Edge profile's Adam sidecar UI at `127.0.0.1:8765`, using the exact prompt `Why is my CPU usage high?`. The UI showed `get_system_status · Returned (100 ms)` and `list_processes · Returned (101 ms)`. Host-specific metric values and process names are omitted.
 - Journal evidence confirms the configured route `deepseek/deepseek-v4.1-flash`, provider status `ok`, and two LLM rounds: **2,790 ms** with `finish_reason=tool_calls`, then **2,619 ms** with `finish_reason=stop`. Adam replied in two short sentences and included the exact policy sentence: `No cause is identified; this snapshot cannot explain an earlier spike.`
 - This is one live browser-UI sample. It does not establish voice latency. No pytest was run.
+
+## Checkpoint 175 — punctuation and case variation for CPU status
+
+- Through the real Edge-profile sidecar UI in silent mode, the exact input `cPu, usage!` returned a one-sentence response and only the `get_system_status` tool badge (**100 ms**). Host metric values are omitted.
+- This is a single live UI sample, not evidence about voice latency. No pytest was run.
+
+## Checkpoint 176 — exploratory B1 report request with repeated oracle
+
+- One fresh B1 report request was served on loopback and sent through the sidecar UI. The existing Edge profile hosted the chat UI; BrowserNavigator opened its own isolated browser profile/window. Unrelated tabs in the existing profile were not inspected.
+- BrowserNavigator returned **56 distinct IDs**, **INV-0001–INV-0056**, in a **2,648-byte** result block (**64 journal lines**); the tool took **582 ms**. Adam returned Juniper Labs, **INV-0055 + INV-0056**, totaling **$2,175.00**. The configured `deepseek/deepseek-v4.1-flash` route took **2,971 ms** for the `tool_calls` round and **14,521 ms** for the final `stop` round.
+- Because this exact oracle and answer had already appeared in prior conversation history, classify this as **exploratory/ambiguous**, not independent acceptance. No pytest was run.
+
+## Checkpoint 177 — context-disambiguated B1 live probe
+
+- A single modified B1 report changed only **INV-0055** to **$1,431.27** and **INV-0056** to **$1,286.43** in both the served report and a separate row-level oracle; all other rows were unchanged. Both sources had **56 rows**. The recomputed Juniper Labs total was **$2,717.70**, with the next-highest supplier at **$531.63**. Only the modified HTML was served, on loopback at `127.0.0.1:45261`.
+- The request went through the real Edge-profile sidecar UI with wording that avoided the explicit-browser prefetch path. BrowserNavigator used its own isolated browser profile/window; unrelated existing-profile tabs were not inspected. Only `browser_navigation` ran (**46 ms**) and its result block contained **56 distinct IDs, INV-0001–INV-0056**. The configured `deepseek/deepseek-v4.1-flash` route reported status `ok`: **7,801 ms** for the `tool_calls` round and **13,788 ms** for the final `stop` round. Adam's UI answer included the exact supplier, IDs, amounts, and total. The changed oracle rules out merely repeating the earlier **$2,175.00** answer.
+- During this live probe, the isolated BrowserNavigator Chromium window emitted a `--no-sandbox` warning. Read-only source review found project code does not add the flag; Playwright **1.63** defaults `chromium_sandbox` to false. Enabling the supported sandbox option is an unresolved follow-up because host compatibility was not tested; no code change was made.
+- This is one live exploratory B1 acceptance probe, not repeated general browser reliability evidence. No pytest was run.
