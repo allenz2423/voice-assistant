@@ -1057,3 +1057,8 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - A second 30-minute passive watch at five-minute intervals found Gedit count **1**, all fixture ports (**8766, 8767, 8768, 41112, 18765**) listening, and WebUI `IDLE_LISTENING` on all six checks. T1 rep 1 remains unused. A T1 API turn would reuse shared Brain context and executor; sleeping Gedit and listeners are not a safe-window signal.
 - No model, provider, UI, or microphone action occurred. No tests were run.
+
+## Checkpoint 142 — read-only CPU telemetry source audit
+
+- The system CPU metric uses the whole-host aggregate from `/proc/stat` and computes `(Δtotal−Δidle)/Δtotal`; guest fields are excluded, and idle includes iowait. This is distinct from per-process `ps %CPU`. The exact `cpu usage` quickpath returns only a concise CPU sentence.
+- The observed **19/20%** variation came from separate short snapshots and integer rounding while other probes can stretch the sample interval. The audit found no concrete math bug and made no source change. No tests or live calls were run; no config or service logs were read.
