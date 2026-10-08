@@ -2082,17 +2082,29 @@ class AdamBrain:
     async def _await_with_progress(self, awaitable):
         """Keep a long model/tool wait from sounding like a hung assistant."""
         task = asyncio.ensure_future(awaitable)
+        progress_cues = (
+            "I’m still working through your request.",
+            "The current step is still running.",
+            "I’m waiting for the current step to finish.",
+        )
+        progress_cue_index = 0
         try:
-            done, _ = await asyncio.wait(
-                {task}, timeout=LONG_TASK_PROGRESS_INTERVAL_SECONDS
-            )
-            if task in done:
-                return task.result()
-            if not self._is_interrupted and not getattr(self.tts, "pending_barge_in_text", None):
-                await self._speak_with_role(
-                    "I’m still working through your request.", "progress",
+            while True:
+                done, _ = await asyncio.wait(
+                    {task}, timeout=LONG_TASK_PROGRESS_INTERVAL_SECONDS
                 )
-            return await task
+                if task in done:
+                    return task.result()
+                if not self._is_interrupted and not getattr(self.tts, "pending_barge_in_text", None):
+                    cue = progress_cues[progress_cue_index % len(progress_cues)]
+                    progress_cue_index += 1
+                    try:
+                        await self._speak_with_role(cue, "progress")
+                    except Exception as exc:
+                        print(
+                            f"[LLM] Long-task progress cue failed ({type(exc).__name__}); continuing to wait.",
+                            flush=True,
+                        )
         except BaseException:
             if not task.done():
                 task.cancel()
