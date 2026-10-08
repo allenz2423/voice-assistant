@@ -1500,3 +1500,17 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - One live UI sample used the existing Adam sidecar page in the same focused Edge window, `hyprland:0x55e8d048a150` (PID **1219402**), at **(1,721)** with size **1278×718**. Exact prompt: `System status`. Exact visible answer: `CPU is 9%, memory is 35%, and GPU utilization is 0% on GPU 0 and 39% on GPU 1.` This meets the concise current CPU, memory, and available GPU overview oracle in one sentence. The visible tool badge was `get_system_status`.
 - UI timestamps were **4:34:13 PM** for the prompt and **4:34:14 PM** for the answer, about **1 second**. Focused-window proof is `/tmp/adam-edge-system-status-attempt1/step-04.png` (mode **0600**).
 - Pre/post API state was `IDLE_LISTENING`, meeting mode false, and `active_tool=null`; TTS was Silent. DP-5 began off, was enabled and verified on for capture, then restored and verified off. No `/api/chat` prompt, tab inspection or navigation, or pytest was used.
+
+## Checkpoint 209 — CPU measurement-label correction and WebUI history check
+
+- The Desky journal showed that the garbled CPU complaint still invoked `get_system_status` and `list_processes`. The active-session WebUI history/API mirrored the user and assistant text. Its source timestamps were null and are now rendered as unavailable, so the logs and history were not disagreeing.
+- The substantive mismatch was measurement scope: host-wide CPU utilization sampled at **4%** and `ps` per-process single-core-equivalent lifetime averages (including **13.8%** and **10.6%**) cover different windows. The earlier response omitted the lifetime-average label. Brain instructions and tool descriptions now distinguish these measurements explicitly.
+- After a silent restart, a live localhost WebSocket chat invoked both tools and answered: `CPU is 4%, load 0.30; top lifetime averages: python 13.8%, msedge 10.6%. This snapshot does not identify a cause.` Post-turn state was idle, meeting mode off, with no active tool. The sidecar `/`, `/api/status`, `/api/history`, and JavaScript revision were checked; served JavaScript bytes matched the checkout at revision `687b6731d1e3`.
+- TTS was Silent. No visible browser-profile acceptance was performed because the active window was not the Adam page and screens were off. No pytest or full suite was run; JavaScript syntax and diff checks passed.
+
+## Checkpoint 210 — final live CPU diagnostic and routing clarification
+
+- After the final silent restart, a live localhost WebSocket diagnostic invoked only `get_system_status`: `CPU is only 2% over the status sample, with load average 0.32 — not high. This snapshot does not identify a cause.` Post-turn state was idle, meeting mode false, and `active_tool=null`.
+- Generic high/spike routing no longer offers `list_processes`; its lifetime-average statistics are available only on explicit request. Dedicated how-to/capability exclusions were corrected.
+- The sidecar `/`, status, history, and revision `e78d60a9b4ad` were checked. Served JavaScript matched the checkout and includes retry-history behavior, unavailable-timestamp copy, and request-scoped stale-warning cleanup. History source timestamps remain null; the UI does not synthesize times.
+- TTS was Silent. No visible browser-profile acceptance was performed because the active window was not Adam and screens were off. JavaScript syntax and diff checks passed; no pytest or full suite was run.

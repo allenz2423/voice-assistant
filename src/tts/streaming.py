@@ -192,6 +192,8 @@ class StreamingVoiceSynthesizer:
         self.is_speaking = False
         self.mic_stream = None
         self.wake_detector = None
+        self._vad_lock: threading.Lock | None = None
+        self._wake_lock: threading.Lock | None = None
         self.earcon = None
         self.kokoro = None
         self.stt = None
@@ -267,13 +269,36 @@ class StreamingVoiceSynthesizer:
             print(f"[TTS] Failed to initialize Kokoro: {e}. Falling back to silent notification mode.")
             self.engine = "silent"
 
-    def set_audio_context(self, mic_stream, wake_detector, earcon, stt=None, speaker_verifier=None):
+    def set_audio_context(
+        self,
+        mic_stream,
+        wake_detector,
+        earcon,
+        stt=None,
+        speaker_verifier=None,
+        vad_lock: threading.Lock | None = None,
+        wake_lock: threading.Lock | None = None,
+    ):
         """Wires mic, wake detector, earcon, and STT engine for natural barge-in abort."""
         self.mic_stream = mic_stream
         self.wake_detector = wake_detector
+        self._vad_lock = vad_lock
+        self._wake_lock = wake_lock
         self.earcon = earcon
         self.stt = stt
         self.speaker_verifier = speaker_verifier
+
+    def _predict_wake_serialized(self, audio_chunk):
+        if self._wake_lock is None:
+            return self.wake_detector.predict(audio_chunk)
+        with self._wake_lock:
+            return self.wake_detector.predict(audio_chunk)
+
+    def _is_speech_serialized(self, audio_chunk, **kwargs):
+        if self._vad_lock is None:
+            return self.mic_stream.vad.is_speech(audio_chunk, **kwargs)
+        with self._vad_lock:
+            return self.mic_stream.vad.is_speech(audio_chunk, **kwargs)
 
     def advance_epoch(self):
         """Immediately aborts any ongoing synthesis and speech playback."""
@@ -540,7 +565,9 @@ class StreamingVoiceSynthesizer:
             # 1. Wake word check (if openWakeWord active)
             wake_triggered_on_chunk = False
             if self.wake_detector and not self.wake_detector.is_custom_mode:
-                triggered, _ = self.wake_detector.predict(chunk)
+                triggered, _ = await asyncio.to_thread(
+                    self._predict_wake_serialized, chunk
+                )
                 if triggered:
                     # A wake detector hit is only a candidate. Keep playback
                     # alive until STT and, when enrolled, speaker verification
@@ -548,7 +575,12 @@ class StreamingVoiceSynthesizer:
                     wake_triggered_on_chunk = True
 
             # 2. Silero VAD without acoustic energy override (threshold=0.88)
-            is_speech, prob = self.mic_stream.vad.is_speech(chunk, threshold=0.88, use_energy_floor=False)
+            is_speech, prob = await asyncio.to_thread(
+                self._is_speech_serialized,
+                chunk,
+                threshold=0.88,
+                use_energy_floor=False,
+            )
 
             if is_speech:
                 speech_buffer.append(chunk)

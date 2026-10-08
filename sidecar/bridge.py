@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import inspect
 import json
+import math
 import re
 from typing import Any, Callable, Awaitable
 from src.config import AppConfig, load_config
@@ -158,6 +160,14 @@ class DaemonBridge(RuntimeBridge):
                         clock = starts.pop(span, None)
                         if clock is not None:
                             duration = round((row["clock_ns"] - clock) / 1_000_000)
+                        event_duration = attrs.get("duration_ms")
+                        if (
+                            isinstance(event_duration, (int, float))
+                            and not isinstance(event_duration, bool)
+                            and event_duration >= 0
+                            and (isinstance(event_duration, int) or math.isfinite(event_duration))
+                        ):
+                            duration = round(event_duration)
                     await self.broadcast_state({
                         "type": "tool_activity", "span_id": span,
                         "tool": attrs.get("tool_name", "tool"),
@@ -387,7 +397,7 @@ class DaemonBridge(RuntimeBridge):
                     "role": role,
                     "content": content,
                     "tool_calls": formatted_tc,
-                    "timestamp": msg.get("timestamp") or datetime.now(timezone.utc).isoformat(),
+                    "timestamp": msg.get("timestamp"),
                 })
         append_local_exchanges_through(len(messages))
         return history
@@ -471,7 +481,13 @@ class DaemonBridge(RuntimeBridge):
                 mem_ctx = None
                 mem_mgr = getattr(self.daemon, "memory_manager", None)
                 if mem_mgr is not None and hasattr(mem_mgr, "retrieve_context"):
-                    mem_ctx = mem_mgr.retrieve_context(text)
+                    retrieve_memory_context = getattr(
+                        self.daemon, "_retrieve_memory_context", None
+                    )
+                    if callable(retrieve_memory_context):
+                        mem_ctx = await retrieve_memory_context(text)
+                    else:
+                        mem_ctx = await asyncio.to_thread(mem_mgr.retrieve_context, text)
 
                 # Use the same daemon execution path as voice requests. This
                 # preserves its microphone interruption monitoring and turn
@@ -493,11 +509,19 @@ class DaemonBridge(RuntimeBridge):
                         turn_events.append(event)
 
                 unsubscribe_turn_events = subscribe_events(capture_current_brain_turn)
+                execute_kwargs = {"memory_context": mem_ctx}
+                # Real AdamDaemon exposes the lookup-complete marker. Keep
+                # compatibility with injected executors and older adapters.
+                try:
+                    if "memory_context_resolved" in inspect.signature(execute_turn).parameters:
+                        execute_kwargs["memory_context_resolved"] = True
+                except (TypeError, ValueError):
+                    pass
                 if allowed_tools is None:
-                    turn_response = await execute_turn(text, memory_context=mem_ctx)
+                    turn_response = await execute_turn(text, **execute_kwargs)
                 else:
                     turn_response = await execute_turn(
-                        text, memory_context=mem_ctx, allowed_tools=allowed_tools
+                        text, **execute_kwargs, allowed_tools=allowed_tools
                     )
 
                 turn_start = getattr(brain, "_turn_message_start", prev_len)

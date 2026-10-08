@@ -733,7 +733,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="get_system_status",
-        description="Queries CPU load, RAM, root disk, and available GPU utilization, temperature, and VRAM telemetry.",
+        description="Queries CPU load averages, host-wide CPU utilization over the tool's short status-sample interval (distinct from load averages), RAM, root disk, and available GPU utilization, temperature, and VRAM telemetry.",
         parameters={
             "type": "object",
             "properties": {}
@@ -741,7 +741,7 @@ ADAM_TOOLS: list[CanonicalTool] = [
     ),
     CanonicalTool(
         name="list_processes",
-        description="Lists top running processes sorted by CPU or memory consumption.",
+        description="Lists top running processes sorted by CPU or memory consumption. %CPU is ps's single-core-equivalent lifetime average, not current interval usage.",
         parameters={
             "type": "object",
             "properties": {

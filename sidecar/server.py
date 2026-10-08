@@ -216,8 +216,11 @@ class SidecarServer:
 
     async def handle_index(self, request: web.Request) -> web.Response:
         index_path = STATIC_DIR / "index.html"
-        revision = ui_revision()
-        html = index_path.read_text().replace('/static/app.js', f'/static/app.js?v={revision}')
+        revision, html = await asyncio.gather(
+            asyncio.to_thread(ui_revision),
+            asyncio.to_thread(index_path.read_text),
+        )
+        html = html.replace('/static/app.js', f'/static/app.js?v={revision}')
         html = html.replace('/static/style.css', f'/static/style.css?v={revision}')
         return web.Response(text=html, content_type="text/html")
 
@@ -227,7 +230,7 @@ class SidecarServer:
         status_data["port"] = self.config.port
         status_data["is_loopback"] = _is_loopback(self.config.host)
         status_data["auth_required"] = bool(self.config.auth_token)
-        status_data["ui_revision"] = ui_revision()
+        status_data["ui_revision"] = await asyncio.to_thread(ui_revision)
         return web.json_response(status_data)
 
     async def handle_auth_status(self, request: web.Request) -> web.Response:
@@ -307,7 +310,7 @@ class SidecarServer:
             status_data["port"] = self.config.port
             status_data["is_loopback"] = _is_loopback(self.config.host)
             status_data["auth_required"] = bool(self.config.auth_token)
-            status_data["ui_revision"] = ui_revision()
+            status_data["ui_revision"] = await asyncio.to_thread(ui_revision)
             await ws.send_json(status_data)
         except Exception as exc:
             logger.warning(f"Error sending initial WS status: {exc}")

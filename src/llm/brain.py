@@ -207,6 +207,8 @@ def _screenshot_delay(value, default: float) -> float:
 def _is_dedicated_system_status_request(user_text: str) -> bool:
     """Identify ordinary hardware-health questions covered by get_system_status."""
     text = str(user_text or "")
+    if _is_conceptual_resource_question(text):
+        return False
     asks_about_status = re.search(
         r"\bsystem\s+(?:status|health|utilization|usage|telemetry|stats?)\b|"
         r"\b(?:cpu|processor|ram|memory|gpu|graphics|disk|storage)\s+"
@@ -242,6 +244,17 @@ def _is_dedicated_system_status_request(user_text: str) -> bool:
         text,
         re.IGNORECASE,
     )
+    asks_about_capability = re.search(
+        r"\b(?:support|supports|capable|compatible|architecture|feature)\b",
+        text,
+        re.IGNORECASE,
+    )
+    asks_how_to_check = re.search(
+        r"\bhow\s+(?:do|can|should|could|would)\s+i\b[^.!?]{0,60}"
+        r"\b(?:check|see|monitor|inspect|track|measure)\b",
+        text,
+        re.IGNORECASE,
+    )
     asks_for_file_action = re.search(
         r"\b(?:read|write|create|edit|modify|delete|save|update)\b"
         r"[^.!?\n]{0,100}\b(?:files?|folders?|documents?|fixtures?|reports?|lines?|paths?)\b",
@@ -260,9 +273,157 @@ def _is_dedicated_system_status_request(user_text: str) -> bool:
         (asks_about_status or asks_about_personal_resource)
         and not explicitly_requests_shell
         and not asks_for_another_action
+        and not asks_about_capability
+        and not asks_how_to_check
         and not asks_for_file_action
         and not asks_for_other_capability
     )
+
+
+def _word_is_within_one_edit(token: str, candidates: set[str] | frozenset[str]) -> bool:
+    """Match one whole ASR token to a small vocabulary with at most one edit."""
+    for candidate in candidates:
+        if abs(len(token) - len(candidate)) > 1:
+            continue
+        left = right = edits = 0
+        while left < len(token) and right < len(candidate):
+            if token[left] == candidate[right]:
+                left += 1
+                right += 1
+                continue
+            edits += 1
+            if edits > 1:
+                break
+            if len(token) > len(candidate):
+                left += 1
+            elif len(token) < len(candidate):
+                right += 1
+            else:
+                left += 1
+                right += 1
+        if edits <= 1 and edits + (len(token) - left) + (len(candidate) - right) <= 1:
+            return True
+    return False
+
+
+def _contains_asr_tolerant_term(
+    user_text: str,
+    candidates: set[str] | frozenset[str],
+    *,
+    exclude_near_matches: set[str] | frozenset[str] = frozenset(),
+) -> bool:
+    return any(
+        token not in exclude_near_matches and _word_is_within_one_edit(token, candidates)
+        for token in re.findall(r"[a-z]+", str(user_text or "").casefold())
+    )
+
+
+def _is_conceptual_resource_question(user_text: str) -> bool:
+    """Leave resource explanations and comparisons to the model without live telemetry."""
+    text = str(user_text or "")
+    return bool(
+        re.search(
+            r"\b(?:explain|define|definition|meaning|mean|means|compare|comparison|"
+            r"difference|differences|distinction|versus|vs)\b|"
+            r"\bwhat\s+does\b|"
+            r"\bhow\b[^.!?\n]{0,80}\b(?:calculated|calculation|work|works|measured|"
+            r"measurement|determined|computed)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _has_resource_status_question_cue(user_text: str) -> bool:
+    """Keep telemetry tools for clear resource questions despite ASR word errors.
+
+    A resource noun by itself is not enough: explanatory questions such as
+    "what does memory mean?" and capability questions such as CPU feature
+    support should remain ordinary model-led questions.
+    """
+    text = str(user_text or "")
+    if _is_conceptual_resource_question(text):
+        return False
+    mentions_resource = re.search(
+        r"\b(?:cpu|processor|gpu|graphics|ram|memory|vram|temperature|temp|battery)\b",
+        text,
+        re.IGNORECASE,
+    )
+    telemetry_measure = re.search(
+        r"\b(?:usage|utili[sz]ation|load|temperature|temp|health|status|"
+        r"percent(?:age)?|cores?|memory\s+(?:use|used|free|available)|"
+        r"(?:free|available|used)\s+memory|battery\s+(?:level|charge))\b",
+        text,
+        re.IGNORECASE,
+    )
+    asr_telemetry_measure = _contains_asr_tolerant_term(
+        text, {"usage", "utilization", "status", "percent"}
+    )
+    diagnostic_descriptor = re.search(
+        r"\b(?:high|low|hot|overheating|slow|busy|spiking)\b", text, re.IGNORECASE
+    )
+    asr_diagnostic_descriptor = _contains_asr_tolerant_term(
+        text,
+        {"high", "low", "hot", "slow", "busy", "spiking"},
+        # Common function/request words are within one edit of low/slow/hot.
+        # Exact diagnostic words still match through the existing regex above.
+        exclude_near_matches={"how", "show", "now", "not", "who", "you"},
+    )
+    asks_diagnostic = re.search(
+        r"\?|\b(?:what|how|why|is|are|tell|report|show|check)\b",
+        text,
+        re.IGNORECASE,
+    )
+    asks_how_to_check = re.search(
+        r"\bhow\s+(?:do|can|should|could|would)\s+i\b[^.!?]{0,60}"
+        r"\b(?:check|see|monitor|inspect|track|measure)\b",
+        text,
+        re.IGNORECASE,
+    )
+    asks_for_another_action = re.search(
+        r"\b(?:open|launch|start|stop|restart|kill|run|execute|create|write|delete|"
+        r"search|look\s+up|read|set|change|enable|disable|remind|schedule|play|type|click)\b",
+        text,
+        re.IGNORECASE,
+    )
+    asks_about_capability = re.search(
+        r"\b(?:support|supports|capable|compatible|architecture|feature)\b",
+        text,
+        re.IGNORECASE,
+    )
+    return bool(
+        mentions_resource
+        and asks_diagnostic
+        and (
+            telemetry_measure
+            or asr_telemetry_measure
+            or diagnostic_descriptor
+            or asr_diagnostic_descriptor
+        )
+        and not asks_how_to_check
+        and not asks_for_another_action
+        and not asks_about_capability
+    )
+
+
+def _explicitly_requests_processes(user_text: str) -> bool:
+    """Expose process telemetry only when the user asks to identify an app/process."""
+    text = str(user_text or "")
+    names_process_target = re.search(
+        r"\b(?:process(?:es)?|apps?|applications?|programs?)\b", text, re.IGNORECASE
+    )
+    asks_which_target = re.search(
+        r"\b(?:what|which)\b[^.!?\n]{0,40}\b(?:app|application|program|process)\b",
+        text,
+        re.IGNORECASE,
+    )
+    asks_what_drives_resource = re.search(
+        r"\bwhat(?:'s|\s+is)?\b[^.!?\n]{0,40}\b(?:using|consuming|driving)\b"
+        r"[^.!?\n]{0,40}\b(?:cpu|processor|ram|memory)\b",
+        text,
+        re.IGNORECASE,
+    )
+    return bool(names_process_target or asks_which_target or asks_what_drives_resource)
 
 
 _STATUS_LOOKUP_WORDS = frozenset({
@@ -297,19 +458,14 @@ def _is_simple_status_lookup(user_text: str, *, include_processes: bool = False)
 
 
 def _filter_tools_for_system_status(available_tools: list, user_text: str) -> list:
-    if not _is_dedicated_system_status_request(user_text) and not _can_direct_dispatch_system_status(user_text):
+    if (
+        not _is_dedicated_system_status_request(user_text)
+        and not _has_resource_status_question_cue(user_text)
+        and not _can_direct_dispatch_system_status(user_text)
+    ):
         return available_tools
     allowed_names = {"get_system_status"}
-    explicitly_requests_processes = bool(
-        re.search(r"\b(?:process|processes)\b", user_text, re.IGNORECASE)
-    )
-    asks_only_for_facts = _is_simple_status_lookup(
-        user_text, include_processes=explicitly_requests_processes
-    )
-    asks_about_cpu_or_memory = bool(
-        re.search(r"\b(?:cpu|processor|ram|memory)\b", user_text, re.IGNORECASE)
-    )
-    if explicitly_requests_processes or (asks_about_cpu_or_memory and not asks_only_for_facts):
+    if _explicitly_requests_processes(user_text):
         allowed_names.add("list_processes")
     return [tool for tool in available_tools if tool.name in allowed_names]
 
@@ -959,6 +1115,8 @@ def _can_answer_without_tools(user_text: str) -> bool:
     text = str(user_text or "").strip()
     if not text or len(text) > 500:
         return False
+    if _has_resource_status_question_cue(text):
+        return False
 
     # Questions about local resources can require inspection even without an
     # imperative verb (for example, asking whether a folder is disorganized).
@@ -1423,7 +1581,7 @@ Voice & Execution:
 
 Tool Routing:
 - Dedicated tools first: Use built-in tools for time, weather, reminders, timers, calendar (Noctalia / Remind), notes, files, math, and system status.
-- For factual hardware requests, use `get_system_status` and report only the metric or metrics the user asked for. Keep a single-metric answer to one short sentence; give a brief overview for `system status`, without listing every telemetry field. For a question or concern about why CPU or memory is high, slow, hot, or otherwise abnormal, get status once and inspect the relevant top processes with `list_processes` (sort by CPU for CPU concerns and memory for memory concerns), even when the user did not say "process". Explain only what the evidence supports. For CPU or memory high/spike questions, answer in exactly two sentences and at most 25 words total: sentence 1 gives the current requested metric (include CPU/load for CPU) and the strongest relevant top-process evidence; sentence 2 names a cause only if current evidence establishes it. If no cause is identified for a question about an earlier spike, sentence 2 must be exactly: "No cause is identified; this snapshot cannot explain an earlier spike." For a current high CPU or memory question with no identified cause, use: "This snapshot does not identify a cause." Omit unrelated status fields and all other explanation. A low current sample cannot explain an earlier spike; never say "likely" or "probably" or list possible causes without direct evidence. Do not repeat status checks with `run_bash_command` or call `get_system_status` again in the same turn. A separately and explicitly requested shell inspection remains available.
+- For factual hardware requests, use `get_system_status` and report only the metric or metrics the user asked for. Keep a single-metric answer to one short sentence; give a brief overview for `system status`, without listing every telemetry field. For a question or concern about why CPU or memory is high, slow, hot, or otherwise abnormal, get host status once. Do not call or report `list_processes` entries for generic high/spike questions: its process `%CPU` is a single-core-equivalent lifetime average, not interval-correlated evidence, and cannot establish a cause. Only report process metrics when the user explicitly asks for process usage; label them "single-core lifetime average", say they are not comparable to host-wide sample CPU, and omit the process numbers if this cannot fit within 25 words. Explain only what the evidence supports. Treat `get_system_status` CPU as host-wide utilization measured over its status-sample interval. For CPU or memory high/spike questions, answer in exactly two sentences and at most 25 words total: sentence 1 gives the requested host-wide metric (CPU over the status-sample interval; include load for CPU); sentence 2 names a cause only if interval-correlated evidence establishes it. If no cause is identified for a question about an earlier spike, sentence 2 must be exactly: "No cause is identified; this snapshot cannot explain an earlier spike." For a current high CPU or memory question with no identified cause, use: "This snapshot does not identify a cause." Omit unrelated status fields and all other explanation. A low current sample cannot explain an earlier spike; never say "likely" or "probably" or list possible causes without interval-correlated evidence. Do not repeat status checks with `run_bash_command` or call `get_system_status` again in the same turn. A separately and explicitly requested shell inspection remains available.
 - For a positive request to start or stop meeting recording that is not one of the exact direct voice controls, call `meeting_mode` with `action="start"` or `action="stop"`, including polite requests phrased as questions. A bare command saying “meeting mode” means start meeting mode. Do not call it for informational questions, hypotheticals, or instructions not to change the current state. The meeting tool owns the spoken confirmation; do not repeat the action or add a second confirmation.
 - Web: Always use `open_in_browser` for URLs and web searches; never manually type URLs into browser address bars via GUI. Use `fetch_webpage` to read specific page content.
 - Shell: Use for CLI tasks, system inspection, or direct script/app APIs. Never run shell `sleep` during GUI tasks (use `capture_screenshot` with delay instead).
@@ -2527,6 +2685,7 @@ class AdamBrain:
         user_text: str,
         memory_context: str | None = None,
         allowed_tools: list[str] | None = None,
+        memory_context_resolved: bool = False,
     ):
         """Processes a transcribed user prompt through the autonomous ReAct cycle."""
         # The WebUI needs the actual current-turn boundary after history trimming.
@@ -2543,7 +2702,10 @@ class AdamBrain:
         try:
             with timing_operation("brain.turn"):
                 return await self._process_user_utterance_impl(
-                    user_text, memory_context=memory_context, allowed_tools=allowed_tools
+                    user_text,
+                    memory_context=memory_context,
+                    memory_context_resolved=memory_context_resolved,
+                    allowed_tools=allowed_tools,
                 )
         except asyncio.CancelledError:
             turn_status = "cancelled"
@@ -2599,6 +2761,7 @@ class AdamBrain:
         self,
         user_text: str,
         memory_context: str | None = None,
+        memory_context_resolved: bool = False,
         allowed_tools: list[str] | None = None,
     ):
         print(f"\n[Adam] User said: \"{user_text}\"")
@@ -2777,8 +2940,21 @@ class AdamBrain:
 
         has_image = any(bool(message.get("images")) for message in self.messages)
         memory_note = ""
-        if not memory_context and self.memory_mgr and not compact_conversation:
-            memory_context = self.memory_mgr.retrieve_context(user_text)
+        if (
+            not memory_context
+            and not memory_context_resolved
+            and self.memory_mgr
+            and not compact_conversation
+        ):
+            resolver = getattr(self, "memory_context_resolver", None)
+            if callable(resolver):
+                memory_context = await resolver(user_text)
+            else:
+                # Direct Brain users retain automatic memory lookup, without
+                # making a potentially expensive stateful lookup block the loop.
+                memory_context = await asyncio.to_thread(
+                    self.memory_mgr.retrieve_context, user_text
+                )
         memory_only_query = bool(
             not has_image
             and not skill_context
@@ -3003,7 +3179,10 @@ class AdamBrain:
             if tool_scope is not None:
                 available_tools = [tool for tool in available_tools if tool.name in tool_scope]
             if (
-                _is_dedicated_system_status_request(user_text)
+                (
+                    _is_dedicated_system_status_request(user_text)
+                    or _has_resource_status_question_cue(user_text)
+                )
                 and any(call["name"] == "get_system_status" for call in all_executed_tool_calls)
             ):
                 # A status sample is enough for this turn. Keep the relevant
@@ -3026,6 +3205,7 @@ class AdamBrain:
             if (
                 not has_image
                 and not _is_dedicated_system_status_request(user_text)
+                and not _has_resource_status_question_cue(user_text)
                 and not _can_direct_dispatch_system_status(user_text)
                 and (
                 _can_answer_without_tools(user_text) or memory_only_query
@@ -3628,7 +3808,11 @@ class AdamBrain:
                 emit_event(
                     "tool.completed", span_id=tool_span, component="tool",
                     status="error" if tool_status in TOOL_RECOVERY_STATUSES else "ok",
-                    attributes={"tool_name": str(name), "outcome": str(tool_status)},
+                    attributes={
+                        "tool_name": str(name),
+                        "outcome": str(tool_status),
+                        "duration_ms": duration_ms,
+                    },
                 )
                 if name in DESKTOP_MUTATION_TOOLS and origin not in {"text_fallback", "dsml_fallback"}:
                     desktop_mutation_seen = True

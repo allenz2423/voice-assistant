@@ -7,7 +7,16 @@
   let wsConnecting = false;
   let wsGeneration = 0;
   let pendingChatMessage = null;
+  let pendingChatRow = null;
+  let pendingComposerRevision = null;
+  let pendingClearComposer = false;
   let pendingChatTimeout = null;
+  let activeChatRow = null;
+  let chatRequestSequence = 0;
+  let chatReady = false;
+  let chatStatusVerified = false;
+  let chatHistoryVerified = false;
+  let uncertainHistoryRefresh = null;
   let isSending = false;
   let taskProgressTimer = null;
   let taskProgressStartedAt = null;
@@ -15,10 +24,18 @@
   let taskProgressAwaitingConfirmation = false;
   let historyLoaded = false;
   let historyLoading = false;
+  let historyLoadPromise = null;
   let historyGeneration = 0;
   let historyReloadPending = false;
+  let historySnapshot = null;
+  let historyUserMessageCounts = new Map();
+  let composerRevision = 0;
+  let historyRetryPromise = null;
+  let historyRetryAttempts = 0;
+  const MAX_HISTORY_RETRIES_PER_CONNECTION = 3;
   let lastFocusedElement = null;
   const liveTools = new Map();
+  const chatRowsBySocket = new WeakMap();
   const loadedRevision = new URL(document.currentScript.src).searchParams.get("v");
 
   // Token management
@@ -68,6 +85,15 @@
   const sendBtn = document.getElementById("sendBtn");
   const statusBar = document.getElementById("statusBar");
   const statusMessage = document.getElementById("statusMessage");
+  const historyRetryButton = document.createElement("button");
+  historyRetryButton.type = "button";
+  historyRetryButton.className = "btn btn-secondary";
+  historyRetryButton.textContent = "Retry history";
+  historyRetryButton.setAttribute("aria-label", "Retry loading conversation history");
+  historyRetryButton.style.padding = "6px 10px";
+  historyRetryButton.style.fontSize = "0.75rem";
+  historyRetryButton.hidden = true;
+  statusBar.appendChild(historyRetryButton);
   const clearChatBtn = document.getElementById("clearChatBtn");
   const scrollToBottomBtn = document.getElementById("scrollToBottomBtn");
 
@@ -312,10 +338,12 @@
   });
 
   // Append a message to the chat container
-  function appendMessage(role, content, toolCalls, timestamp) {
+  function appendMessage(role, content, toolCalls, timestamp, options = {}) {
     const wasNearBottom = isUserScrolledNearBottom();
     const row = document.createElement("div");
     row.className = `message-row message-${role}`;
+    if (options.preserveOnHistoryRefresh) row.dataset.preserveOnHistoryRefresh = "true";
+    if (options.outcomeUnknownFor) row.dataset.outcomeUnknownFor = options.outcomeUnknownFor;
 
     const header = document.createElement("div");
     header.className = "message-header";
@@ -344,7 +372,13 @@
 
     const time = document.createElement("span");
     time.className = "message-time";
-    time.textContent = formatTime(timestamp);
+    if (options.timestampUnavailable) {
+      time.textContent = "Time unavailable";
+      time.title = "No source timestamp is available for this history message.";
+      time.setAttribute("aria-label", "Timestamp unavailable");
+    } else {
+      time.textContent = formatTime(timestamp);
+    }
 
     header.appendChild(avatarInline);
     header.appendChild(author);
@@ -549,6 +583,13 @@
   // Set runtime state UI badge & status bar
   function setRuntimeState(state) {
     const s = state || "IDLE";
+    if (s !== "IDLE_LISTENING") chatReady = false;
+    else if (
+      chatStatusVerified
+      && chatHistoryVerified
+      && ws?.readyState === WebSocket.OPEN
+      && !hasUncertainChatRows()
+    ) chatReady = true;
     stateText.textContent = s;
     taskProgressAwaitingConfirmation = s === "AWAITING_CONFIRMATION" && isSending;
     if (s === "PROCESSING_REACT") {
@@ -646,42 +687,276 @@
   }
 
   // Load conversation history from API
-  async function loadHistory() {
-    if (historyLoaded) return;
+  async function loadHistory(refresh = false, resolveUncertain = false) {
+    if (historyLoaded && !refresh) return true;
     if (historyLoading) {
-      historyReloadPending = true;
-      return;
+      if (refresh) historyReloadPending = true;
+      const loaded = await historyLoadPromise;
+      return Boolean(loaded && historyLoaded && historySnapshot !== null);
     }
     historyLoading = true;
     const gen = historyGeneration;
-    try {
-      const res = await fetch("/api/history", { headers: getAuthHeaders() });
-      if (gen !== historyGeneration) return;
-      if (res.status === 401) {
-        handleAuthRequired();
-        return;
-      }
-      if (!res.ok) return;
-      const data = await res.json();
-      if (gen !== historyGeneration) return;
-      if (Array.isArray(data.messages) && data.messages.length > 0) {
-        data.messages.forEach((m) => {
-          appendMessage(m.role, m.content, m.tool_calls, m.timestamp);
-        });
-      }
-      historyLoaded = true;
-    } catch (err) {
-      console.warn("Could not load history:", err);
-    } finally {
-      historyLoading = false;
-      if (historyReloadPending) {
-        historyReloadPending = false;
-        if (!historyLoaded) {
-          loadHistory();
+    const loadPromise = (async () => {
+      let loaded = false;
+      try {
+        const res = await fetch("/api/history", { headers: getAuthHeaders() });
+        if (gen === historyGeneration && res.status === 401) {
+          handleAuthRequired();
+        } else if (gen === historyGeneration && res.ok) {
+        const data = await res.json();
+        if (gen !== historyGeneration) return false;
+        const messages = Array.isArray(data.messages) ? data.messages : [];
+        // Reconcile every sent optimistic row against user messages newly
+        // observed since the prior snapshot. There can be more than one: a
+        // request may have been sent, disconnected, and been followed by a
+        // second request queued for reconnect before history is refreshed.
+        if (resolveUncertain) {
+          chatMessages.querySelectorAll('.message-row[data-reconcile-with-history="true"]').forEach((row) => {
+            const optimisticText = row.querySelector(".message-body")?.textContent || "";
+            const baselineCount = Math.max(0, Number(row.dataset.historyBaselineCount) || 0);
+            let occurrence = 0;
+            let matchedIndex = -1;
+            for (let index = 0; index < messages.length; index++) {
+              if (messages[index].role !== "user" || String(messages[index].content || "") !== optimisticText) continue;
+              if (occurrence === baselineCount) {
+                matchedIndex = index;
+                break;
+              }
+              occurrence++;
+            }
+            let completedResponse = false;
+            if (matchedIndex >= 0) {
+              for (let index = matchedIndex + 1; index < messages.length; index++) {
+                if (messages[index].role === "user") break;
+                if (messages[index].role === "assistant" && String(messages[index].content || "").trim()) {
+                  completedResponse = true;
+                }
+              }
+            }
+            if (completedResponse) {
+              const requestId = row.dataset.chatRequestId;
+              row.remove();
+              if (requestId) {
+                chatMessages.querySelectorAll(".message-row").forEach((warning) => {
+                  if (warning.dataset.outcomeUnknownFor === requestId) warning.remove();
+                });
+              }
+              if (row === activeChatRow) activeChatRow = null;
+              row.dataset.historyRequestFound = "true";
+            } else if (matchedIndex >= 0) {
+              const requestId = row.dataset.chatRequestId;
+              chatMessages.querySelectorAll(".message-row").forEach((warning) => {
+                if (requestId && warning.dataset.outcomeUnknownFor === requestId) {
+                  warning.dataset.userAckRequired = "true";
+                }
+              });
+              row.dataset.historyRequestFound = "true";
+              row.remove();
+              if (row === activeChatRow) activeChatRow = null;
+            } else {
+              row.dataset.historyRequestFound = "false";
+            }
+            // Keep the reconciliation gate until the caller confirms with a
+            // fresh live status that the daemon is still idle.
+            row.dataset.historyCheckComplete = "true";
+          });
+        }
+        const snapshot = JSON.stringify(messages.map((m) => ({
+          role: m.role,
+          content: m.content,
+          tool_calls: m.tool_calls,
+          timestamp: m.timestamp,
+        })));
+        if (historyLoaded && snapshot !== historySnapshot) {
+          chatMessages.querySelectorAll(".message-row").forEach((row) => {
+            if (row.dataset.preserveOnHistoryRefresh !== "true") row.remove();
+          });
+        }
+        if (!historyLoaded || snapshot !== historySnapshot) {
+          messages.forEach((m) => {
+            appendMessage(m.role, m.content, m.tool_calls, m.timestamp, {
+              timestampUnavailable: !m.timestamp,
+            });
+          });
+        }
+        historySnapshot = snapshot;
+        historyUserMessageCounts = new Map();
+        for (const message of messages) {
+          if (message.role !== "user") continue;
+          const content = String(message.content || "");
+          historyUserMessageCounts.set(content, (historyUserMessageCounts.get(content) || 0) + 1);
+        }
+        historyLoaded = true;
+        loaded = true;
+        historyRetryButton.hidden = true;
+        }
+      } catch (err) {
+        console.warn("Could not load history:", err);
+      } finally {
+        historyLoading = false;
+        historyLoadPromise = null;
+        if (historyReloadPending) {
+          historyReloadPending = false;
+          loaded = await loadHistory(historyLoaded);
         }
       }
+      return loaded;
+    })();
+    historyLoadPromise = loadPromise;
+    return await loadPromise;
+  }
+
+  function hasUncertainChatRows() {
+    return Boolean(chatMessages.querySelector(
+      '.message-row[data-reconcile-with-history="true"], .message-row[data-user-ack-required="true"]'
+    ));
+  }
+
+  async function refreshUncertainHistoryWhileIdle(socket, generation) {
+    if (!hasUncertainChatRows()) return chatReady;
+    if (uncertainHistoryRefresh) return await uncertainHistoryRefresh;
+
+    chatReady = false;
+    chatStatusVerified = false;
+    chatHistoryVerified = false;
+    const refreshPromise = (async () => {
+      const historyReady = await loadHistory(true, true);
+      if (ws !== socket || generation !== wsGeneration || socket.readyState !== WebSocket.OPEN) return false;
+      chatHistoryVerified = historyReady;
+      const status = await fetchStatus();
+      if (ws !== socket || generation !== wsGeneration || socket.readyState !== WebSocket.OPEN) return false;
+      chatStatusVerified = Boolean(status?.connected);
+      const stillIdle = status?.system_state === "IDLE_LISTENING";
+      if (historyReady && chatStatusVerified && stillIdle) {
+        chatMessages.querySelectorAll('.message-row[data-reconcile-with-history="true"][data-history-check-complete="true"][data-history-request-found="false"]').forEach((row) => {
+          delete row.dataset.reconcileWithHistory;
+        });
+      }
+      chatReady = Boolean(
+        historyReady
+        && chatStatusVerified
+        && stillIdle
+        && !hasUncertainChatRows()
+      );
+      if (!chatReady) {
+        statusBar.classList.remove("hidden");
+        statusMessage.textContent = hasUncertainChatRows()
+          ? "Previous request outcome unknown; waiting for a final history and idle-state check."
+          : "Waiting for Adam to become idle and conversation history to refresh…";
+      }
+      return chatReady;
+    })();
+    uncertainHistoryRefresh = refreshPromise;
+    try {
+      return await refreshPromise;
+    } finally {
+      if (uncertainHistoryRefresh === refreshPromise) uncertainHistoryRefresh = null;
     }
   }
+
+  async function retryHistoryOnIdle(socket, generation) {
+    if (historyRetryPromise) return await historyRetryPromise;
+    if (historyRetryAttempts >= MAX_HISTORY_RETRIES_PER_CONNECTION) {
+      chatReady = false;
+      statusBar.classList.remove("hidden");
+      statusMessage.textContent = historyRetryNotice();
+      historyRetryButton.hidden = false;
+      return false;
+    }
+    historyRetryAttempts++;
+    chatReady = false;
+    chatStatusVerified = false;
+    const retryPromise = (async () => {
+      const historyReady = await loadHistory(true);
+      if (ws !== socket || generation !== wsGeneration || socket.readyState !== WebSocket.OPEN) return false;
+      chatHistoryVerified = historyReady;
+      if (!historyReady) return false;
+      const status = await fetchStatus();
+      if (ws !== socket || generation !== wsGeneration || socket.readyState !== WebSocket.OPEN) return false;
+      chatStatusVerified = Boolean(status?.connected);
+      if (status?.system_state !== "IDLE_LISTENING" || !chatStatusVerified) return false;
+      if (hasUncertainChatRows()) {
+        return await refreshUncertainHistoryWhileIdle(socket, generation);
+      }
+      chatReady = true;
+      return true;
+    })();
+    historyRetryPromise = retryPromise;
+    try {
+      const ready = await retryPromise;
+      if (!ready && historyRetryAttempts >= MAX_HISTORY_RETRIES_PER_CONNECTION) {
+        chatReady = false;
+        statusBar.classList.remove("hidden");
+        statusMessage.textContent = historyRetryNotice();
+        historyRetryButton.hidden = false;
+      }
+      return ready;
+    } finally {
+      if (historyRetryPromise === retryPromise) historyRetryPromise = null;
+    }
+  }
+
+  function historyRetryNotice() {
+    return hasUncertainChatRows()
+      ? "Conversation history is unavailable after retries. The previous request outcome is unknown; chat is paused. Retry history before continuing. Your draft is preserved."
+      : "Conversation history is unavailable after retries. Chat is paused until a canonical snapshot loads. Retry history to continue; your draft is preserved.";
+  }
+
+  function flushPendingChatForSocket(socket, generation) {
+    if (
+      !chatReady
+      || pendingChatMessage === null
+      || ws !== socket
+      || generation !== wsGeneration
+      || socket.readyState !== WebSocket.OPEN
+    ) return false;
+    const message = pendingChatMessage;
+    const row = pendingChatRow;
+    const revision = pendingComposerRevision;
+    const shouldClear = pendingClearComposer;
+    pendingChatMessage = null;
+    pendingChatRow = null;
+    pendingComposerRevision = null;
+    pendingClearComposer = false;
+    if (pendingChatTimeout) {
+      clearTimeout(pendingChatTimeout);
+      pendingChatTimeout = null;
+    }
+    if (!transmitChat(socket, message, row, revision, shouldClear)) return false;
+    statusMessage.textContent = "Adam is processing request...";
+    return true;
+  }
+
+  historyRetryButton.addEventListener("click", () => {
+    historyRetryButton.disabled = true;
+    historyRetryButton.hidden = true;
+    historyRetryAttempts = 0;
+    statusBar.classList.remove("hidden");
+    statusMessage.textContent = "Retrying conversation history; queued text remains unsent until history is verified…";
+    if (ws?.readyState === WebSocket.OPEN) {
+      const socket = ws;
+      const generation = wsGeneration;
+      retryHistoryOnIdle(socket, generation)
+        .then((ready) => {
+          if (ready) {
+            flushPendingChatForSocket(socket, generation);
+            return;
+          }
+          if (ws === socket && generation === wsGeneration && socket.readyState === WebSocket.OPEN) {
+            statusBar.classList.remove("hidden");
+            statusMessage.textContent = hasUncertainChatRows()
+              ? "Previous request outcome is still unknown. Chat remains paused; retry history after Adam is idle. Your draft is preserved."
+              : "History or idle status is still unavailable. Chat remains paused; retry when Adam is idle. Your draft is preserved.";
+            historyRetryButton.hidden = false;
+          }
+        })
+        .catch((err) => console.warn("Could not retry conversation history:", err))
+        .finally(() => { historyRetryButton.disabled = false; });
+    } else {
+      historyRetryButton.disabled = false;
+      connectWebSocket();
+    }
+  });
 
   // Fetch status snapshot via HTTP
   async function fetchStatus() {
@@ -696,12 +971,14 @@
         const data = await res.json();
         setConnectionStatus(data.connected, data.mode, data.connected ? null : "Disconnected (No Live Daemon)");
         updateTelemetry(data);
+        return data;
       } else {
         setConnectionStatus(false, "offline", "Status Unavailable");
       }
     } catch {
       setConnectionStatus(false, "offline", "Offline");
     }
+    return null;
   }
 
   function handleAuthRequired() {
@@ -805,6 +1082,59 @@
     });
   }
 
+  function clearComposerAfterSend(message, revision, shouldClear) {
+    if (!shouldClear || composerRevision !== revision || chatInput.value.trim() !== message) return;
+    chatInput.value = "";
+    chatInput.style.height = "auto";
+  }
+
+  function addOutcomeUnknownWarning(row) {
+    if (!row || row.dataset.chatSent !== "true") return;
+    row.dataset.reconcileWithHistory = "true";
+    const requestId = row.dataset.chatRequestId;
+    const warningExists = requestId && Array.from(chatMessages.querySelectorAll(".message-row"))
+      .some((warning) => warning.dataset.outcomeUnknownFor === requestId);
+    if (warningExists) return;
+    appendMessage(
+      "assistant",
+      "❌ Connection lost while Adam was processing this request. Outcome unknown; check the conversation history before retrying.",
+      null,
+      null,
+      { preserveOnHistoryRefresh: true, outcomeUnknownFor: requestId }
+    );
+  }
+
+  function markChatSendUncertain(row, socket) {
+    if (row) row.dataset.chatSent = "true";
+    addOutcomeUnknownWarning(row);
+    if (activeChatRow === row) activeChatRow = null;
+    isSending = false;
+    chatReady = false;
+    clearTaskProgress();
+    sendBtn.disabled = false;
+    statusBar.classList.remove("hidden");
+    statusMessage.textContent = "The connection changed while sending. Outcome unknown; your draft is unchanged. Check history before retrying.";
+    try { socket.close(); } catch {}
+  }
+
+  function transmitChat(socket, message, row, revision, shouldClear) {
+    if (row) {
+      row.dataset.historyBaselineCount = String(historyUserMessageCounts.get(message) || 0);
+    }
+    try {
+      socket.send(JSON.stringify({ type: "chat", message }));
+    } catch {
+      markChatSendUncertain(row, socket);
+      return false;
+    }
+    if (row) {
+      row.dataset.chatSent = "true";
+      chatRowsBySocket.set(socket, row);
+    }
+    clearComposerAfterSend(message, revision, shouldClear);
+    return true;
+  }
+
   // Initialize WebSocket connection
   async function connectWebSocket(force = false) {
     if (!force && ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -812,6 +1142,11 @@
     clearTaskProgress();
     const generation = ++wsGeneration;
     wsConnecting = true;
+    chatReady = false;
+    chatStatusVerified = false;
+    chatHistoryVerified = false;
+    historyRetryPromise = null;
+    historyRetryAttempts = 0;
 
     if (ws) {
       try { ws.close(); } catch {}
@@ -856,8 +1191,9 @@
       return;
     }
     const socket = ws;
+    const flushPendingChat = () => flushPendingChatForSocket(socket, generation);
 
-    socket.onopen = () => {
+    socket.onopen = async () => {
       if (ws !== socket || generation !== wsGeneration) return;
       wsConnecting = false;
       if (reconnectTimer) {
@@ -874,19 +1210,42 @@
         }
       }, 25000);
 
-      fetchStatus();
-      loadHistory();
+      chatReady = false;
+      const historyReady = await loadHistory(true);
+      if (ws !== socket || generation !== wsGeneration || socket.readyState !== WebSocket.OPEN) return;
+      chatHistoryVerified = historyReady;
+      const status = await fetchStatus();
+      if (ws !== socket || generation !== wsGeneration || socket.readyState !== WebSocket.OPEN) return;
       checkAuthStatus();
-      if (pendingChatMessage !== null) {
-        const message = pendingChatMessage;
-        pendingChatMessage = null;
-        if (pendingChatTimeout) {
-          clearTimeout(pendingChatTimeout);
-          pendingChatTimeout = null;
-        }
-        socket.send(JSON.stringify({ type: "chat", message }));
-        statusMessage.textContent = "Adam is processing request...";
+      chatStatusVerified = Boolean(status?.connected);
+      chatReady = Boolean(
+        historyReady
+        && chatStatusVerified
+        && status.system_state === "IDLE_LISTENING"
+        && !hasUncertainChatRows()
+      );
+      if (
+        !historyReady
+        && chatStatusVerified
+        && status.system_state === "IDLE_LISTENING"
+      ) {
+        await retryHistoryOnIdle(socket, generation);
       }
+      if (
+        chatHistoryVerified
+        && chatStatusVerified
+        && status.system_state === "IDLE_LISTENING"
+        && hasUncertainChatRows()
+      ) {
+        await refreshUncertainHistoryWhileIdle(socket, generation);
+      }
+      if (!chatReady) {
+        statusBar.classList.remove("hidden");
+        statusMessage.textContent = chatMessages.querySelector('.message-row[data-reconcile-with-history="true"]')
+          ? "Previous request outcome unknown; waiting for Adam to become idle and history to refresh."
+          : "Waiting for Adam to become idle and conversation history to refresh…";
+      }
+      flushPendingChat();
     };
 
     socket.onmessage = (event) => {
@@ -901,31 +1260,105 @@
         } else if (data.type === "status") {
           updateTelemetry(data);
           setConnectionStatus(data.connected, data.mode, data.connected ? null : "Disconnected (No Live Daemon)");
+          chatStatusVerified = Boolean(data.connected);
+          if (!chatStatusVerified) {
+            chatReady = false;
+          } else if (data.system_state === "IDLE_LISTENING" && hasUncertainChatRows()) {
+            chatReady = false;
+            refreshUncertainHistoryWhileIdle(socket, generation).catch((err) => {
+              console.warn("Could not reconcile chat history after reconnect:", err);
+            }).then(() => flushPendingChat());
+          } else if (data.system_state === "IDLE_LISTENING" && !chatHistoryVerified) {
+            chatReady = false;
+            retryHistoryOnIdle(socket, generation).catch((err) => {
+              console.warn("Could not reload conversation history after reconnect:", err);
+            }).then(() => flushPendingChat());
+          } else if (
+            chatHistoryVerified
+            && data.system_state === "IDLE_LISTENING"
+            && socket.readyState === WebSocket.OPEN
+            && !hasUncertainChatRows()
+          ) chatReady = true;
+          flushPendingChat();
         } else if (data.type === "state") {
           setRuntimeState(data.system_state);
+          if (data.system_state === "IDLE_LISTENING" && hasUncertainChatRows()) {
+            chatReady = false;
+            refreshUncertainHistoryWhileIdle(socket, generation).catch((err) => {
+              console.warn("Could not reconcile chat history after reconnect:", err);
+            }).then(() => flushPendingChat());
+          } else if (
+            data.system_state === "IDLE_LISTENING"
+            && chatStatusVerified
+            && !chatHistoryVerified
+          ) {
+            chatReady = false;
+            retryHistoryOnIdle(socket, generation).catch((err) => {
+              console.warn("Could not reload conversation history after reconnect:", err);
+            }).then(() => flushPendingChat());
+          } else if (
+            data.system_state === "IDLE_LISTENING"
+            && chatStatusVerified
+            && chatHistoryVerified
+            && socket.readyState === WebSocket.OPEN
+            && !hasUncertainChatRows()
+          ) {
+            chatReady = true;
+          }
+          flushPendingChat();
         } else if (data.type === "tool_activity") {
           showToolActivity(data);
         } else if (data.type === "task_progress") {
           showTaskProgress(data);
         } else if (data.type === "chat_response") {
+          const responseRow = chatRowsBySocket.get(socket);
+          if (!responseRow) return;
+          chatRowsBySocket.delete(socket);
+          const requestId = responseRow.dataset.chatRequestId;
+          if (requestId) {
+            chatMessages.querySelectorAll(".message-row").forEach((warning) => {
+              if (warning.dataset.outcomeUnknownFor === requestId) warning.remove();
+            });
+          }
           const res = data.result || {};
           if (res.status === "completed") {
             appendMessage("assistant", res.response, res.tool_calls);
           } else if (res.status === "busy") {
-            appendMessage("assistant", `⚠️ ${res.error || "Adam is currently busy."}`);
+            appendMessage("assistant", `⚠️ ${res.error || "Adam is currently busy."}`, null, null, { preserveOnHistoryRefresh: true });
           } else {
-            appendMessage("assistant", `❌ Error: ${res.error || "Unknown execution error"}`);
+            appendMessage("assistant", `❌ Error: ${res.error || "Unknown execution error"}`, null, null, { preserveOnHistoryRefresh: true });
           }
-          isSending = false;
-          clearTaskProgress();
-          sendBtn.disabled = false;
-          statusBar.classList.add("hidden");
+          delete responseRow.dataset.preserveOnHistoryRefresh;
+          delete responseRow.dataset.optimisticChatMessage;
+          delete responseRow.dataset.chatSent;
+          delete responseRow.dataset.reconcileWithHistory;
+          if (activeChatRow === responseRow) {
+            activeChatRow = null;
+            isSending = false;
+            clearTaskProgress();
+            sendBtn.disabled = false;
+            statusBar.classList.add("hidden");
+          }
         } else if (data.type === "error") {
-          appendMessage("assistant", `❌ Error: ${data.error || "WebSocket error"}`);
+          const failedRow = chatRowsBySocket.get(socket);
+          if (failedRow) {
+            chatRowsBySocket.delete(socket);
+            if (failedRow.dataset.chatSent === "true") {
+              failedRow.dataset.reconcileWithHistory = "true";
+            }
+          }
+          appendMessage("assistant", `❌ Error: ${data.error || "WebSocket error"}`, null, null, {
+            preserveOnHistoryRefresh: true,
+            outcomeUnknownFor: failedRow?.dataset.chatRequestId,
+          });
           isSending = false;
+          chatReady = false;
           clearTaskProgress();
           sendBtn.disabled = false;
           statusBar.classList.add("hidden");
+          // A replacement socket keeps a late response from being mistaken
+          // for the next chat's response.
+          try { socket.close(); } catch {}
         }
       } catch (err) {
         console.error("WS message parse error:", err);
@@ -958,12 +1391,17 @@
         setConnectionStatus(false, "offline", "Disconnected (Reconnecting...)");
       }
 
+      const sentRow = chatRowsBySocket.get(socket);
+      if (sentRow?.dataset.chatSent === "true") {
+        addOutcomeUnknownWarning(sentRow);
+      }
       if (isSending && pendingChatMessage === null) {
         isSending = false;
         sendBtn.disabled = false;
         statusBar.classList.add("hidden");
-        appendMessage("assistant", "❌ Disconnected while awaiting response.");
       }
+      chatReady = false;
+      chatStatusVerified = false;
 
       if (!reconnectTimer) {
         reconnectTimer = setInterval(() => connectWebSocket(), 3000);
@@ -975,11 +1413,17 @@
       wsConnecting = false;
       clearTaskProgress();
       setConnectionStatus(false, "offline", "Connection Error");
+      const sentRow = chatRowsBySocket.get(socket);
+      if (sentRow?.dataset.chatSent === "true") {
+        addOutcomeUnknownWarning(sentRow);
+      }
       if (isSending && pendingChatMessage === null) {
         isSending = false;
         sendBtn.disabled = false;
         statusBar.classList.add("hidden");
       }
+      chatReady = false;
+      chatStatusVerified = false;
       try { socket.close(); } catch {}
     };
   }
@@ -987,36 +1431,98 @@
   // Send a user chat message
   async function sendMessage(text) {
     if (!text || isSending) return;
+    const acknowledgmentWarnings = chatMessages.querySelectorAll(
+      '.message-row[data-user-ack-required="true"]'
+    );
+    if (acknowledgmentWarnings.length > 0) {
+      const confirmed = window.confirm(
+        "A previous request is recorded without a final reply, so its effects are unknown. Continue with this new request?"
+      );
+      if (!confirmed) return;
+
+      const socket = ws;
+      const generation = wsGeneration;
+      const status = await fetchStatus();
+      if (
+        socket !== ws
+        || generation !== wsGeneration
+        || socket?.readyState !== WebSocket.OPEN
+        || !status?.connected
+        || status.system_state !== "IDLE_LISTENING"
+        || !chatHistoryVerified
+      ) {
+        chatReady = false;
+        statusBar.classList.remove("hidden");
+        statusMessage.textContent = "Adam is not idle yet. Your draft is unchanged; confirm again before continuing.";
+        return;
+      }
+      acknowledgmentWarnings.forEach((warning) => {
+        delete warning.dataset.userAckRequired;
+        warning.dataset.outcomeAcknowledged = "true";
+      });
+      chatStatusVerified = true;
+      chatReady = !hasUncertainChatRows();
+    }
+    if (!chatReady) {
+      statusBar.classList.remove("hidden");
+      statusMessage.textContent = chatMessages.querySelector('.message-row[data-reconcile-with-history="true"]')
+        ? "Previous request outcome unknown; waiting for Adam to become idle and history to refresh. Your draft is unchanged."
+        : "Adam is not ready yet. Your draft is unchanged while connection and history recover.";
+      return;
+    }
 
     clearTaskProgress();
     isSending = true;
     sendBtn.disabled = true;
-    chatInput.value = "";
-    chatInput.style.height = "auto";
+    const submittedComposerRevision = composerRevision;
+    const clearSubmittedComposer = chatInput.value.trim() === text;
 
-    appendMessage("user", text);
+    activeChatRow = appendMessage("user", text, null, null, { preserveOnHistoryRefresh: true });
+    activeChatRow.dataset.chatRequestId = `chat-${++chatRequestSequence}`;
+    activeChatRow.dataset.optimisticChatMessage = "true";
+    activeChatRow.dataset.chatSent = "false";
     statusBar.classList.remove("hidden");
     statusMessage.textContent = "Adam is processing request...";
 
     // Chat must use this socket so tool starts, finishes, and recovery attempts
     // can reach the page while Adam is working. Queue until reconnect completes.
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ type: "chat", message: text }));
+      if (!transmitChat(ws, text, activeChatRow, submittedComposerRevision, clearSubmittedComposer)) return;
     } else {
       pendingChatMessage = text;
+      pendingChatRow = activeChatRow;
+      pendingComposerRevision = submittedComposerRevision;
+      pendingClearComposer = clearSubmittedComposer;
       statusMessage.textContent = "Connecting to Adam's live activity stream…";
       if (pendingChatTimeout) clearTimeout(pendingChatTimeout);
       pendingChatTimeout = setTimeout(() => {
         if (pendingChatMessage !== text) return;
+        if (!chatReady) {
+          pendingChatTimeout = null;
+          statusBar.classList.remove("hidden");
+          statusMessage.textContent = historyRetryAttempts >= MAX_HISTORY_RETRIES_PER_CONNECTION
+            ? historyRetryNotice()
+            : "Conversation history is still unverified. The queued request remains unsent; your draft is unchanged.";
+          return;
+        }
+        const unsentRow = pendingChatRow;
         pendingChatMessage = null;
+        pendingChatRow = null;
+        pendingComposerRevision = null;
+        pendingClearComposer = false;
         pendingChatTimeout = null;
         isSending = false;
+        if (unsentRow) unsentRow.remove();
+        if (activeChatRow === unsentRow) activeChatRow = null;
         clearTaskProgress();
         sendBtn.disabled = false;
         statusBar.classList.add("hidden");
         appendMessage(
           "assistant",
-          "❌ Could not connect to Adam's live activity stream. Your message was not sent; please try again when the connection is restored."
+          "❌ Could not connect to Adam's live activity stream. Your message was not sent; please try again when the connection is restored.",
+          null,
+          null,
+          { preserveOnHistoryRefresh: true }
         );
       }, 15000);
       if (!wsConnecting && (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING)) {
@@ -1175,6 +1681,7 @@
 
   // Auto-resize textarea
   chatInput.addEventListener("input", () => {
+    composerRevision++;
     chatInput.style.height = "auto";
     chatInput.style.height = `${Math.min(chatInput.scrollHeight, 140)}px`;
   });
@@ -1209,6 +1716,8 @@
     closeAuthModal();
     historyGeneration++;
     historyLoaded = false;
+    historySnapshot = null;
+    historyUserMessageCounts = new Map();
     historyReloadPending = false;
     chatMessages.querySelectorAll(".message-row").forEach((r) => r.remove());
     connectWebSocket(true);
@@ -1232,6 +1741,8 @@
     checkAuthStatus();
     historyGeneration++;
     historyLoaded = false;
+    historySnapshot = null;
+    historyUserMessageCounts = new Map();
     historyReloadPending = false;
     chatMessages.querySelectorAll(".message-row").forEach((r) => r.remove());
     connectWebSocket(true);

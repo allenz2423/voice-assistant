@@ -8,6 +8,7 @@ import sys
 import time
 import re
 import json
+import inspect
 import difflib
 import signal
 import asyncio
@@ -197,6 +198,9 @@ class AdamDaemon:
         print(f"[Init] Initializing Speech-to-Text engine ({self.config.stt.provider}: {stt_label})...")
         self.stt = create_transcriber(self.config.stt, shared_api_key=self.config.llm.api_key)
         self._stt_lock = threading.Lock()
+        self._vad_lock = threading.Lock()
+        self._wake_lock = threading.Lock()
+        self._routing_inference_lock = threading.Lock()
         self.wake_spotter = None
 
         speaker_cfg = self.config.speaker_verification
@@ -297,6 +301,8 @@ class AdamDaemon:
             self.stream, self.wake, self.earcon,
             stt=_LockedTranscriber(self.stt, self._stt_lock),
             speaker_verifier=self.speaker_verifier,
+            vad_lock=self._vad_lock,
+            wake_lock=self._wake_lock,
         )
 
         # 4. Tiered Speech Architecture (Semantic Endpointing & Speculative Tool Pre-flight)
@@ -329,6 +335,9 @@ class AdamDaemon:
             )),
             memory_mgr=self.memory_manager,
         )
+        # Brain's direct-call fallback shares the daemon's serialized memory
+        # lookup so stateful embedding/retrieval work stays off the event loop.
+        self.brain.memory_context_resolver = self._retrieve_memory_context
         # MeetingSession belongs to AdamDaemon; expose its structured control
         # action to the brain without coupling the brain back to this daemon.
         self.brain.meeting_mode_handler = self._execute_meeting_mode_tool
@@ -381,7 +390,7 @@ class AdamDaemon:
         trace_token = set_trace_id(trace_id)
         emit_event("audio.capture_started", trace_id=trace_id, component="audio")
         try:
-            audio_data = await asyncio.to_thread(self.stream.record_utterance, **kwargs)
+            audio_data = await asyncio.to_thread(self._record_utterance_serialized, kwargs)
         except Exception as exc:
             emit_event(
                 "audio.capture_completed", trace_id=trace_id, component="audio", status="error",
@@ -396,6 +405,53 @@ class AdamDaemon:
         )
         self._active_heard_capture_id = self._save_heard_capture(audio_data)
         return audio_data
+
+    def _record_utterance_serialized(self, kwargs: dict) -> np.ndarray:
+        """Keep the stream's stateful VAD calls exclusive with idle-loop VAD."""
+        with self._vad_lock:
+            return self.stream.record_utterance(**kwargs)
+
+    async def _is_speech(self, audio_chunk: np.ndarray, **kwargs) -> tuple[bool, float]:
+        return await asyncio.to_thread(self._is_speech_serialized, audio_chunk, kwargs)
+
+    def _is_speech_serialized(self, audio_chunk: np.ndarray, kwargs: dict) -> tuple[bool, float]:
+        with self._vad_lock:
+            return self.stream.vad.is_speech(audio_chunk, **kwargs)
+
+    async def _predict_wake(self, audio_chunk: np.ndarray) -> tuple[bool, float]:
+        return await asyncio.to_thread(self._predict_wake_serialized, audio_chunk)
+
+    def _predict_wake_serialized(self, audio_chunk: np.ndarray) -> tuple[bool, float]:
+        with self._wake_lock:
+            return self.wake.predict(audio_chunk)
+
+    async def _reset_wake(self) -> None:
+        await asyncio.to_thread(self._reset_wake_serialized)
+
+    def _reset_wake_serialized(self) -> None:
+        with self._wake_lock:
+            self.wake.reset()
+
+    async def _retrieve_memory_context(self, text: str) -> str | None:
+        return await asyncio.to_thread(self._retrieve_memory_context_serialized, text)
+
+    def _retrieve_memory_context_serialized(self, text: str) -> str | None:
+        with self._routing_inference_lock:
+            return self.memory_manager.retrieve_context(text)
+
+    async def _save_memory(self, text: str):
+        return await asyncio.to_thread(self._save_memory_serialized, text)
+
+    def _save_memory_serialized(self, text: str):
+        with self._routing_inference_lock:
+            return self.memory_manager.save(text)
+
+    async def _match_idea(self, text: str):
+        return await asyncio.to_thread(self._match_idea_serialized, text)
+
+    def _match_idea_serialized(self, text: str):
+        with self._routing_inference_lock:
+            return self.idea_router.match(text)
 
     def _save_heard_capture(self, audio_data: np.ndarray) -> str | None:
         """Save a private WAV and transcript sidecar for every finalized mic capture."""
@@ -771,8 +827,10 @@ class AdamDaemon:
         handled, _ = await self._dispatch_meeting_command(command)
         if handled:
             return
-        memory_context = self.memory_manager.retrieve_context(command)
-        await self._execute_turn(command, memory_context=memory_context)
+        memory_context = await self._retrieve_memory_context(command)
+        await self._execute_turn(
+            command, memory_context=memory_context, memory_context_resolved=True
+        )
 
     async def _start_meeting(self) -> None:
         try:
@@ -1130,7 +1188,7 @@ class AdamDaemon:
                 continue
 
             # 4. Check for speech via VAD
-            is_speech, prob = self.stream.vad.is_speech(
+            is_speech, prob = await self._is_speech(
                 chunk,
                 threshold=self.config.audio.vad_threshold_speaking,
             )
@@ -1201,6 +1259,7 @@ class AdamDaemon:
         command_text: str,
         memory_context: str | None = None,
         allowed_tools: list[str] | None = None,
+        memory_context_resolved: bool = False,
     ) -> str | None:
         """Executes user commands through the ReAct agent with active real-time interruption monitoring."""
         action = meeting_command_kind(command_text)
@@ -1222,6 +1281,7 @@ class AdamDaemon:
 
         current_cmd: str | None = command_text
         current_mem = memory_context
+        current_memory_resolved = memory_context_resolved or memory_context is not None
         first_command = True
 
         await self.arbiter.set_state("PROCESSING_REACT")
@@ -1241,7 +1301,15 @@ class AdamDaemon:
                 trace_id = getattr(self, "_active_capture_trace_id", None)
                 trace_token = set_trace_id(trace_id) if trace_id else None
                 try:
-                    process_kwargs = {"memory_context": current_mem}
+                    process_kwargs = {
+                        "memory_context": current_mem,
+                    }
+                    try:
+                        process_method = self.brain.process_user_utterance
+                        if "memory_context_resolved" in inspect.signature(process_method).parameters:
+                            process_kwargs["memory_context_resolved"] = current_memory_resolved
+                    except (AttributeError, TypeError, ValueError):
+                        pass
                     if allowed_tools is not None:
                         process_kwargs["allowed_tools"] = allowed_tools
                     react_task = asyncio.create_task(
@@ -1251,6 +1319,7 @@ class AdamDaemon:
                     if trace_token is not None:
                         reset_trace_id(trace_token)
                 current_mem = None
+                current_memory_resolved = False
 
                 interrupted, interrupt_cmd = await self._monitor_execution_interrupt(react_task)
                 if not react_task.done():
@@ -1463,11 +1532,11 @@ class AdamDaemon:
                 if self.wake.is_custom_mode or is_in_followup or idea_listening:
                     pretrained_wake_triggered = False
                     if idea_listening and not self.wake.is_custom_mode:
-                        pretrained_wake_triggered, wake_score = self.wake.predict(chunk)
+                        pretrained_wake_triggered, wake_score = await self._predict_wake(chunk)
                         if pretrained_wake_triggered:
                             print(f"\n[Wake] Wake word detected! (Confidence: {wake_score:.2f})", flush=True)
                     dynamic_floor = max(0.0035, min(0.022, self.stream.ref_monitor.speaker_rms * 0.40)) if (self.stream.ref_monitor and self.stream.ref_monitor.is_active) else 0.0025
-                    is_speech, prob = self.stream.vad.is_speech(
+                    is_speech, prob = await self._is_speech(
                         chunk,
                         threshold=self.config.audio.vad_threshold_idle,
                         energy_floor=dynamic_floor
@@ -1802,6 +1871,7 @@ class AdamDaemon:
                             matched, remaining_cmd = self.wake.match_custom_wake_word(text)
                             target_cmd = None
                             matched_memory_context = None
+                            matched_memory_context_resolved = False
 
                             if matched:
                                 # At this point the wake was confirmed, and when
@@ -1858,14 +1928,15 @@ class AdamDaemon:
                                     continue
                                 memory_text = extract_memory_command(text)
                                 if memory_text is not None:
-                                    rec = self.memory_manager.save(memory_text)
+                                    rec = await self._save_memory(memory_text)
                                     print(f"[Memory] Saved user memory {rec.id}: \"{rec.text}\"", flush=True)
                                     await self.tts.speak_async("Memory saved.")
                                     self.stream.flush()
                                     self.stream.quench(duration=0.4)
                                     continue
 
-                                matched_memory_context = self.memory_manager.retrieve_context(text)
+                                matched_memory_context = await self._retrieve_memory_context(text)
+                                matched_memory_context_resolved = True
                                 if matched_memory_context is not None:
                                     target_cmd = text
                                     print(f"[Memory] Matched saved memory context for utterance.", flush=True)
@@ -1873,7 +1944,7 @@ class AdamDaemon:
                                 if target_cmd is not None:
                                     idea_match = None
                                 else:
-                                    idea_match = self.idea_router.match(text)
+                                    idea_match = await self._match_idea(text)
                                 if idea_match is not None and idea_match.accepted:
                                     print(
                                         f"[IdeaRouter] Matched {idea_match.idea_id} "
@@ -1907,7 +1978,7 @@ class AdamDaemon:
                             if target_cmd:
                                 memory_text = extract_memory_command(target_cmd)
                                 if memory_text is not None:
-                                    rec = self.memory_manager.save(memory_text)
+                                    rec = await self._save_memory(memory_text)
                                     print(f"[Memory] Saved user memory {rec.id}: \"{rec.text}\"", flush=True)
                                     await self.tts.speak_async("Memory saved.")
                                     if self.meeting_session.active:
@@ -1915,8 +1986,9 @@ class AdamDaemon:
                                         self.stream.quench(duration=0.4)
                                     continue
 
-                                if matched_memory_context is None:
-                                    matched_memory_context = self.memory_manager.retrieve_context(target_cmd)
+                                if not matched_memory_context_resolved:
+                                    matched_memory_context = await self._retrieve_memory_context(target_cmd)
+                                    matched_memory_context_resolved = True
                                     if matched_memory_context is not None:
                                         print(f"[Memory] Matched saved memory context for command.", flush=True)
 
@@ -1928,6 +2000,7 @@ class AdamDaemon:
                                 await self._execute_turn(
                                     target_cmd,
                                     memory_context=matched_memory_context,
+                                    memory_context_resolved=matched_memory_context_resolved,
                                 )
                             else:
                                 self.speculative_router.cancel_active()
@@ -1940,7 +2013,7 @@ class AdamDaemon:
 
                 # Path B: Standard Pretrained openWakeWord ONNX (e.g. "hey jarvis", "alexa")
                 else:
-                    triggered, score = self.wake.predict(chunk)
+                    triggered, score = await self._predict_wake(chunk)
                     if triggered:
                         print(f"\n[Wake] Wake word detected! (Confidence: {score:.2f})")
                         self.earcon.play("wake")
@@ -1962,7 +2035,7 @@ class AdamDaemon:
                         if len(audio_data) > 0:
                             if not await self._speaker_allowed(audio_data):
                                 self.speculative_router.cancel_active()
-                                self.wake.reset()
+                                await self._reset_wake()
                                 continue
                             # The detector fires on the live chunk; prepend it so
                             # the saved sample includes the wake phrase itself.
@@ -1975,12 +2048,12 @@ class AdamDaemon:
                             if text:
                                 memory_text = extract_memory_command(text)
                                 if memory_text is not None:
-                                    rec = self.memory_manager.save(memory_text)
+                                    rec = await self._save_memory(memory_text)
                                     print(f"[Memory] Saved user memory {rec.id}: \"{rec.text}\"", flush=True)
                                     await self.tts.speak_async("Memory saved.")
                                     self.speculative_router.cancel_active()
                                     self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
-                                    self.wake.reset()
+                                    await self._reset_wake()
                                     continue
 
                                 await self._execute_pretrained_wake_command(text)
@@ -1989,7 +2062,7 @@ class AdamDaemon:
                         else:
                             self.speculative_router.cancel_active()
 
-                        self.wake.reset()
+                        await self._reset_wake()
 
             # ---------------- STATE 2: AWAITING_CONFIRMATION ----------------
             elif state == SystemState.AWAITING_CONFIRMATION:
@@ -2135,7 +2208,7 @@ class AdamDaemon:
                 chunk = self.stream.get_chunk(timeout=0.05)
                 if chunk is not None:
                     # Check for wake word or interrupt keywords during speech
-                    triggered, _ = self.wake.predict(chunk)
+                    triggered, _ = await self._predict_wake(chunk)
                     if triggered:
                         print("\n[Barge-In] Wake word detected during speech! Aborting...")
                         self.earcon.advance_epoch()
