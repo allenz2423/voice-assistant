@@ -386,6 +386,53 @@ async def test_bridge_does_not_claim_empty_turn_completed():
     assert "without a text reply" in result["error"]
 
 
+@pytest.mark.parametrize(
+    ("terminal_event", "terminal_status", "expected_status"),
+    [
+        ("turn.completed", "ok", "completed"),
+        ("turn.completed", "error", "error"),
+        ("turn.cancelled", "cancelled", "error"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_silent_mode_quickpath_requires_successful_brain_turn(
+    terminal_event, terminal_status, expected_status,
+):
+    from types import SimpleNamespace
+    from src.telemetry.events import emit_event
+
+    brain = MockBrain()
+    brain.tts = SimpleNamespace(engine="kokoro")
+    brain._active_react_task = None
+    arbiter = MockArbiter()
+    span_id = "sidecar-silent-mode-test"
+
+    async def execute_turn(_text, memory_context=None):
+        brain._active_react_task = asyncio.current_task()
+        emit_event("turn.started", span_id=span_id, status="started")
+        # This local quickpath changes mode without adding chat history or
+        # returning a string. A state change alone must not imply success.
+        brain.tts.engine = "silent"
+        emit_event(terminal_event, span_id=span_id, status=terminal_status)
+        brain._active_react_task = None
+
+    daemon = SimpleNamespace(
+        brain=brain,
+        arbiter=arbiter,
+        memory_manager=None,
+        _execute_turn=execute_turn,
+    )
+    result = await DaemonBridge(daemon).handle_user_message("silent mode on")
+
+    assert result["status"] == expected_status
+    if expected_status == "completed":
+        assert result["response"] == (
+            "Silent mode enabled. Future responses will appear as desktop notifications."
+        )
+    else:
+        assert "without a text reply" in result["error"]
+
+
 # ---------------------------------------------------------------------------
 # HTTP & WebSocket Server Tests (AioHTTP)
 # ---------------------------------------------------------------------------

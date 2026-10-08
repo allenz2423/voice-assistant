@@ -439,22 +439,44 @@ def _format_direct_system_status_response(user_text: str, status_text: str) -> s
     if metrics:
         return " ".join(requested_metric(metric) for metric in metrics)
 
-    # A generic system-status request gets a compact overview instead of the
-    # full inventory of cores, load averages, and unrelated hardware details.
-    overview = [
-        first_sentence(r"\bCPU utilization\b") or "CPU utilization is unavailable in the status result.",
-        first_sentence(r"\bMemory is\b") or "Memory usage is unavailable in the status result.",
-        first_sentence(r"\bRoot storage has\b") or "Disk space details are unavailable in the status result.",
-    ]
-    gpu = gpu_fields("utilization")
+    # Keep the generic status command brief. Core counts, load averages, GPU
+    # temperatures, and VRAM details remain available through specific requests.
+    overview: list[str] = []
+
+    cpu = first_sentence(r"\bCPU utilization\b")
+    cpu_percent = re.search(r"\b(\d+(?:\.\d+)?)\s+percent\b", cpu or "", re.IGNORECASE)
+    overview.append(f"CPU {cpu_percent.group(1)}%" if cpu_percent else "CPU unavailable")
+
+    memory = first_sentence(r"\bMemory is\b")
+    memory_percent = re.search(r"\b(\d+(?:\.\d+)?)\s+percent\b", memory or "", re.IGNORECASE)
+    overview.append(f"memory {memory_percent.group(1)}%" if memory_percent else "memory unavailable")
+
+    storage = first_sentence(r"\bRoot storage has\b")
+    storage_free = re.search(
+        r"\b(\d+(?:\.\d+)?)\s+gigabytes free\b",
+        storage or "",
+        re.IGNORECASE,
+    )
+    overview.append(
+        f"disk {storage_free.group(1)} GB free" if storage_free else "disk unavailable"
+    )
+
+    gpu: list[str] = []
+    for phrase in gpu_fields("utilization"):
+        label = re.search(r"\bGPU\s+(\d+)\s+\([^)]+\)", phrase, re.IGNORECASE)
+        gpu_percent = re.search(r"\b(\d+(?:\.\d+)?)\s+percent\b", phrase, re.IGNORECASE)
+        if label and gpu_percent:
+            gpu.append(f"GPU {label.group(1)} {gpu_percent.group(1)}%")
     if gpu:
-        overview.extend(gpu)
+        overview.append(", ".join(gpu))
     else:
-        overview.append(
-            first_sentence(r"\bGPU telemetry\b")
-            or "GPU utilization is unavailable in the status result."
+        gpu_status = first_sentence(r"\bGPU telemetry\b")
+        has_gpu_data = bool(
+            gpu_status
+            and not re.search(r"\btelemetry is unavailable\b", gpu_status, re.IGNORECASE)
         )
-    return " ".join(overview)
+        overview.append("GPU data available" if has_gpu_data else "GPU unavailable")
+    return "; ".join(overview) + "."
 
 
 def _without_quoted_screen_text(text: str) -> str:

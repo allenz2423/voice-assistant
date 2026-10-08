@@ -56,6 +56,37 @@ class RuntimeBridge:
             await asyncio.gather(*coros, return_exceptions=True)
 
 
+def _explicit_silent_mode_action(text: str) -> str | None:
+    """Return the explicit local silent-mode action, matching Brain routing."""
+    negated_mode_request = re.search(
+        r"\b(?:don't|do not|never|shouldn't|should not)\b[^.!?\n]{0,50}"
+        r"\b(?:turn|switch|set|put|enable|activate)\b[^.!?\n]{0,40}"
+        r"\b(?:silent|notification)\s+mode\b",
+        text,
+        re.IGNORECASE,
+    )
+    if negated_mode_request:
+        return None
+
+    disable_silent = re.search(
+        r"\b(?:turn|switch)\s+off\b[^.!?\n]{0,30}\b(?:silent|notification)\s+mode\b|"
+        r"\b(?:disable|deactivate|leave|exit)\b[^.!?\n]{0,30}\b(?:silent|notification)\s+mode\b",
+        text,
+        re.IGNORECASE,
+    )
+    if disable_silent:
+        return "disable"
+
+    enable_silent = re.search(
+        r"\b(?:turn|switch|set|put|enable|activate)\b[^.!?\n]{0,30}"
+        r"\b(?:silent|notification)\s+mode\b|"
+        r"\b(?:silent|notification)\s+mode\s+on\b",
+        text,
+        re.IGNORECASE,
+    )
+    return "enable" if enable_silent else None
+
+
 class DaemonBridge(RuntimeBridge):
     """Bridge connected directly to an active AdamDaemon instance."""
 
@@ -261,6 +292,13 @@ class DaemonBridge(RuntimeBridge):
             await self.broadcast_state({"type": "state", "system_state": "PROCESSING_REACT"})
 
             prev_len = len(brain.messages)
+            silent_mode_action = _explicit_silent_mode_action(text)
+            tts = getattr(brain, "tts", None)
+            if tts is None:
+                tts = getattr(self.daemon, "tts", None)
+            previous_tts_engine = getattr(tts, "engine", None)
+            turn_events: list[dict[str, Any]] = []
+            unsubscribe_turn_events = None
             try:
                 # Memory retrieval integration if memory manager is active
                 mem_ctx = None
@@ -272,6 +310,22 @@ class DaemonBridge(RuntimeBridge):
                 # preserves its microphone interruption monitoring and turn
                 # cleanup instead of leaving WebUI turns uninterruptible.
                 brain._turn_message_start = prev_len
+                from src.telemetry.events import subscribe_events
+
+                def capture_current_brain_turn(event: dict[str, Any]) -> None:
+                    if event.get("event") not in {"turn.started", "turn.completed", "turn.cancelled"}:
+                        return
+                    try:
+                        current_task = asyncio.current_task()
+                    except RuntimeError:
+                        return
+                    # Brain emits these events from its active ReAct task. The
+                    # identity check avoids treating another runtime turn as
+                    # evidence that this WebUI request completed.
+                    if current_task is getattr(brain, "_active_react_task", None):
+                        turn_events.append(event)
+
+                unsubscribe_turn_events = subscribe_events(capture_current_brain_turn)
                 turn_response = await execute_turn(text, memory_context=mem_ctx)
 
                 turn_start = getattr(brain, "_turn_message_start", prev_len)
@@ -289,6 +343,29 @@ class DaemonBridge(RuntimeBridge):
                             fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", {})
                             name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", "tool")
                             tool_calls_executed.append(name)
+
+                if (
+                    not str(final_response or "").strip()
+                    and not new_messages
+                    and silent_mode_action is not None
+                    and self._successful_brain_turn(turn_events)
+                ):
+                    current_engine = getattr(tts, "engine", None)
+                    if silent_mode_action == "enable" and current_engine == "silent":
+                        final_response = (
+                            "Silent mode is already enabled."
+                            if previous_tts_engine == "silent"
+                            else "Silent mode enabled. Future responses will appear as desktop notifications."
+                        )
+                    elif silent_mode_action == "disable":
+                        config = getattr(self.daemon, "config", None)
+                        restore_engine = str(
+                            getattr(getattr(config, "tts", None), "silent_restore_engine", "kokoro")
+                        ).lower()
+                        if restore_engine == "silent" and current_engine == "silent":
+                            final_response = "Silent mode is configured as the default and cannot be turned off."
+                        elif restore_engine != "silent" and current_engine == restore_engine:
+                            final_response = "Silent mode disabled. Spoken responses are restored."
 
                 if not str(final_response or "").strip():
                     return {
@@ -308,11 +385,29 @@ class DaemonBridge(RuntimeBridge):
                     "error": f"Execution error: {type(exc).__name__}: {exc}",
                 }
             finally:
+                if unsubscribe_turn_events is not None:
+                    unsubscribe_turn_events()
                 if arbiter is not None:
                     curr_state = getattr(arbiter.current_state, "value", str(arbiter.current_state))
                 else:
                     curr_state = "IDLE_LISTENING"
                 await self.broadcast_state({"type": "state", "system_state": curr_state})
+
+    @staticmethod
+    def _successful_brain_turn(events: list[dict[str, Any]]) -> bool:
+        """Require the request's first Brain turn to complete successfully."""
+        started_span: str | None = None
+        for event in events:
+            span_id = event.get("span_id")
+            if not isinstance(span_id, str):
+                continue
+            if started_span is None:
+                if event.get("event") == "turn.started":
+                    started_span = span_id
+                continue
+            if span_id == started_span and event.get("event") in {"turn.completed", "turn.cancelled"}:
+                return event.get("event") == "turn.completed" and event.get("status") == "ok"
+        return False
 
 
 class DisconnectedBridge(RuntimeBridge):

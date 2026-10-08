@@ -970,10 +970,7 @@ def test_nonliteral_cpu_diagnostics_do_not_take_factual_status_fast_path(prompt)
     ),
     (
         "System status?",
-        "CPU utilization was 19 percent during this status sample. "
-        "Memory is 42 percent in use (6.7 gigabytes used out of 16.0 gigabytes). "
-        "Root storage has 78.3 gigabytes free out of 101.5 gigabytes. "
-        "GPU 0 (NVIDIA RTX) utilization is 12 percent.",
+        "CPU 19%; memory 42%; disk 78.3 GB free; GPU 0 12%.",
         ("load average", "logical cores", "temperature", "VRAM"),
     ),
 ])
