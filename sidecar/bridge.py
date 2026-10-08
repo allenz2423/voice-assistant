@@ -453,16 +453,22 @@ class DaemonBridge(RuntimeBridge):
                 # Some daemon-handled controls (such as meeting-mode start/stop)
                 # return a local reply without adding synthetic LLM history.
                 final_response = turn_response.strip() if isinstance(turn_response, str) else ""
+                fallback_response = ""
                 tool_calls_executed = []
 
                 for m in new_messages:
                     if m.get("role") == "assistant":
-                        if m.get("content") and not final_response:
-                            final_response = m.get("content", "")
+                        content = m.get("content")
+                        if content and not (m.get("tool_calls") or []):
+                            if str(content).strip():
+                                fallback_response = content
                         for tc in m.get("tool_calls") or []:
                             fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", {})
                             name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", "tool")
                             tool_calls_executed.append(name)
+
+                if not final_response:
+                    final_response = fallback_response
 
                 if (
                     not str(final_response or "").strip()
