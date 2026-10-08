@@ -338,6 +338,50 @@ def test_request_elapsed_rejects_completion_before_request_end(tmp_path):
         summarize_files(record_path, event_path)
 
 
+def test_headless_brain_call_clocks_bound_trace_without_claiming_request_latency(tmp_path):
+    headless_reason = "headless T1 capture does not measure user request end"
+    events = [
+        _event("turn.started", BASE - 100, span_id="outside-before"),
+        *_provider_call(
+            BASE + 100_000,
+            BASE + 200_000,
+            span_id="provider-1",
+            usage={"input_tokens": 12, "output_tokens": 4},
+        ),
+        _event("tool.started", BASE + 300_000, span_id="tool-1", status="started"),
+        _event("turn.completed", BASE + 4_100_000, span_id="outside-after"),
+    ]
+    record_path, event_path = _write_inputs(tmp_path, events)
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    record["event_clock_ns"] = {
+        "headless_brain_call_start": BASE,
+        "headless_brain_call_return": BASE + 4_000_000,
+    }
+    record["timing_ms"] = {
+        "request_end_to_verified_state": None,
+        "request_end_to_verified_state_missing_reason": headless_reason,
+    }
+    record_path.write_text(json.dumps(record), encoding="utf-8")
+
+    summary = summarize_files(record_path, event_path)
+
+    assert summary["event_count"] == 3
+    assert summary["provider"]["request_started_count"] == 1
+    assert summary["event_clock_window"]["basis"] == "headless_brain_call"
+    assert summary["event_clock_window"]["headless_brain_call_ms"] == 4.0
+    assert summary["event_clock_window"]["request_to_verified_completion_ms"] is None
+    assert summary["event_clock_window"]["request_to_verified_completion_missing_reason"] == headless_reason
+    assert summary["first_tool_start"]["request_end_delta_ms"] is None
+    assert summary["first_tool_start"]["request_end_delta_missing_reason"] == headless_reason
+    assert summary["first_playback"]["missing_reason"] == "no playback.started event in the task window"
+    assert summary["speech"]["first_acknowledgment"]["missing_reason"] == (
+        "no successfully completed playback tagged 'acknowledgment' in the task window"
+    )
+    assert summary["speech"]["progress"]["missing_reason"] == (
+        "no successfully completed playback tagged 'progress' in the task window"
+    )
+
+
 def test_same_currency_complete_accounting_sums_usage_and_provider_durations(tmp_path):
     events = [
         _event("turn.started", BASE, span_id="turn-1", status="started"),

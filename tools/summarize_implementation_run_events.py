@@ -429,10 +429,84 @@ def _turn_summary(events: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _event_clock_bounds(run_record: dict[str, Any]) -> dict[str, Any]:
+    clock_window = run_record.get("event_clock_ns")
+    if not isinstance(clock_window, dict):
+        raise RunEventSummaryError("run record event_clock_ns is required")
+
+    request_end_value = clock_window.get("request_end")
+    verified_completion_value = clock_window.get("verified_completion")
+    if request_end_value is not None or verified_completion_value is not None:
+        request_end = _integer(
+            request_end_value,
+            "event_clock_ns.request_end",
+            minimum=1,
+        )
+        verified_completion = _integer(
+            verified_completion_value,
+            "event_clock_ns.verified_completion",
+            minimum=1,
+        )
+        if verified_completion < request_end:
+            raise RunEventSummaryError("verified completion precedes request end")
+        return {
+            "basis": "request_end_to_verified_completion",
+            "start": request_end,
+            "end": verified_completion,
+            "request_end": request_end,
+            "verified_completion": verified_completion,
+            "request_end_missing_reason": None,
+            "headless_start": None,
+            "headless_return": None,
+        }
+
+    headless_start_value = clock_window.get("headless_brain_call_start")
+    headless_return_value = clock_window.get("headless_brain_call_return")
+    if headless_start_value is not None or headless_return_value is not None:
+        headless_start = _integer(
+            headless_start_value,
+            "event_clock_ns.headless_brain_call_start",
+            minimum=1,
+        )
+        headless_return = _integer(
+            headless_return_value,
+            "event_clock_ns.headless_brain_call_return",
+            minimum=1,
+        )
+        if headless_return < headless_start:
+            raise RunEventSummaryError("headless Brain-call return precedes call start")
+        timing = run_record.get("timing_ms")
+        missing_reason = (
+            timing.get("request_end_to_verified_state_missing_reason")
+            if isinstance(timing, dict) else None
+        )
+        if not isinstance(missing_reason, str) or not missing_reason:
+            missing_reason = (
+                "headless Brain-call clocks do not record user request end or verified state"
+            )
+        return {
+            "basis": "headless_brain_call",
+            "start": headless_start,
+            "end": headless_return,
+            "request_end": None,
+            "verified_completion": None,
+            "request_end_missing_reason": missing_reason,
+            "headless_start": headless_start,
+            "headless_return": headless_return,
+        }
+
+    # Preserve the request-window validation message for records with neither
+    # supported pair (or with both request fields explicitly null).
+    _integer(request_end_value, "event_clock_ns.request_end", minimum=1)
+    raise AssertionError("unreachable")
+
+
 def _speech_summary(
     events: list[dict[str, Any]],
-    request_end: int,
-    verified_completion: int,
+    request_end: int | None,
+    window_end: int,
+    window_end_reason: str,
+    request_end_missing_reason: str | None,
 ) -> dict[str, Any]:
     """Summarize caller-declared speech roles without retaining speech content."""
     grouped: dict[str, dict[str, dict[str, Any]]] = {
@@ -478,7 +552,7 @@ def _speech_summary(
     def event_summary(row: dict[str, Any] | None, role: str) -> dict[str, Any]:
         delta_ms = (
             round((row["clock_ns"] - request_end) / 1_000_000, 3)
-            if row else None
+            if row and request_end is not None else None
         )
         missing_reason = None
         if row is None:
@@ -489,21 +563,24 @@ def _speech_summary(
                 )
             else:
                 missing_reason = f"no successfully completed playback tagged {role!r} in the task window"
-        return {
+        result = {
             "clock_ns": row["clock_ns"] if row else None,
             "request_end_delta_ms": delta_ms,
             "missing_reason": missing_reason,
         }
+        if row and request_end is None:
+            result["request_end_delta_missing_reason"] = request_end_missing_reason
+        return result
 
     acknowledgments = sorted(
         grouped["acknowledgment"].values(), key=lambda row: row["clock_ns"]
     )
     final_speech = sorted(grouped["final"].values(), key=lambda row: row["clock_ns"])
     progress_end_clock = min(
-        final_speech[0]["clock_ns"] if final_speech else verified_completion,
-        verified_completion,
+        final_speech[0]["clock_ns"] if final_speech else window_end,
+        window_end,
     )
-    progress_end_reason = "first_final_speech" if final_speech else "verified_completion"
+    progress_end_reason = "first_final_speech" if final_speech else window_end_reason
     progress_updates = sorted(
         (
             row for row in grouped["progress"].values()
@@ -516,15 +593,25 @@ def _speech_summary(
     progress_intervals_ms = []
     previous_clock = request_end
     for row in progress_updates:
-        interval_ms = round((row["clock_ns"] - previous_clock) / 1_000_000, 3)
-        progress_intervals_ms.append(interval_ms)
-        progress_rows.append({
+        interval_ms = (
+            round((row["clock_ns"] - previous_clock) / 1_000_000, 3)
+            if previous_clock is not None else None
+        )
+        if interval_ms is not None:
+            progress_intervals_ms.append(interval_ms)
+        progress_row = {
             "clock_ns": row["clock_ns"],
-            "request_end_delta_ms": round((row["clock_ns"] - request_end) / 1_000_000, 3),
-            "gap_from_previous_progress_ms": (
-                None if row is progress_updates[0] else interval_ms
+            "request_end_delta_ms": (
+                round((row["clock_ns"] - request_end) / 1_000_000, 3)
+                if request_end is not None else None
             ),
-        })
+            "gap_from_previous_progress_ms": (
+                None if row is progress_updates[0] or interval_ms is None else interval_ms
+            ),
+        }
+        if request_end is None:
+            progress_row["request_end_delta_missing_reason"] = request_end_missing_reason
+        progress_rows.append(progress_row)
         previous_clock = row["clock_ns"]
     if progress_updates:
         end_gap_ms = round(
@@ -544,6 +631,27 @@ def _speech_summary(
             )
         else:
             progress_missing_reason = "no successfully completed playback tagged 'progress' in the task window"
+    progress_target_missing_reason = (
+        request_end_missing_reason if request_end is None else None
+    )
+    progress_summary = {
+        "update_count": len(progress_updates),
+        "updates": progress_rows,
+        "end_clock_ns": progress_end_clock,
+        "end_reason": progress_end_reason,
+        "gap_to_end_ms": end_gap_ms,
+        "measured_intervals_ms": progress_intervals_ms,
+        "max_measured_interval_ms": (
+            max(progress_intervals_ms) if progress_intervals_ms else None
+        ),
+        "within_10s_target": (
+            max(progress_intervals_ms) <= 10_000
+            if progress_intervals_ms and request_end is not None else None
+        ),
+        "missing_reason": progress_missing_reason,
+    }
+    if progress_target_missing_reason is not None:
+        progress_summary["target_missing_reason"] = progress_target_missing_reason
 
     return {
         "first_acknowledgment": {
@@ -553,21 +661,7 @@ def _speech_summary(
                 if acknowledgments else None
             ),
         },
-        "progress": {
-            "update_count": len(progress_updates),
-            "updates": progress_rows,
-            "end_clock_ns": progress_end_clock,
-            "end_reason": progress_end_reason,
-            "gap_to_end_ms": end_gap_ms,
-            "measured_intervals_ms": progress_intervals_ms,
-            "max_measured_interval_ms": (
-                max(progress_intervals_ms) if progress_intervals_ms else None
-            ),
-            "within_10s_target": (
-                max(progress_intervals_ms) <= 10_000 if progress_intervals_ms else None
-            ),
-            "missing_reason": progress_missing_reason,
-        },
+        "progress": progress_summary,
         "first_final_speech": event_summary(
             final_speech[0] if final_speech else None, "final",
         ),
@@ -587,21 +681,12 @@ def summarize_run_events(
     run_id = run_record.get("run_id")
     if not isinstance(run_id, str) or not run_id:
         raise RunEventSummaryError("run record run_id is required")
-    clock_window = run_record.get("event_clock_ns")
-    if not isinstance(clock_window, dict):
-        raise RunEventSummaryError("run record event_clock_ns is required")
-    request_end = _integer(
-        clock_window.get("request_end"),
-        "event_clock_ns.request_end",
-        minimum=1,
-    )
-    verified_completion = _integer(
-        clock_window.get("verified_completion"),
-        "event_clock_ns.verified_completion",
-        minimum=1,
-    )
-    if verified_completion < request_end:
-        raise RunEventSummaryError("verified completion precedes request end")
+    clock_bounds = _event_clock_bounds(run_record)
+    window_start = clock_bounds["start"]
+    window_end = clock_bounds["end"]
+    request_end = clock_bounds["request_end"]
+    verified_completion = clock_bounds["verified_completion"]
+    request_end_missing_reason = clock_bounds["request_end_missing_reason"]
 
     if not events:
         raise RunEventSummaryError("no matching telemetry events were supplied")
@@ -612,11 +697,12 @@ def summarize_run_events(
         raise RunEventSummaryError("matching trace events are not monotonic")
     events = [
         row for row in events
-        if request_end <= row["clock_ns"] <= verified_completion
+        if window_start <= row["clock_ns"] <= window_end
     ]
     if not events:
+        window_name = "request-to-completion" if request_end is not None else "headless Brain-call"
         raise RunEventSummaryError(
-            "no matching telemetry events fall within the run's request-to-completion window"
+            f"no matching telemetry events fall within the run's {window_name} window"
         )
     clocks = [row["clock_ns"] for row in events]
 
@@ -666,13 +752,22 @@ def summarize_run_events(
 
     playback_events = [
         row for row in events
-        if row["event"] == "playback.started" and row["clock_ns"] >= request_end
+        if row["event"] == "playback.started"
     ]
     first_playback = min(playback_events, key=lambda row: row["clock_ns"]) if playback_events else None
-    speech_summary = _speech_summary(events, request_end, verified_completion)
+    window_end_reason = (
+        "verified_completion" if verified_completion is not None else "headless_brain_call_return"
+    )
+    speech_summary = _speech_summary(
+        events,
+        request_end,
+        window_end,
+        window_end_reason,
+        request_end_missing_reason,
+    )
     tool_start_events = [
         row for row in events
-        if row["event"] == "tool.started" and row["clock_ns"] >= request_end
+        if row["event"] == "tool.started"
     ]
     first_tool_start = (
         min(tool_start_events, key=lambda row: row["clock_ns"])
@@ -682,15 +777,17 @@ def summarize_run_events(
         "clock_ns": first_tool_start["clock_ns"] if first_tool_start else None,
         "request_end_delta_ms": (
             round((first_tool_start["clock_ns"] - request_end) / 1_000_000, 3)
-            if first_tool_start else None
+            if first_tool_start and request_end is not None else None
         ),
         "missing_reason": None if first_tool_start else "no tool.started event in the task window",
     }
+    if first_tool_start and request_end is None:
+        first_tool_start_summary["request_end_delta_missing_reason"] = request_end_missing_reason
     first_playback_summary = {
         "clock_ns": first_playback["clock_ns"] if first_playback else None,
         "request_end_delta_ms": (
             round((first_playback["clock_ns"] - request_end) / 1_000_000, 3)
-            if first_playback else None
+            if first_playback and request_end is not None else None
         ),
         "meaningful_acknowledgment": None,
         "meaningful_acknowledgment_missing_reason": (
@@ -698,6 +795,8 @@ def summarize_run_events(
         ),
         "missing_reason": None if first_playback else "no playback.started event in the task window",
     }
+    if first_playback and request_end is None:
+        first_playback_summary["request_end_delta_missing_reason"] = request_end_missing_reason
 
     return {
         "run_id": run_id,
@@ -708,10 +807,22 @@ def summarize_run_events(
         "failure_class": run_record.get("failure_class"),
         "event_count": len(events),
         "event_clock_window": {
+            "basis": clock_bounds["basis"],
+            "window_start_clock_ns": window_start,
+            "window_end_clock_ns": window_end,
+            "window_duration_ms": round((window_end - window_start) / 1_000_000, 3),
             "request_end_clock_ns": request_end,
             "verified_completion_clock_ns": verified_completion,
-            "request_to_verified_completion_ms": round(
-                (verified_completion - request_end) / 1_000_000, 3,
+            "request_to_verified_completion_ms": (
+                round((verified_completion - request_end) / 1_000_000, 3)
+                if request_end is not None and verified_completion is not None else None
+            ),
+            "request_to_verified_completion_missing_reason": request_end_missing_reason,
+            "headless_brain_call_start_clock_ns": clock_bounds["headless_start"],
+            "headless_brain_call_return_clock_ns": clock_bounds["headless_return"],
+            "headless_brain_call_ms": (
+                round((clock_bounds["headless_return"] - clock_bounds["headless_start"]) / 1_000_000, 3)
+                if clock_bounds["headless_start"] is not None else None
             ),
             "first_clock_ns": clocks[0],
             "last_clock_ns": clocks[-1],
@@ -757,8 +868,13 @@ def summarize_run_events(
         "speech": speech_summary,
         "interpretation": {
             "trace_join": (
-                "Events were filtered by exact trace_id and the recorded request-end-to-verified-"
-                "completion monotonic clock window."
+                "Events were filtered by exact trace_id and the run record's monotonic clock window; "
+                + (
+                    "request-end-to-verified-completion timing is unavailable because this run "
+                    "records only the headless Brain-call interval."
+                    if request_end is None else
+                    "the recorded request-end-to-verified-completion clock window was used."
+                )
             ),
             "http_429_counts": (
                 "Response count uses llm.completed.http_status; retry-trigger count uses "
