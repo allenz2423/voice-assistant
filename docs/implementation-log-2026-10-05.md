@@ -1514,3 +1514,8 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - Generic high/spike routing no longer offers `list_processes`; its lifetime-average statistics are available only on explicit request. Dedicated how-to/capability exclusions were corrected.
 - The sidecar `/`, status, history, and revision `e78d60a9b4ad` were checked. Served JavaScript matched the checkout and includes retry-history behavior, unavailable-timestamp copy, and request-scoped stale-warning cleanup. History source timestamps remain null; the UI does not synthesize times.
 - TTS was Silent. No visible browser-profile acceptance was performed because the active window was not Adam and screens were off. JavaScript syntax and diff checks passed; no pytest or full suite was run.
+
+## Checkpoint 211 — explicit process-intent routing after restart
+
+- After restarting the pushed build in Silent mode, a live localhost WebSocket request explicitly asking what was using CPU invoked `get_system_status` and `list_processes`. The response reported a **2%** host-wide status sample and a top single-core lifetime average, explicitly marked as not comparable. Post-turn state was idle, meeting mode false, with no active tool.
+- This confirms explicit process-intent routing. Generic high-CPU questions were checked separately and use only system status. No pytest was run.
