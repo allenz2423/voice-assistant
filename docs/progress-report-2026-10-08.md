@@ -1,0 +1,11 @@
+# Progress report — October 8, 2026
+
+CP193 corrected the earlier-spike response guard in `src/llm/brain.py`. It now covers ordinary tool-backed text, `speak` content, resource-limit synthesis, and final synthesis; sentence punctuation limits the historical matcher, and direct status dispatch cannot emit the model fallback. The first restart found an unmatched regex parenthesis. After stopping systemd auto-restart, `uv run python -c 'import src.llm.brain; print("brain import ok")'` passed; the service was restarted and returned active. Status was `IDLE_LISTENING`, meeting mode false, `active_tool=null`; the journal confirmed TTS Silent.
+
+Two live local sidecar `/api/chat` model turns, restricted to `get_system_status` and `list_processes`, exercised current and historical CPU questions. The current question completed in **10.261 s** and returned exactly `CPU is at 1 percent, load 0.16; top process python at 17 percent. This snapshot does not identify a cause.` The historical question completed in **7.282 s** and returned exactly `CPU is at 2 percent, load 0.28; top process python at 10.4 percent. No cause is identified; this snapshot cannot explain an earlier spike.` Both turns used both tools.
+
+A no-tool comparison of 12 sorting algorithms completed in **15.232 s** on `custom` / `deepseek/deepseek-v4.1-flash`. The backend accepted `brain.long_task_progress` at **10.014 s**; the request returned HTTP 200 with **2,311 input / 1,291 output / 709 reasoning tokens**, with no retries apparent. Backend event acceptance is confirmed, while UI rendering remains unverified.
+
+The Edge-profile acceptance attempt remains blocked: Hyprland identified the focused Edge window as `Adam // Assistant Dashboard and 6 more pages - Personal - Microsoft Edge`, PID **11283**, without inspecting tabs or history. Focused-window `grim` (**6 s**) and `grimblast` (**20 s**) captures timed out; scoped AT-SPI was unavailable. No keystrokes were sent. The chatbot requests used localhost daemon `/api/chat`, not the Edge profile.
+
+No pytest or full suite was run per user preference. The import check and live daemon interactions were the only verification; `git diff --check` passed. A read-only review noted that the historical matcher can still match an unrelated past-time clause separated only by a comma or em dash; defer this edge for a targeted follow-up.

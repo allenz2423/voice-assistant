@@ -1041,6 +1041,42 @@ def _has_two_short_sentence_shape(text: str, *, max_words_per_sentence: int = 30
     return True
 
 
+_EARLIER_SPIKE_NO_CAUSE_SENTENCE = (
+    "No cause is identified; this snapshot cannot explain an earlier spike."
+)
+_CURRENT_SNAPSHOT_NO_CAUSE_SENTENCE = "This snapshot does not identify a cause."
+_RESOURCE_METRIC_RE = r"(?:cpu|processor|memory|ram|usage|load|spike|utilization)"
+_EXPLICIT_PAST_MARKER_RE = (
+    r"(?:earlier|previous(?:ly)?|yesterday|prior|historically|back\s+then|the\s+other\s+day|"
+    r"last\s+(?:time|hour|hours|night|morning|afternoon|evening|day|week|month|year)|"
+    r"\d+\s+(?:seconds?|minutes?|hours?|days?|weeks?|months?|years?)\s+ago|"
+    r"(?:in|during|over)\s+the\s+past)"
+)
+_PAST_RESOURCE_USAGE_RE = re.compile(
+    rf"\b{_EXPLICIT_PAST_MARKER_RE}\b[^\n.!?]{{0,60}}\b{_RESOURCE_METRIC_RE}\b|"
+    rf"\b{_RESOURCE_METRIC_RE}\b[^\n.!?]{{0,60}}\b{_EXPLICIT_PAST_MARKER_RE}\b|"
+    rf"\b(?:what|when|why|how|where)(?:\s+\w+){{0,3}}\s+(?:was|were|did|had)\b"
+    rf"[^\n.!?]{{0,40}}\b{_RESOURCE_METRIC_RE}\b|"
+    rf"(?:\A|[.!?]\s*)(?:was|were|did|had)\b[^\n.!?]{{0,40}}\b{_RESOURCE_METRIC_RE}\b",
+    re.IGNORECASE,
+)
+
+
+def _guard_unrequested_earlier_spike_fallback(user_text: str, response_text: str) -> str:
+    """Use the earlier-spike fallback only when the current request is historical."""
+    response = str(response_text or "")
+    if (
+        _EARLIER_SPIKE_NO_CAUSE_SENTENCE in response
+        and not _PAST_RESOURCE_USAGE_RE.search(str(user_text or ""))
+    ):
+        return response.replace(
+            _EARLIER_SPIKE_NO_CAUSE_SENTENCE,
+            _CURRENT_SNAPSHOT_NO_CAUSE_SENTENCE,
+            1,
+        )
+    return response
+
+
 def _available_tools_for_capability_refusal(
     user_text: str, response_text: str, available_tools: list,
 ) -> list[str]:
@@ -1306,7 +1342,7 @@ Voice & Execution:
 
 Tool Routing:
 - Dedicated tools first: Use built-in tools for time, weather, reminders, timers, calendar (Noctalia / Remind), notes, files, math, and system status.
-- For factual hardware requests, use `get_system_status` and report only the metric or metrics the user asked for. Keep a single-metric answer to one short sentence; give a brief overview for `system status`, without listing every telemetry field. For a question or concern about why CPU or memory is high, slow, hot, or otherwise abnormal, get status once and inspect the relevant top processes with `list_processes` (sort by CPU for CPU concerns and memory for memory concerns), even when the user did not say "process". Explain only what the evidence supports; if it does not identify a cause, say so. For questions about a current or earlier CPU spike, answer in exactly two short sentences: sentence 1 reports current CPU/load and only the strongest evidence from the top-process list; sentence 2 names a cause only if current process evidence establishes it, otherwise say exactly: "No cause is identified; this snapshot cannot explain an earlier spike." A low current CPU/load sample cannot support attributing a past spike to any activity. Do not say "likely" or "probably" or list possible causes unless directly evidenced by the current process sample. Do not repeat status checks with `run_bash_command` or call `get_system_status` again in the same turn. A separately and explicitly requested shell inspection remains available.
+- For factual hardware requests, use `get_system_status` and report only the metric or metrics the user asked for. Keep a single-metric answer to one short sentence; give a brief overview for `system status`, without listing every telemetry field. For a question or concern about why CPU or memory is high, slow, hot, or otherwise abnormal, get status once and inspect the relevant top processes with `list_processes` (sort by CPU for CPU concerns and memory for memory concerns), even when the user did not say "process". Explain only what the evidence supports. For CPU or memory high/spike questions, answer in exactly two sentences and at most 25 words total: sentence 1 gives the current requested metric (include CPU/load for CPU) and the strongest relevant top-process evidence; sentence 2 names a cause only if current evidence establishes it. If no cause is identified for a question about an earlier spike, sentence 2 must be exactly: "No cause is identified; this snapshot cannot explain an earlier spike." For a current high CPU or memory question with no identified cause, use: "This snapshot does not identify a cause." Omit unrelated status fields and all other explanation. A low current sample cannot explain an earlier spike; never say "likely" or "probably" or list possible causes without direct evidence. Do not repeat status checks with `run_bash_command` or call `get_system_status` again in the same turn. A separately and explicitly requested shell inspection remains available.
 - For a positive request to start or stop meeting recording that is not one of the exact direct voice controls, call `meeting_mode` with `action="start"` or `action="stop"`, including polite requests phrased as questions. A bare command saying “meeting mode” means start meeting mode. Do not call it for informational questions, hypotheticals, or instructions not to change the current state. The meeting tool owns the spoken confirmation; do not repeat the action or add a second confirmation.
 - Web: Always use `open_in_browser` for URLs and web searches; never manually type URLs into browser address bars via GUI. Use `fetch_webpage` to read specific page content.
 - Shell: Use for CLI tasks, system inspection, or direct script/app APIs. Never run shell `sleep` during GUI tasks (use `capture_screenshot` with delay instead).
@@ -3122,6 +3158,9 @@ class AdamBrain:
                 )
                 if save_readback_guard:
                     content = save_readback_guard
+                content = _guard_unrequested_earlier_spike_fallback(
+                    user_text, content,
+                )
                 print(f"[Adam] Response: {content}")
                 with timed_stage("brain.tts_speak"):
                     await self._speak_with_role(content, "final")
@@ -3255,6 +3294,13 @@ class AdamBrain:
                 args = normalized_args_by_idx.get(idx, {})
                 if name == "speak" and isinstance(args, dict):
                     spoken_update = str(args.get("message", ""))
+                    guarded_spoken_update = _guard_unrequested_earlier_spike_fallback(
+                        user_text, spoken_update,
+                    )
+                    if guarded_spoken_update != spoken_update:
+                        args = {**args, "message": guarded_spoken_update}
+                        normalized_args_by_idx[idx] = args
+                        spoken_update = guarded_spoken_update
                     reports_save = bool(re.search(r"\b(?:saved|reopened)\b", spoken_update, re.IGNORECASE))
                     if reports_save:
                         save_readback_guard = _guard_plain_text_save_reopen_answer(
@@ -3825,6 +3871,9 @@ class AdamBrain:
                             f"[Adam] No-progress final synthesis failed: {type(exc).__name__}: {exc}",
                             flush=True,
                         )
+                response_text = _guard_unrequested_earlier_spike_fallback(
+                    user_text, response_text,
+                )
                 print(f"[Adam] Response: {response_text}", flush=True)
                 self.messages.append({"role": "assistant", "content": response_text})
                 await self._speak_with_role(response_text, "final")
@@ -3870,6 +3919,9 @@ class AdamBrain:
             )
             if save_readback_guard:
                 final_content = save_readback_guard
+            final_content = _guard_unrequested_earlier_spike_fallback(
+                user_text, final_content,
+            )
 
             print(f"[Adam] Response: {final_content}")
             self.messages.append({"role": "assistant", "content": final_content})
