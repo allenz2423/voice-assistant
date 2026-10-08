@@ -989,3 +989,29 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - Final read-only review closed two issues. Save-only acknowledgments, including passive/active and “Saved successfully” variants, now fall through to verified readback or unable-to-verify; responses containing actual readback content remain substantive. Default audio source fallback now covers constructor and start failures with cleanup, while explicit sources remain fail-closed. The reviewer confirmed both fixes.
 - `python3 -m py_compile src/llm/brain.py src/audio/stream.py` and `git diff --check` passed. No pytest or microphone trial was run. After the final edit, the daemon was restarted; systemd and loopback API confirmed active/running, TTS silent, Adam online, connected, and `IDLE_LISTENING`.
 - Browser screenshot follow-up remains deferred: the AT-SPI bus connection was refused and target-window `grim` timed out, so no screenshot, provider call, or UI action was attempted. **Loop 3 remains open** for a scoped replay when capture works.
+
+## Checkpoint 129 — post-restart idle resource snapshot
+
+- A read-only Desky snapshot at **2026-10-08 08:23:59 EDT** covered a **10 s** CPU sample. The Adam process tree contained one process: RSS **607,715,328 B**, PSS **585,817,088 B**. Cgroup `memory.current` was **484,925,440 B**, `memory.peak` **712,163,328 B**, and cumulative CPU usage at sample end **3,413,715 usec**. System CPU was **0.52%**; available RAM was **23,116,046,336 B** of **33,558,769,664 B**; swap used was **2,682,880 B**.
+- The daemon was active/running, the API had separately confirmed `IDLE_LISTENING`, and TTS remained silent. Power was not measured. These are descriptive post-restart idle snapshots, not task-attributable deltas or a matched A/B. **Loop 2 remains open** for repeated or matched samples. No model or GUI test was performed; no tests were run.
+
+## Checkpoint 130 — live silent CPU status turn via local API
+
+- On **2026-10-08**, a live silent Desky WebUI API turn—not a browser-profile UI trial—sent `What's my CPU usage right now? Reply with just the current percentage and one short sentence.` to loopback `/api/chat` at **08:24:53 EDT**. Provider/model: **custom/deepseek/deepseek-v4.1-flash**. It completed at **08:25:21** (**28,286 ms**) with `CPU usage is 5 percent right now.` and one `get_system_status` call.
+- Two initial HTTP 429 responses (**8,054 ms** and **7,615 ms**) recovered. The subsequent HTTP 200 tool-call request took **7,306 ms** (**4,349 input / 51 output / 31 reasoning tokens**); the HTTP 200 final request took **1,117 ms** (**4,613 / 11 / 0**). No cost was reported. The response met the one-sentence brevity request, but the first tool/result followed retries and the API exposed no intermediate acknowledgment or progress timestamp; latency target success is unproven.
+- TTS remained silent. No microphone or screenshot was used; no tests were run. Earlier browser-profile tests remain in prior checkpoints.
+
+## Checkpoint 131 — meeting mode off quickpath
+
+- At about **08:28 EDT on 2026-10-08**, a live, silent Desky loopback WebUI API quickpath sent the exact prompt `meeting mode off` while the freshly restarted daemon was `IDLE_LISTENING` and meeting mode was inactive. It returned HTTP 200 in **83 ms** with `Meeting mode is already off.` There were no tool calls or provider requests, and no recording was started.
+- This is a one-sample short-response pass for the safe off path; it does not test recording start or the Edge browser profile. No microphone capture, screenshot, or pytest was used.
+
+## Checkpoint 132 — post-query recovery resource snapshots
+
+- After the CPU query completed at **08:25:21 EDT on 2026-10-08**, read-only 10-second Desky snapshots were taken at **+95 s** (sample start **08:26:56**) and **+131 s** (sample start **08:27:32**). At +95 s: one process, RSS **611,971,072 B**, PSS **590,072,832 B**, cgroup `memory.current` **489,136,128 B**, `memory.peak` **712,163,328 B**, cumulative cgroup CPU **4,585,058 usec**, system CPU **1.11%**, available RAM **23,062,188,032 B** of **33,558,769,664 B**, swap **2,682,880 B**. At +131 s: one process, RSS **611,971,072 B**, PSS **590,071,808 B**, cgroup current **489,943,040 B**, peak **712,163,328 B**, cumulative cgroup CPU **4,783,962 usec**, system CPU **0.73%**, available RAM **23,073,513,472 B** of **33,558,769,664 B**, swap **2,682,880 B**.
+- The planned **+30 s** snapshot was missed. These measurements are descriptive snapshots only; they support no causal comparison.
+
+## Checkpoint 133 — defer UI and T1 activity during active trials
+
+- We deferred both the Edge UI chat and T1 before provider or fixture activity after finding active GUI trial infrastructure: Gedit had a work-order fixture open, `ydotoold` was active, and fixture servers were listening on ports **8766, 8767, 8768, 41112, and 18765**. The WebUI shares the daemon turn executor and interruption monitor, so another live CPU API sample risked interference; no turn was sent.
+- Edge showed the title **Adam dashboard**, with no accessibility bus or CDP access; screenshot capture had timed out earlier, so no query was sent. No private page content was inspected, no microphone or screenshot was uploaded, and no config was read. No tests were run and no commit was made; other files were left untouched.
