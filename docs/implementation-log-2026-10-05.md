@@ -1103,7 +1103,7 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 ## Checkpoint 150 — CPU-cause prompt tightened; old-daemon retries invalidated
 
 - Source prompt fix in `src/llm/brain.py` preserves CPU/memory diagnostics, requires **two short, evidence-only sentences**, and forbids unsupported cause guesses. Change was committed and pushed as **321d027**.
-- Two live retry turns made before the service restart returned HTTP 200 and called both status/process tools, but continued to speculate. Daemon PID **709499** had started at **08:22 EDT** with the prior prompt, so those retries are **stale and invalid as retests of the source change**. Restart was needed to load the updated prompt.
+- Two live retry turns made before the service restart took **6.050 s** and **5.215 s**. Each returned HTTP 200 with no 429 and called both status/process tools, but both repeated the unsupported explanation that the earlier load was likely a short-lived task. Daemon PID **709499** had started at **08:22 EDT** with the prior prompt, so those retries are **stale and invalid as retests of the source change**. Restart was needed to load the updated prompt.
 
 ## Checkpoint 151 — restarted daemon passes CPU-cause explanation check
 
@@ -1111,3 +1111,9 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - The turn completed in **5.972 s** with two model hops (**1.496 s + 4.296 s**), **8,097 input / 369 output / 249 reasoning tokens**, HTTP 200, no 429; cost unavailable. Adam called the same two tools: `get_system_status` and `list_processes`.
 - The two-sentence answer reported current CPU **2%**, load **0.22**, **32 cores**, and the highest sampled process as assistant Python at **26.6% of one core**; it concluded: `No cause is identified; this snapshot cannot explain an earlier spike.` Classify this as a **concise, evidence-based routing and answer pass**.
 - At the last 15-minute safety poll, Gedit count was **0**, the five old fixture ports remained listening, sidecar WebSocket count was **0**, and Adam was `IDLE_LISTENING`. No B1 browser or server was started; fresh B1 fixture details remain in Checkpoint 148. No tests were run. Browser-profile validation is still outstanding.
+
+## Checkpoint 152 — B1 live trial blocked before model work
+
+- The current daemon (PID **904936**) explicitly logged TTS silent mode, and the sidecar API reported `IDLE_LISTENING`. The fresh synthetic B1 fixture `/tmp/adam-implementation-fixtures/b1-nextlive-20261008-7f3c91a2d84e` was served on loopback port **41111** and returned HTTP 200. Its report hash remained `c66889023d713235f69a6bf22452c5c8c763166c78bc546f92cafbf290b57b36`.
+- The attempted Edge binary `/opt/microsoft-edge/msedge` was absent in this environment. Consequently no browser window or screenshot-scope proof was available; no provider submission or screenshot upload occurred. The agent stopped only its own fixture server and removed its own launch log and temporary capture.
+- Classify this as **blocked before model work**, not a B1 model/task result. No code changes or tests were made. Browser-profile validation remains outstanding.
