@@ -1072,3 +1072,8 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - At approximately **2026-10-08 14:30 UTC** (**10:30 EDT**), a metadata-only TCP count found established local-port counts: **8765=6**, **8766=0**, **8767=0**, **8768=0**, **41112=0**, **18765=0**. Counts only were recorded; no addresses, payloads, or page data were accessed.
 - The local WebUI has connected clients, so no competing daemon chat was sent even though the T1 fixtures are separate. No desktop, provider, or microphone action occurred. No tests were run.
+
+## Checkpoint 145 — fourth passive T1 watch ended without a safe window
+
+- The fourth 30-minute passive watch ended with the safe-window gate still not passed. Final sample: Gedit count **1**, fixture ports **8766, 8767, 8768, 41112, and 18765** all listening, WebUI `IDLE_LISTENING`, and **6** established connections on local port **8765**.
+- TTS silent confirmation remains the filtered **08:22 EDT** startup line in Checkpoint 143; no new log query was needed. No T1, provider, UI, or microphone action occurred. No tests were run.
