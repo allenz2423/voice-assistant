@@ -1209,13 +1209,71 @@ def _is_browser_app(target: str, default_browser: str = "") -> bool:
     return bool(configured and (value == configured or Path(configured).stem in value))
 
 
-def _format_visual_spoken_answer(text: str) -> str:
+def _visual_request_needs_complete_answer(user_text: str) -> bool:
+    """Keep explicitly requested visual details from being cut off for speech."""
+    request = re.sub(r"\s+", " ", str(user_text or "")).strip()
+    if not request:
+        return False
+
+    # An explicit two-sentence constraint is a direct request to retain more
+    # than the formatter's usual one-sentence visual summary.
+    if re.search(r"\b(?:two|2)[ -]sentences?\b", request, re.IGNORECASE):
+        return True
+
+    if request.count("?") >= 2:
+        return True
+
+    requested_clause = re.split(r"[?.!]", request, maxsplit=1)[0][:160]
+    comma_list = re.search(r",\s*[^,?.!]{1,60},", requested_clause)
+    if comma_list:
+        action_cue = re.search(
+            r"\b(?:give(?:\s+me)?|list|name|provide|return|report|include|"
+            r"tell\s+me|read|identify|extract)\b",
+            requested_clause[:comma_list.start()],
+            re.IGNORECASE,
+        )
+        if action_cue:
+            return True
+
+    joined_fields = re.search(r"\b(?:and|or)\b|&", requested_clause, re.IGNORECASE)
+    if not joined_fields:
+        return False
+    trailing_item = requested_clause[joined_fields.end():].lstrip(" ,;:")
+    if re.match(
+        r"(?:keep|be|answer|respond|say|make|use|explain|please|do\s+not|don't)\b",
+        trailing_item,
+        re.IGNORECASE,
+    ):
+        return False
+
+    # A concrete list/action verb must occur before the join, or the request
+    # must have a clear two-field question shape such as “what is the supplier
+    # and total?”. Meta-instructions such as “and keep it brief” are excluded.
+    action_cue = re.search(
+        r"\b(?:give(?:\s+me)?|list|name|provide|return|report|include|"
+        r"tell\s+me|read|identify|extract)\b",
+        requested_clause[:joined_fields.start()],
+        re.IGNORECASE,
+    )
+    two_field_question = re.search(
+        r"\b(?:what|which)\s+(?:is|are|was|were)\s+(?:the\s+)?"
+        r"[^,?.!;]{1,50}\s+(?:and|or)\s+(?:the\s+)?"
+        r"[a-z][\w'-]*(?:\s+[a-z][\w'-]*){0,2}\b",
+        requested_clause,
+        re.IGNORECASE,
+    )
+    return bool(action_cue or two_field_question)
+
+
+def _format_visual_spoken_answer(text: str, user_text: str = "") -> str:
     """Keep visual replies concise and suitable for speech output."""
     text = re.sub(r"(?m)^\s*(?:[-*+]\s+|\d+[.)]\s+)", "", text or "")
     text = re.sub(r"[`*_#~]", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     text = re.sub(r'["“][^"”]*[^\x00-\x7f][^"”]*["”]', "", text)
     text = re.sub(r"\s+", " ", text).strip(" ,;:-")
+    if _visual_request_needs_complete_answer(user_text):
+        return text
     sentence = re.search(r"^(.+?[.!?])(?:\s|$)", text)
     if sentence:
         text = sentence.group(1)
@@ -3015,7 +3073,7 @@ class AdamBrain:
                         print("[Adam] Interrupted during factual comparison review. Halting turn.", flush=True)
                         break
                 if any(message.get("images") for message in self.messages) and not response.get("provider_error"):
-                    content = _format_visual_spoken_answer(content)
+                    content = _format_visual_spoken_answer(content, user_text)
                 readback_summary = _summarize_desktop_readback_if_generic(
                     user_text,
                     content,
