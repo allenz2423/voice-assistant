@@ -85,6 +85,7 @@
   const sendBtn = document.getElementById("sendBtn");
   const statusBar = document.getElementById("statusBar");
   const statusMessage = document.getElementById("statusMessage");
+  const cancelChatBtn = document.getElementById("cancelChatBtn");
   const historyRetryButton = document.createElement("button");
   historyRetryButton.type = "button";
   historyRetryButton.className = "btn btn-secondary";
@@ -506,6 +507,15 @@
     taskProgressStartedAt = null;
     taskProgressMessage = "";
     taskProgressAwaitingConfirmation = false;
+  }
+
+  function setChatCancelState(active, stopping = false) {
+    if (!cancelChatBtn) return;
+    cancelChatBtn.hidden = !active;
+    cancelChatBtn.disabled = !active || stopping;
+    cancelChatBtn.innerHTML = stopping
+      ? "<span aria-hidden=\"true\">■</span><span>Stopping…</span>"
+      : "<span aria-hidden=\"true\">■</span><span>Stop</span>";
   }
 
   function renderTaskProgress() {
@@ -1112,6 +1122,7 @@
     chatReady = false;
     clearTaskProgress();
     sendBtn.disabled = false;
+    setChatCancelState(false);
     statusBar.classList.remove("hidden");
     statusMessage.textContent = "The connection changed while sending. Outcome unknown; your draft is unchanged. Check history before retrying.";
     try { socket.close(); } catch {}
@@ -1122,7 +1133,9 @@
       row.dataset.historyBaselineCount = String(historyUserMessageCounts.get(message) || 0);
     }
     try {
-      socket.send(JSON.stringify({ type: "chat", message }));
+      socket.send(JSON.stringify({
+        type: "chat", message, request_id: row?.dataset.chatRequestId,
+      }));
     } catch {
       markChatSendUncertain(row, socket);
       return false;
@@ -1130,6 +1143,7 @@
     if (row) {
       row.dataset.chatSent = "true";
       chatRowsBySocket.set(socket, row);
+      setChatCancelState(true);
     }
     clearComposerAfterSend(message, revision, shouldClear);
     return true;
@@ -1280,6 +1294,12 @@
             && !hasUncertainChatRows()
           ) chatReady = true;
           flushPendingChat();
+        } else if (data.type === "history_changed") {
+          // Another WebSocket client may have completed a chat. Refresh from
+          // the canonical API so all open UI clients show the shared transcript.
+          loadHistory(true).catch((err) => {
+            console.warn("Could not refresh conversation history:", err);
+          });
         } else if (data.type === "state") {
           setRuntimeState(data.system_state);
           if (data.system_state === "IDLE_LISTENING" && hasUncertainChatRows()) {
@@ -1310,9 +1330,22 @@
           showToolActivity(data);
         } else if (data.type === "task_progress") {
           showTaskProgress(data);
+        } else if (data.type === "cancel_ack") {
+          const row = activeChatRow;
+          if (!row || data.request_id !== row.dataset.chatRequestId) return;
+          if (data.cancelled) {
+            setChatCancelState(true, true);
+            statusBar.classList.remove("hidden");
+            statusMessage.textContent = "Stopping Adam's request…";
+          } else {
+            setChatCancelState(true, true);
+            statusBar.classList.remove("hidden");
+            statusMessage.textContent = data.error || "Adam could not stop this request; it may already have finished.";
+          }
         } else if (data.type === "chat_response") {
           const responseRow = chatRowsBySocket.get(socket);
           if (!responseRow) return;
+          if (data.request_id && data.request_id !== responseRow.dataset.chatRequestId) return;
           chatRowsBySocket.delete(socket);
           const requestId = responseRow.dataset.chatRequestId;
           if (requestId) {
@@ -1323,6 +1356,14 @@
           const res = data.result || {};
           if (res.status === "completed") {
             appendMessage("assistant", res.response, res.tool_calls);
+          } else if (res.status === "cancelled") {
+            appendMessage(
+              "assistant",
+              res.response || "Stop requested. Any dispatched action may have taken effect; check the current state before retrying.",
+              res.tool_calls,
+              null,
+              { preserveOnHistoryRefresh: true }
+            );
           } else if (res.status === "busy") {
             appendMessage("assistant", `⚠️ ${res.error || "Adam is currently busy."}`, null, null, { preserveOnHistoryRefresh: true });
           } else {
@@ -1337,6 +1378,7 @@
             isSending = false;
             clearTaskProgress();
             sendBtn.disabled = false;
+            setChatCancelState(false);
             statusBar.classList.add("hidden");
           }
         } else if (data.type === "error") {
@@ -1355,6 +1397,7 @@
           chatReady = false;
           clearTaskProgress();
           sendBtn.disabled = false;
+          setChatCancelState(false);
           statusBar.classList.add("hidden");
           // A replacement socket keeps a late response from being mistaken
           // for the next chat's response.
@@ -1398,6 +1441,7 @@
       if (isSending && pendingChatMessage === null) {
         isSending = false;
         sendBtn.disabled = false;
+        setChatCancelState(false);
         statusBar.classList.add("hidden");
       }
       chatReady = false;
@@ -1420,6 +1464,7 @@
       if (isSending && pendingChatMessage === null) {
         isSending = false;
         sendBtn.disabled = false;
+        setChatCancelState(false);
         statusBar.classList.add("hidden");
       }
       chatReady = false;
@@ -1474,11 +1519,15 @@
     clearTaskProgress();
     isSending = true;
     sendBtn.disabled = true;
+    setChatCancelState(false);
     const submittedComposerRevision = composerRevision;
     const clearSubmittedComposer = chatInput.value.trim() === text;
 
     activeChatRow = appendMessage("user", text, null, null, { preserveOnHistoryRefresh: true });
-    activeChatRow.dataset.chatRequestId = `chat-${++chatRequestSequence}`;
+    const requestId = typeof globalThis.crypto?.randomUUID === "function"
+      ? globalThis.crypto.randomUUID()
+      : `chat-${Date.now()}-${++chatRequestSequence}-${Math.random().toString(36).slice(2)}`;
+    activeChatRow.dataset.chatRequestId = requestId;
     activeChatRow.dataset.optimisticChatMessage = "true";
     activeChatRow.dataset.chatSent = "false";
     statusBar.classList.remove("hidden");
@@ -1640,6 +1689,30 @@
     const text = chatInput.value.trim();
     if (text) sendMessage(text);
   });
+
+  if (cancelChatBtn) {
+    cancelChatBtn.addEventListener("click", () => {
+      const row = activeChatRow;
+      const socket = ws;
+      const requestId = row?.dataset.chatRequestId;
+      if (
+        !row
+        || row.dataset.chatSent !== "true"
+        || !requestId
+        || !socket
+        || socket.readyState !== WebSocket.OPEN
+      ) return;
+      setChatCancelState(true, true);
+      statusBar.classList.remove("hidden");
+      statusMessage.textContent = "Requesting that Adam stop…";
+      try {
+        socket.send(JSON.stringify({ type: "cancel_chat", request_id: requestId }));
+      } catch {
+        setChatCancelState(true);
+        statusMessage.textContent = "Could not send the stop request. Adam may still be working.";
+      }
+    });
+  }
 
   chatInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {

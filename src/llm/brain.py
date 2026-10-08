@@ -204,6 +204,25 @@ def _screenshot_delay(value, default: float) -> float:
     return min(max(delay, 0.0), 10.0)
 
 
+_MIXED_TASK_FOLLOWUP = re.compile(
+    r"(?:\b(?:and|then|after\s+that|also|plus)\s+|[.!?;,+]\s*)"
+    r"(?:please\s+)?(?:"
+    r"(?:what|which|where|when|who|why)\b|"
+    r"how\s+(?:many|much|often|long|far|late|soon)\b|"
+    r"(?:can|could|would|should|do|does|did|is|are)\s+\w|"
+    r"(?:open|launch|start|stop|restart|kill|run|execute|create|write|delete|search|"
+    r"look\s+up|read|list|count|set|change|enable|disable|remind|schedule|play|type|click|"
+    r"get|tell|report|show|check|find|inspect|calculate|compare|summari[sz]e)\b|"
+    r"(?:the\s+)?(?:number|count)\s+of\b)",
+    re.IGNORECASE,
+)
+
+
+def _has_mixed_task_followup(user_text: str) -> bool:
+    """Keep tools available when a status request has another clear ask or action."""
+    return bool(_MIXED_TASK_FOLLOWUP.search(str(user_text or "")))
+
+
 def _is_dedicated_system_status_request(user_text: str) -> bool:
     """Identify ordinary hardware-health questions covered by get_system_status."""
     text = str(user_text or "")
@@ -237,13 +256,7 @@ def _is_dedicated_system_status_request(user_text: str) -> bool:
         text,
         re.IGNORECASE,
     )
-    asks_for_another_action = re.search(
-        r"\band\s+(?:then\s+)?(?:please\s+)?"
-        r"(?:open|launch|start|stop|restart|kill|run|execute|create|write|delete|search|"
-        r"look\s+up|read|set|change|enable|disable|remind|schedule|play|type|click)\b",
-        text,
-        re.IGNORECASE,
-    )
+    asks_for_another_action = _has_mixed_task_followup(text)
     asks_about_capability = re.search(
         r"\b(?:support|supports|capable|compatible|architecture|feature)\b",
         text,
@@ -458,6 +471,8 @@ def _is_simple_status_lookup(user_text: str, *, include_processes: bool = False)
 
 
 def _filter_tools_for_system_status(available_tools: list, user_text: str) -> list:
+    if _has_mixed_task_followup(user_text):
+        return available_tools
     if (
         not _is_dedicated_system_status_request(user_text)
         and not _has_resource_status_question_cue(user_text)

@@ -38,8 +38,13 @@ class RuntimeBridge:
 
     async def handle_user_message(
         self, text: str, allowed_tools: list[str] | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError
+
+    async def cancel_user_message(self, request_id: str) -> bool:
+        """Request cancellation of one active bridge-owned chat turn."""
+        return False
 
     async def register_listener(self, callback: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
         self._listeners.add(callback)
@@ -101,10 +106,16 @@ _FRESH_DESKTOP_OBSERVATION_PROMPT = (
     "unreadable or ambiguous."
 )
 
+_EMPTY_COMPLETION_RETRY_PROMPT = (
+    "The previous model turn contained no answer and no action. Continue the current user request "
+    "using the available evidence and tools. Take an action only if it is needed to reach the "
+    "requested outcome; otherwise give a concise answer or state the blocker."
+)
+
 
 def _is_internal_orchestration_prompt(content: str) -> bool:
     """Identify the synthetic user-role prompts added by Brain between tool hops."""
-    if content == _FRESH_DESKTOP_OBSERVATION_PROMPT:
+    if content in {_FRESH_DESKTOP_OBSERVATION_PROMPT, _EMPTY_COMPLETION_RETRY_PROMPT}:
         return True
     return re.fullmatch(
         r"Tool recovery [1-3]/3: .+ failed\. "
@@ -130,6 +141,7 @@ class DaemonBridge(RuntimeBridge):
         self._lock = asyncio.Lock()
         self._event_task = None
         self._unsubscribe_events = None
+        self._active_webui_request: dict[str, Any] | None = None
         # Browser-only local quickpaths belong in the displayed transcript, not
         # in AdamBrain's model context.
         self._display_only_exchanges: list[dict[str, Any]] = []
@@ -225,6 +237,70 @@ class DaemonBridge(RuntimeBridge):
             await asyncio.gather(self._event_task, return_exceptions=True)
             self._event_task = None
 
+    def register_user_message(self, request_id: str) -> bool:
+        """Register an incoming WebUI request before its task can start running."""
+        if self._active_webui_request is not None:
+            return False
+        self._active_webui_request = {
+            "request_id": request_id,
+            "cancel_requested": False,
+            "react_task": None,
+        }
+        return True
+
+    def _release_user_message(self, request_id: str | None) -> None:
+        active = self._active_webui_request
+        if active is not None and active.get("request_id") == request_id:
+            self._active_webui_request = None
+
+    async def cancel_user_message(self, request_id: str) -> bool:
+        """Cancel only the ReAct task owned by this WebUI request."""
+        active = self._active_webui_request
+        if active is None or active.get("request_id") != request_id:
+            return False
+        react_task = active.get("react_task")
+        if react_task is not None and react_task.done():
+            return False
+
+        confirmation = getattr(self.daemon, "confirmation", None)
+        pending_action = getattr(confirmation, "pending_action", None)
+        confirmation_owned = getattr(
+            confirmation, "is_confirmation_action_owned_by", None
+        )
+        if (
+            react_task is not None
+            and callable(confirmation_owned)
+            and confirmation_owned(react_task)
+        ):
+            # A microphone answer owns this confirmation transition, or has
+            # just affirmed it and may be dispatching the action. Do not cancel
+            # its owner; the UI must report Stop rejected.
+            return False
+
+        active["cancel_requested"] = True
+        brain = getattr(self.daemon, "brain", None)
+        # Before ReAct starts, the flag is checked before dispatch and again
+        # from turn.started. Never cancel an unrelated voice task.
+        if (
+            brain is not None
+            and react_task is not None
+            and react_task is getattr(brain, "_active_react_task", None)
+        ):
+            cancel_active = getattr(brain, "cancel_active_execution", None)
+            if callable(cancel_active):
+                cancel_active()
+        # The registered task belongs to this WebUI request even if it just
+        # finished and cleared Brain's active-task pointer. The confirmation
+        # manager also checks action and task identity before clearing anything,
+        # so a microphone-owned confirmation cannot be affected.
+        if react_task is not None:
+            cancel_confirmation = getattr(
+                confirmation, "cancel_pending_confirmation_silently", None
+            )
+            if pending_action is not None and callable(cancel_confirmation):
+                await cancel_confirmation(pending_action, react_task)
+        return True
+
     async def get_status(self) -> dict[str, Any]:
         state = "UNKNOWN"
         arbiter = getattr(self.daemon, "arbiter", None)
@@ -291,8 +367,8 @@ class DaemonBridge(RuntimeBridge):
                     "reason": "Runtime lacks durable task checkpoint store (P3 gate in progress per proposed-codebase-fixes.md)",
                 },
                 "run_controls": {
-                    "available": False,
-                    "reason": "Runtime lacks safe pause/resume/stop API for long runs",
+                    "available": True,
+                    "description": "An active WebUI chat request can be stopped by its request ID. Durable background jobs do not yet have pause or resume controls.",
                 },
                 "remote_approvals": {
                     "available": False,
@@ -440,16 +516,20 @@ class DaemonBridge(RuntimeBridge):
 
     async def handle_user_message(
         self, text: str, allowed_tools: list[str] | None = None,
+        request_id: str | None = None,
     ) -> dict[str, Any]:
         text = text.strip()
         if not text:
+            self._release_user_message(request_id)
             return {"status": "error", "error": "Message cannot be empty."}
 
         brain = getattr(self.daemon, "brain", None)
         if brain is None:
+            self._release_user_message(request_id)
             return {"status": "error", "error": "Brain component not initialized."}
         execute_turn = getattr(self.daemon, "_execute_turn", None)
         if not callable(execute_turn):
+            self._release_user_message(request_id)
             return {"status": "error", "error": "Daemon turn execution is unavailable."}
 
         if allowed_tools is not None:
@@ -458,12 +538,14 @@ class DaemonBridge(RuntimeBridge):
                 or any(not isinstance(name, str) or not name.strip() for name in allowed_tools)
                 or len(set(allowed_tools)) != len(allowed_tools)
             ):
+                self._release_user_message(request_id)
                 return {
                     "status": "error",
                     "error": "allowed_tools must be a list of unique non-empty tool names.",
                 }
             get_tools = getattr(brain, "get_tools", None)
             if not callable(get_tools):
+                self._release_user_message(request_id)
                 return {"status": "error", "error": "Tool scope cannot be validated by this brain."}
             available_names = {
                 str(getattr(tool, "name", "")) for tool in get_tools()
@@ -471,6 +553,7 @@ class DaemonBridge(RuntimeBridge):
             }
             unknown_tools = [name for name in allowed_tools if name not in available_names]
             if unknown_tools:
+                self._release_user_message(request_id)
                 return {
                     "status": "error",
                     "error": f"Unknown or unavailable tool name(s): {', '.join(unknown_tools)}",
@@ -479,40 +562,91 @@ class DaemonBridge(RuntimeBridge):
         arbiter = getattr(self.daemon, "arbiter", None)
 
         async with self._lock:
+            request_state = None
+            if request_id is not None:
+                request_state = self._active_webui_request
+                if request_state is None:
+                    self.register_user_message(request_id)
+                    request_state = self._active_webui_request
+                if request_state is None or request_state.get("request_id") != request_id:
+                    return {"status": "busy", "error": "Adam is already working on a WebUI request."}
+                if request_state.get("cancel_requested"):
+                    self._active_webui_request = None
+                    return {
+                        "status": "cancelled",
+                        "response": "Stop requested before Adam began the request. Any dispatched action may have taken effect; check the current state before retrying.",
+                        "tool_calls": [],
+                    }
+
             # Check if currently busy or awaiting confirmation
             if arbiter is not None:
                 from src.arbiter.arbiter import SystemState
-                if arbiter.current_state == SystemState.AWAITING_CONFIRMATION:
-                    return {
-                        "status": "busy",
-                        "error": "Adam is currently awaiting verbal confirmation for an existing action. Please answer via microphone.",
-                    }
-                if arbiter.current_state != SystemState.IDLE_LISTENING:
+                busy_error = None
+                state_lock = getattr(arbiter, "_state_lock", None)
+                if request_state is not None and state_lock is not None:
+                    # Reserve the daemon turn atomically before memory lookup or
+                    # any other await, so a microphone turn cannot start and be
+                    # mistaken for this WebUI request during the ReAct-start gap.
+                    async with state_lock:
+                        current_state = arbiter.current_state
+                        if current_state == SystemState.AWAITING_CONFIRMATION:
+                            busy_error = "Adam is currently awaiting verbal confirmation for an existing action. Please answer via microphone."
+                        elif current_state != SystemState.IDLE_LISTENING:
+                            curr_val = getattr(current_state, "value", str(current_state))
+                            busy_error = f"Adam is currently busy with a voice interaction ({curr_val}). Please wait for it to complete."
+                        else:
+                            arbiter.current_state = SystemState.PROCESSING_REACT
+                            request_state["reservation_acquired"] = True
+                elif arbiter.current_state == SystemState.AWAITING_CONFIRMATION:
+                    busy_error = "Adam is currently awaiting verbal confirmation for an existing action. Please answer via microphone."
+                elif arbiter.current_state != SystemState.IDLE_LISTENING:
                     curr_val = getattr(arbiter.current_state, "value", str(arbiter.current_state))
+                    busy_error = f"Adam is currently busy with a voice interaction ({curr_val}). Please wait for it to complete."
+                if busy_error:
+                    if request_state is not None and self._active_webui_request is request_state:
+                        self._active_webui_request = None
                     return {
                         "status": "busy",
-                        "error": f"Adam is currently busy with a voice interaction ({curr_val}). Please wait for it to complete.",
+                        "error": busy_error,
                     }
-            await self.broadcast_state({"type": "state", "system_state": "PROCESSING_REACT"})
-
-            brain_messages_before_turn = list(brain.messages)
-            prev_len = len(brain_messages_before_turn)
-            silent_mode_action = _explicit_silent_mode_action(text)
-            if allowed_tools is not None and silent_mode_action is not None:
-                required_tool = (
-                    "enable_silent_mode"
-                    if silent_mode_action == "enable"
-                    else "disable_silent_mode"
-                )
-                if required_tool not in allowed_tools:
-                    silent_mode_action = None
-            tts = getattr(brain, "tts", None)
-            if tts is None:
-                tts = getattr(self.daemon, "tts", None)
-            previous_tts_engine = getattr(tts, "engine", None)
-            turn_events: list[dict[str, Any]] = []
-            unsubscribe_turn_events = None
             try:
+                await self.broadcast_state({"type": "state", "system_state": "PROCESSING_REACT"})
+
+                brain_messages_before_turn = list(brain.messages)
+                prev_len = len(brain_messages_before_turn)
+                silent_mode_action = _explicit_silent_mode_action(text)
+                if allowed_tools is not None and silent_mode_action is not None:
+                    required_tool = (
+                        "enable_silent_mode"
+                        if silent_mode_action == "enable"
+                        else "disable_silent_mode"
+                    )
+                    if required_tool not in allowed_tools:
+                        silent_mode_action = None
+                tts = getattr(brain, "tts", None)
+                if tts is None:
+                    tts = getattr(self.daemon, "tts", None)
+                previous_tts_engine = getattr(tts, "engine", None)
+                turn_events: list[dict[str, Any]] = []
+                unsubscribe_turn_events = None
+            except BaseException:
+                if (
+                    request_state is not None
+                    and request_state.get("reservation_acquired")
+                    and arbiter is not None
+                ):
+                    from src.arbiter.arbiter import SystemState
+                    if arbiter.current_state == SystemState.PROCESSING_REACT:
+                        await arbiter.set_state("IDLE_LISTENING")
+                self._release_user_message(request_id)
+                raise
+            try:
+                if request_state is not None and request_state.get("cancel_requested"):
+                    return {
+                        "status": "cancelled",
+                        "response": "Stop requested before Adam began the request. Any dispatched action may have taken effect; check the current state before retrying.",
+                        "tool_calls": [],
+                    }
                 # Memory retrieval integration if memory manager is active
                 mem_ctx = None
                 mem_mgr = getattr(self.daemon, "memory_manager", None)
@@ -543,6 +677,12 @@ class DaemonBridge(RuntimeBridge):
                     # evidence that this WebUI request completed.
                     if current_task is getattr(brain, "_active_react_task", None):
                         turn_events.append(event)
+                        if request_state is not None and event.get("event") == "turn.started":
+                            request_state["react_task"] = current_task
+                            if request_state.get("cancel_requested"):
+                                cancel_active = getattr(brain, "cancel_active_execution", None)
+                                if callable(cancel_active):
+                                    cancel_active()
 
                 unsubscribe_turn_events = subscribe_events(capture_current_brain_turn)
                 execute_kwargs = {"memory_context": mem_ctx}
@@ -553,6 +693,14 @@ class DaemonBridge(RuntimeBridge):
                         execute_kwargs["memory_context_resolved"] = True
                 except (TypeError, ValueError):
                     pass
+                # A stop can arrive while memory retrieval is still running.
+                # Check again at the last point before handing control to Adam.
+                if request_state is not None and request_state.get("cancel_requested"):
+                    return {
+                        "status": "cancelled",
+                        "response": "Stop requested before execution. Any desktop action already sent may have taken effect; check the current screen before retrying.",
+                        "tool_calls": [],
+                    }
                 if allowed_tools is None:
                     turn_response = await execute_turn(text, **execute_kwargs)
                 else:
@@ -581,6 +729,16 @@ class DaemonBridge(RuntimeBridge):
 
                 if not final_response:
                     final_response = fallback_response
+
+                # ReAct may have produced partial text before a stop landed,
+                # including while TTS was finishing. A stop accepted for this
+                # request always gets an explicit cancelled result.
+                if request_state is not None and request_state.get("cancel_requested"):
+                    return {
+                        "status": "cancelled",
+                        "response": "Stop requested. Any dispatched action may have taken effect; check the current state before retrying.",
+                        "tool_calls": tool_calls_executed,
+                    }
 
                 if (
                     not str(final_response or "").strip()
@@ -636,6 +794,17 @@ class DaemonBridge(RuntimeBridge):
             finally:
                 if unsubscribe_turn_events is not None:
                     unsubscribe_turn_events()
+                if request_state is not None and self._active_webui_request is request_state:
+                    self._active_webui_request = None
+                if (
+                    request_state is not None
+                    and request_state.get("reservation_acquired")
+                    and request_state.get("react_task") is None
+                    and arbiter is not None
+                ):
+                    from src.arbiter.arbiter import SystemState
+                    if arbiter.current_state == SystemState.PROCESSING_REACT:
+                        await arbiter.set_state("IDLE_LISTENING")
                 if arbiter is not None:
                     curr_state = getattr(arbiter.current_state, "value", str(arbiter.current_state))
                 else:

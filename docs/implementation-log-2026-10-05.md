@@ -1527,3 +1527,33 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - Restart returned silent Adam to `IDLE_LISTENING`. A live localhost `/api/chat` request using a plural docs/files prompt called `find_files` and `read_file`, then returned the requested title and first heading correctly. `/api/history` contained only actual user, final assistant, and tool rows. WebUI GET returned 200; status was idle and TTS Silent.
 - A direct helper check confirmed both exact injected prompt forms are filtered and an ordinary user sentence is preserved.
 - `py_compile` and `git diff --check` passed. No pytest was run.
+
+## Checkpoint 213 — mixed file and system request, multiline history, and Stop
+
+- A live WebUI mixed request initially reached Brain with only `get_system_status` available: the status-only tool filter missed the follow-up phrase “Then get,” so `read_file` was omitted. Brain called system status, then made three empty-completion recovery calls and returned a generic failure. The routing fix preserves the full tool set for an explicit mixed follow-up; empty completions now receive bounded recovery turns that continue the original request and remain hidden from displayed history.
+- After the fix, a live WebUI request against a disposable local fixture returned exactly:
+
+  ```text
+  First line: ITEM: olive
+  Bytes: 75
+  System: 32 logical CPU cores; memory 38% in use.
+  ```
+
+  A second post-fix live turn also returned all three exact lines. The WebUI history contained the actual user prompt, tool activity, and complete assistant answer without internal recovery prompts.
+- A separate live Stop check used a read-only request to list expected fixture data. The WebUI Stop cancelled ReAct in **69.4 ms**; no tool ran, the UI reported cancellation with the dispatched-action caveat, and final daemon state was idle. TTS was Silent throughout.
+- Live WebUI checks ran through headless Playwright. The existing Edge page was inspected only; no regular Edge profile interaction is claimed. Verification was limited to `py_compile`, `node --check`, and `git diff --check`; no pytest was run.
+
+## Checkpoint 214 — canonical WebUI history refresh and confirmation-safe Stop
+
+- The blank/stale transcript in the existing Edge page came from `chat_response` being delivered only to the WebSocket that submitted the request, while shared tool events were broadcast to connected clients. Authenticated `/api/history` already contained the complete response. The sidecar now broadcasts a data-free `history_changed` event after completion, and clients fetch the authenticated canonical history; the event itself carries no transcript content.
+- The internal empty-completion recovery prompt matcher now matches Brain's exact prompt wording, keeping recovery turns out of displayed history. WebUI Stop declines cancellation while a microphone-owned confirmation is being evaluated or has been affirmed and handed off.
+- In a live real-model WebUI run using temporary headless Playwright pages, the prompt requested fresh system status plus the byte count and first line of a generated fixture. `run_bash_command` and `get_system_status` badges appeared. In **10.369 s**, both requester and observer rendered exactly:
+
+  ```text
+  First line: ITEM: olive
+  Bytes: 75
+  System: 32 logical CPU cores; memory 38% in use.
+  ```
+
+  The observer also showed the user prompt; no JavaScript errors were observed. TTS was Silent. This does not claim interaction with the regular Edge profile. All displays were restored to DPMS off.
+- `py_compile`, `node --check`, and `git diff --check` passed. No unit tests or pytest were run.

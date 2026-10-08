@@ -10,6 +10,7 @@ import ipaddress
 import json
 import logging
 import hashlib
+import inspect
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -184,27 +185,49 @@ class SidecarServer:
         self.bridge = bridge
         self.active_websockets: set[web.WebSocketResponse] = set()
         self.chat_tasks: set[asyncio.Task] = set()
+        self.active_chat_request_id: str | None = None
+        self.active_chat_ws: web.WebSocketResponse | None = None
 
-    async def _deliver_chat(self, ws, user_text, allowed_tools=None):
+    async def _deliver_chat(self, ws, user_text, request_id, allowed_tools=None):
         # Keep receiving heartbeats while the daemon owns the running turn.
         # A browser disconnect must not replay or cancel desktop actions.
         try:
-            if allowed_tools is None:
-                result = await self.bridge.handle_user_message(user_text)
-            else:
-                result = await self.bridge.handle_user_message(user_text, allowed_tools=allowed_tools)
-        except Exception:
-            logger.exception("WebUI chat failed")
-            result = {"status": "error", "error": "The assistant turn failed."}
-        if not ws.closed:
             try:
-                await ws.send_json({"type": "chat_response", "user_message": user_text, "result": result})
-            except (ConnectionError, RuntimeError):
-                logger.debug("Chat finished after browser disconnected")
-        try:
-            await self.bridge.broadcast_state({"type": "status", **await self.bridge.get_status()})
-        except Exception:
-            logger.debug("Could not broadcast status after chat completion", exc_info=True)
+                handle_message = self.bridge.handle_user_message
+                try:
+                    supports_request_id = "request_id" in inspect.signature(handle_message).parameters
+                except (TypeError, ValueError):
+                    supports_request_id = False
+                kwargs = {}
+                if allowed_tools is not None:
+                    kwargs["allowed_tools"] = allowed_tools
+                if supports_request_id:
+                    kwargs["request_id"] = request_id
+                result = await handle_message(user_text, **kwargs)
+            except Exception:
+                logger.exception("WebUI chat failed")
+                result = {"status": "error", "error": "The assistant turn failed."}
+            if not ws.closed:
+                try:
+                    await ws.send_json({
+                        "type": "chat_response", "request_id": request_id,
+                        "user_message": user_text, "result": result,
+                    })
+                except (ConnectionError, RuntimeError):
+                    logger.debug("Chat finished after browser disconnected")
+            # Conversation history is shared by the daemon across WebSocket
+            # clients. Tell every connected UI to fetch the canonical snapshot
+            # after this request has been committed, including clients that did
+            # not originate the chat.
+            await self.broadcast({"type": "history_changed"})
+            try:
+                await self.bridge.broadcast_state({"type": "status", **await self.bridge.get_status()})
+            except Exception:
+                logger.debug("Could not broadcast status after chat completion", exc_info=True)
+        finally:
+            if self.active_chat_request_id == request_id and self.active_chat_ws is ws:
+                self.active_chat_request_id = None
+                self.active_chat_ws = None
 
     async def shutdown(self, app):
         for ws in list(self.active_websockets):
@@ -331,6 +354,30 @@ class SidecarServer:
                         status_data = await self.bridge.get_status()
                         status_data["type"] = "status"
                         await ws.send_json(status_data)
+                    elif msg_type == "cancel_chat":
+                        request_id = data.get("request_id")
+                        if (
+                            not isinstance(request_id, str)
+                            or not request_id.strip()
+                            or len(request_id) > 128
+                        ):
+                            await ws.send_json({
+                                "type": "cancel_ack", "request_id": request_id,
+                                "cancelled": False, "error": "A valid request_id is required.",
+                            })
+                            continue
+                        accepted = False
+                        if request_id == self.active_chat_request_id and ws is self.active_chat_ws:
+                            cancel_message = getattr(self.bridge, "cancel_user_message", None)
+                            if callable(cancel_message):
+                                try:
+                                    accepted = bool(await cancel_message(request_id))
+                                except Exception:
+                                    logger.exception("WebUI chat cancellation failed")
+                        await ws.send_json({
+                            "type": "cancel_ack", "request_id": request_id,
+                            "cancelled": accepted,
+                        })
                     elif msg_type == "chat":
                         user_text = str(data.get("message", "")).strip()
                         if not user_text:
@@ -347,12 +394,29 @@ class SidecarServer:
                                 "error": "allowed_tools must be a list of unique non-empty tool names",
                             })
                             continue
-                        if self.chat_tasks:
-                            await ws.send_json({"type": "chat_response", "user_message": user_text,
+                        request_id = data.get("request_id")
+                        if (
+                            not isinstance(request_id, str)
+                            or not request_id.strip()
+                            or len(request_id) > 128
+                        ):
+                            await ws.send_json({"type": "error", "error": "A valid request_id is required for chat."})
+                            continue
+                        if self.chat_tasks or self.active_chat_request_id is not None:
+                            await ws.send_json({"type": "chat_response", "request_id": request_id,
+                                                "user_message": user_text,
                                                 "result": {"status": "busy", "error": "Adam is already working on a request."}})
                             continue
+                        register_message = getattr(self.bridge, "register_user_message", None)
+                        if callable(register_message) and not register_message(request_id):
+                            await ws.send_json({"type": "chat_response", "request_id": request_id,
+                                                "user_message": user_text,
+                                                "result": {"status": "busy", "error": "Adam is already working on a request."}})
+                            continue
+                        self.active_chat_request_id = request_id
+                        self.active_chat_ws = ws
                         chat_task = asyncio.create_task(
-                            self._deliver_chat(ws, user_text, allowed_tools=allowed_tools)
+                            self._deliver_chat(ws, user_text, request_id, allowed_tools=allowed_tools)
                         )
                         self.chat_tasks.add(chat_task)
                         chat_task.add_done_callback(self.chat_tasks.discard)

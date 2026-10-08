@@ -70,10 +70,17 @@ class TriStateConfirmationManager:
         self.pending_action = None
         self.last_confirmed_action = None
         self.watchdog_task = None
+        self._pending_action_task = None
+        self._confirmation_response_active = False
+        self._confirmation_response_action = None
+        self._confirmation_response_owner_task = None
+        self._affirmed_action_owner_task = None
 
     async def request_confirmation(self, action_payload: dict, prompt_text: str):
         self.last_confirmed_action = None
         self.pending_action = action_payload
+        self._pending_action_task = asyncio.current_task()
+        self._affirmed_action_owner_task = None
         await self.arbiter.set_state("AWAITING_CONFIRMATION")
 
         # Flash desktop notification with full technical details (hex addresses, command, process lists)
@@ -104,6 +111,58 @@ class TriStateConfirmationManager:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
+    def is_confirmation_action_owned_by(self, owner_task: asyncio.Task) -> bool:
+        """Check whether a microphone confirmation transition belongs to this task."""
+        return bool(
+            (
+                self._confirmation_response_active
+                and self._confirmation_response_action is not None
+                and self._confirmation_response_owner_task is owner_task
+            )
+            or (
+                self.pending_action is None
+                and self._affirmed_action_owner_task is owner_task
+            )
+        )
+
+    async def cancel_pending_confirmation_silently(
+        self, expected_action: dict, owner_task: asyncio.Task
+    ) -> bool:
+        """Clear one known pending action without speaking its normal cancellation reply."""
+        if (
+            expected_action is None
+            or self.pending_action is not expected_action
+            or self._pending_action_task is not owner_task
+            or self._confirmation_response_active
+        ):
+            return False
+
+        # Clear ownership before yielding so the watchdog cannot treat this
+        # confirmation as pending while its cancellation is being awaited.
+        self.pending_action = None
+        self.last_confirmed_action = None
+        self._pending_action_task = None
+        self._affirmed_action_owner_task = None
+        await self._stop_watchdog()
+
+        # A WebUI stop may race the confirmation state transition. Restore idle
+        # only if this action is still the reason the daemon awaits confirmation.
+        from src.arbiter.arbiter import SystemState
+
+        state_lock = getattr(self.arbiter, "_state_lock", None)
+        if state_lock is None:
+            if self.arbiter.current_state == SystemState.AWAITING_CONFIRMATION:
+                await self.arbiter.set_state("IDLE_LISTENING")
+        else:
+            should_drain = False
+            async with state_lock:
+                if self.arbiter.current_state == SystemState.AWAITING_CONFIRMATION:
+                    self.arbiter.current_state = SystemState.IDLE_LISTENING
+                    should_drain = bool(self.arbiter.notification_queue)
+            if should_drain:
+                asyncio.create_task(self.arbiter._drain_notifications())
+        return True
+
     async def _expiry_watchdog(self, duration: float):
         """Active timer that breaks state deadlocks if the user says nothing."""
         try:
@@ -118,6 +177,21 @@ class TriStateConfirmationManager:
         if not self.pending_action:
             return "EXPIRED", None
 
+        # Mark before the first await so a concurrent WebUI stop cannot clear a
+        # confirmation while a microphone answer is being evaluated.
+        self._confirmation_response_active = True
+        self._confirmation_response_action = self.pending_action
+        self._confirmation_response_owner_task = self._pending_action_task
+        try:
+            return await self._evaluate_response(user_transcript)
+        finally:
+            self._confirmation_response_active = False
+            self._confirmation_response_action = None
+            self._confirmation_response_owner_task = None
+
+    async def _evaluate_response(self, user_transcript: str) -> tuple[str, str | None]:
+        """Evaluate a response while the pending confirmation is reserved."""
+
         text = user_transcript.strip()
 
         # 1. Negative triggers evaluated FIRST (prevents 'no, do not do it' being affirmed by 'do it')
@@ -125,6 +199,8 @@ class TriStateConfirmationManager:
             await self._stop_watchdog()
             self.pending_action = None
             self.last_confirmed_action = None
+            self._pending_action_task = None
+            self._affirmed_action_owner_task = None
             await self._cancel_confirmation("Action cancelled.")
 
             # Check if user chained a new command after cancellation (e.g. "Wait, stop that, what time is it in Tokyo?")
@@ -135,7 +211,9 @@ class TriStateConfirmationManager:
         if self.AFFIRM_REGEX.search(text):
             await self._stop_watchdog()
             self.last_confirmed_action = self.pending_action
+            self._affirmed_action_owner_task = self._pending_action_task
             self.pending_action = None
+            self._pending_action_task = None
             await self.arbiter.set_state("PROCESSING_REACT")
             return "AFFIRM", None
 
@@ -155,6 +233,8 @@ class TriStateConfirmationManager:
             await self._stop_watchdog()
             self.pending_action = None
             self.last_confirmed_action = None
+            self._pending_action_task = None
+            self._affirmed_action_owner_task = None
             print(f"[Confirmation] User interrupted with new command: '{text}'", flush=True)
             await self.arbiter.set_state("IDLE_LISTENING")
             return "NEW_COMMAND", text
@@ -167,6 +247,8 @@ class TriStateConfirmationManager:
     async def _cancel_confirmation(self, message: str):
         self.pending_action = None
         self.last_confirmed_action = None
+        self._pending_action_task = None
+        self._affirmed_action_owner_task = None
         print(f"[Adam] Response: {message}", flush=True)
         await self.tts.speak_async(message)
         await self.arbiter.set_state("IDLE_LISTENING")

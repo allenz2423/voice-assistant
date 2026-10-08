@@ -1038,6 +1038,33 @@ html, body {
   display: none !important;
 }
 
+.btn-cancel-chat {
+  margin-left: auto;
+  padding: 5px 11px;
+  background: var(--breeze-red-soft);
+  border: 1px solid var(--breeze-red-border);
+  color: #fca5a5;
+  flex-shrink: 0;
+}
+
+.btn-cancel-chat:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: var(--breeze-red);
+}
+
+.btn-cancel-chat:disabled {
+  opacity: 0.65;
+  cursor: wait;
+}
+
+.btn-cancel-chat[hidden] {
+  display: none;
+}
+
+@media (prefers-color-scheme: light) {
+  .btn-cancel-chat { color: #991b1b; }
+}
+
 .spinner {
   width: 15px;
   height: 15px;
