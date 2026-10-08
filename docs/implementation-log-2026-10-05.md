@@ -1062,3 +1062,8 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - The system CPU metric uses the whole-host aggregate from `/proc/stat` and computes `(Δtotal−Δidle)/Δtotal`; guest fields are excluded, and idle includes iowait. This is distinct from per-process `ps %CPU`. The exact `cpu usage` quickpath returns only a concise CPU sentence.
 - The observed **19/20%** variation came from separate short snapshots and integer rounding while other probes can stretch the sample interval. The audit found no concrete math bug and made no source change. No tests or live calls were run; no config or service logs were read.
+
+## Checkpoint 143 — filtered startup confirms silent mode
+
+- A filtered-prefix-only verification of the current user `adam.service` startup found the latest allowed matching lines: **2026-10-08 08:22:21.914134 EDT** `[TTS] Silent mode` and **08:22:22.742018 EDT** `[Adam] System is online and listening`. Current startup therefore confirms silent mode. The strict filter emitted no other log content.
+- No config was read, and no GUI, provider, or microphone request was made.
