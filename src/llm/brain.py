@@ -2312,7 +2312,12 @@ class AdamBrain:
             return draft
         return revised
 
-    async def process_user_utterance(self, user_text: str, memory_context: str | None = None):
+    async def process_user_utterance(
+        self,
+        user_text: str,
+        memory_context: str | None = None,
+        allowed_tools: list[str] | None = None,
+    ):
         """Processes a transcribed user prompt through the autonomous ReAct cycle."""
         # The WebUI needs the actual current-turn boundary after history trimming.
         self._turn_message_start = len(self.messages)
@@ -2320,12 +2325,16 @@ class AdamBrain:
         self._active_react_task = asyncio.current_task()
         previous_skill_authorization = self._skill_creation_authorized
         self._skill_creation_authorized = _explicit_skill_creation_request(user_text)
+        previous_active_tool_scope = getattr(self, "_active_allowed_tools", None)
+        self._active_allowed_tools = list(allowed_tools) if allowed_tools is not None else None
         turn_span = new_span_id()
         emit_event("turn.started", span_id=turn_span, component="brain", status="started")
         turn_status = "ok"
         try:
             with timing_operation("brain.turn"):
-                return await self._process_user_utterance_impl(user_text, memory_context=memory_context)
+                return await self._process_user_utterance_impl(
+                    user_text, memory_context=memory_context, allowed_tools=allowed_tools
+                )
         except asyncio.CancelledError:
             turn_status = "cancelled"
             self._is_interrupted = True
@@ -2339,6 +2348,13 @@ class AdamBrain:
             browser_navigator = getattr(self, "browser_navigator", None)
             if (
                 browser_navigator is not None
+                and (
+                    allowed_tools is None
+                    or (
+                        isinstance(allowed_tools, list)
+                        and "browser_navigation" in allowed_tools
+                    )
+                )
                 and getattr(browser_cfg, "headless", False)
                 and _is_read_only_adam_browser_request(user_text)
             ):
@@ -2367,9 +2383,36 @@ class AdamBrain:
             self._active_react_task = None
             self._active_subprocess = None
             self._skill_creation_authorized = previous_skill_authorization
+            self._active_allowed_tools = previous_active_tool_scope
 
-    async def _process_user_utterance_impl(self, user_text: str, memory_context: str | None = None):
+    async def _process_user_utterance_impl(
+        self,
+        user_text: str,
+        memory_context: str | None = None,
+        allowed_tools: list[str] | None = None,
+    ):
         print(f"\n[Adam] User said: \"{user_text}\"")
+
+        tool_scope = None
+        if allowed_tools is not None:
+            if (
+                not isinstance(allowed_tools, list)
+                or any(not isinstance(name, str) or not name.strip() for name in allowed_tools)
+                or len(set(allowed_tools)) != len(allowed_tools)
+            ):
+                raise ValueError("allowed_tools must be a list of unique non-empty tool names")
+            tool_scope = set(allowed_tools)
+            available_names = {tool.name for tool in self.get_tools()}
+            unknown_tools = sorted(tool_scope - available_names)
+            if unknown_tools:
+                raise ValueError(
+                    f"Unknown or unavailable tool name(s): {', '.join(unknown_tools)}"
+                )
+        desktop_observation_allowed = tool_scope is None or bool(
+            tool_scope.intersection({
+                "computer_control", "capture_screenshot", "observe_desktop",
+            })
+        )
 
         # Mode changes must not depend on the LLM choosing the right tool. Handle
         # explicit requests deterministically before the general agent loop.
@@ -2394,7 +2437,17 @@ class AdamBrain:
             mode_text,
             re.IGNORECASE,
         )
-        if not negated_mode_request and (disable_silent or enable_silent):
+        silent_mode_tool_allowed = (
+            tool_scope is None
+            or (
+                "disable_silent_mode" if disable_silent else "enable_silent_mode"
+            ) in tool_scope
+        )
+        if (
+            not negated_mode_request
+            and (disable_silent or enable_silent)
+            and silent_mode_tool_allowed
+        ):
             if disable_silent:
                 restore_engine = str(
                     getattr(self.config.tts, "silent_restore_engine", "kokoro")
@@ -2422,7 +2475,7 @@ class AdamBrain:
         if _is_explicit_screen_read_request(user_text) and not (
             getattr(self, "browser_navigator", None) is not None
             and _explicit_adam_browser_request(user_text)
-        ):
+        ) and desktop_observation_allowed:
             self._compact_history_for_new_turn()
             if self.screen_ocr is None:
                 response_text = "Screen text reading is unavailable because OCR is not configured."
@@ -2556,6 +2609,7 @@ class AdamBrain:
         initial_browser_observation = ""
         if (
             self.browser_navigator is not None
+            and (tool_scope is None or "browser_navigation" in tool_scope)
             and _explicit_adam_browser_request(user_text)
         ):
             browser_span = new_span_id()
@@ -2597,6 +2651,7 @@ class AdamBrain:
             and not has_image
             and not memory_only_query
             and not self.ocr_only
+            and desktop_observation_allowed
             and getattr(self.computer_controller, "available", False)
         ):
             # Give a single-purpose GUI task a fresh, action-capable screen state
@@ -2641,7 +2696,9 @@ class AdamBrain:
                 )
         # A memory-only answer needs the retrieved facts, not desktop or clock snapshots.
         desktop_state = (
-            "" if compact_conversation or memory_only_query else get_open_windows_prompt_context()
+            ""
+            if compact_conversation or memory_only_query or not desktop_observation_allowed
+            else get_open_windows_prompt_context()
         )
         if memory_context:
             memory_note = (
@@ -2714,6 +2771,7 @@ class AdamBrain:
         readback_screenshot_is_trusted = False
         desktop_no_progress_repeats = 0
         desktop_no_progress_reason: str | None = None
+        desktop_no_progress_synthesis_allowed = False
         desktop_unchanged_screen_count = 0
         unverified_application_launches: set[str] = set()
         all_executed_tool_calls: list[dict] = []
@@ -2732,6 +2790,8 @@ class AdamBrain:
                 break
             has_image = any(bool(message.get("images")) for message in self.messages)
             available_tools = _filter_tools_for_system_status(self.get_tools(), user_text)
+            if tool_scope is not None:
+                available_tools = [tool for tool in available_tools if tool.name in tool_scope]
             if (
                 _is_dedicated_system_status_request(user_text)
                 and any(call["name"] == "get_system_status" for call in all_executed_tool_calls)
@@ -3275,6 +3335,7 @@ class AdamBrain:
                                             "The same desktop action left the screen unchanged. "
                                             "Further identical input was stopped to prevent a no-progress loop."
                                         )
+                                        desktop_no_progress_synthesis_allowed = True
                                         resource_limit_reached = True
                                         tool_output += " " + desktop_no_progress_reason
                                         print(f"[Adam] {desktop_no_progress_reason}", flush=True)
@@ -3350,7 +3411,7 @@ class AdamBrain:
                 # choose/play content there. Navigation alone cannot satisfy that.
                 browser_task_followup = name == "open_in_browser" and tool_status in {"ok", "returned"}
                 app_focus_succeeded = name in {"focus_window", "launch_application"} and tool_status in {"ok", "returned"}
-                if browser_task_followup or app_focus_succeeded:
+                if (browser_task_followup or app_focus_succeeded) and desktop_observation_allowed:
                     take_screenshot = browser_task_followup or (
                         isinstance(args, dict) and args.get("screenshot") is True
                     )
@@ -3636,6 +3697,41 @@ class AdamBrain:
                     "I reached the per-request interaction limit before confirming all requested outcomes. "
                     "The task may be partially complete; please ask me to continue from the current state."
                 )
+                if desktop_no_progress_synthesis_allowed:
+                    if self._pending_screenshot is not None:
+                        if readback_screenshot_is_trusted:
+                            self.messages.append({
+                                "role": "user",
+                                "content": (
+                                    "Fresh trusted desktop observation after the last action. The no-progress "
+                                    "circuit breaker has stopped further desktop input for this request. "
+                                    "Use this observation and the prior tool results to answer only what the "
+                                    "evidence supports."
+                                ),
+                                "images": [self._pending_screenshot],
+                            })
+                        self._pending_screenshot = None
+                    self.messages.append({
+                        "role": "user",
+                        "content": (
+                            "Desktop input is stopped for this request. Do not call tools or request more "
+                            "desktop actions. Give a concise final answer to the user's original request "
+                            "using only the conversation and observations above. If the requested answer "
+                            "is not supported by the evidence, state what remains unclear."
+                        ),
+                    })
+                    try:
+                        summary_response = await self._await_with_progress(
+                            self.llm_client.chat(self.messages, tools=[])
+                        )
+                        synthesized_response = str(summary_response.get("content") or "").strip()
+                        if synthesized_response:
+                            response_text = synthesized_response
+                    except Exception as exc:
+                        print(
+                            f"[Adam] No-progress final synthesis failed: {type(exc).__name__}: {exc}",
+                            flush=True,
+                        )
                 print(f"[Adam] Response: {response_text}", flush=True)
                 self.messages.append({"role": "assistant", "content": response_text})
                 await self._speak_with_role(response_text, "final")
@@ -3686,6 +3782,13 @@ class AdamBrain:
             self.messages.append({"role": "assistant", "content": final_content})
             with timed_stage("brain.tts_speak"):
                 await self._speak_with_role(final_content, "final")
+
+    def _confirmation_action_with_scope(self, action_payload: dict) -> dict:
+        """Bind a pending confirmation to the tool scope that created it."""
+        allowed_tools = getattr(self, "_active_allowed_tools", None)
+        if allowed_tools is not None:
+            action_payload["_allowed_tools"] = list(allowed_tools)
+        return action_payload
 
     async def _execute_tool(self, name: str, args: dict) -> str | ComputerControlResult:
         """Executes the requested tool action."""
@@ -3904,6 +4007,7 @@ class AdamBrain:
                     goal=getattr(self, "_recent_computer_goal", "") or "",
                     expected_application=args.get("expected_application"),
                     cancel_event=cancel_event,
+                    require_scroll_coordinates=True,
                 ))
                 try:
                     result = await asyncio.shield(worker)
@@ -3932,6 +4036,7 @@ class AdamBrain:
                     include_visual_grounding=args.get("include_visual_grounding"),
                     goal=getattr(self, "_recent_computer_goal", "") or "",
                     expected_application=args.get("expected_application"),
+                    require_scroll_coordinates=True,
                 )
             # Keep only the latest visual state in history. Older OCR/tool text
             # remains available, while obsolete image payloads cannot compound.
@@ -4322,12 +4427,12 @@ class AdamBrain:
             summary = args.get("summary", "")
             details = args.get("details", "")
             cmd = args.get("command", "")
-            await self.confirmation.request_confirmation({
+            await self.confirmation.request_confirmation(self._confirmation_action_with_scope({
                 "type": "command" if cmd else "general",
                 "summary": summary,
                 "details": details,
                 "command": cmd
-            }, question)
+            }), question)
             return "Confirmation requested from user. Execution is paused waiting for user's verbal confirmation."
 
         elif name == "show_desktop_notification":
@@ -4441,13 +4546,13 @@ class AdamBrain:
 
         # Ask confirmation for multi-file transcoding
         await self.confirmation.request_confirmation(
-            action_payload={
+            action_payload=self._confirmation_action_with_scope({
                 "type": "batch_transcode",
                 "files": [str(p) for p in matches],
                 "encoder_args": encoder_args,
                 "output_dir": str(output_dir),
                 "summary": f"Transcoding {count} files to {target_codec}"
-            },
+            }),
             prompt_text=prompt_text
         )
 
@@ -4645,11 +4750,11 @@ class AdamBrain:
         summary = f"Organize {total_files} files into {len(groups)} folders in {directory.name}"
 
         await self.confirmation.request_confirmation(
-            action_payload={
+            action_payload=self._confirmation_action_with_scope({
                 "type": "organize_files",
                 "plan": plan_dict,
                 "summary": summary
-            },
+            }),
             prompt_text=question
         )
         return "Confirmation requested from user. Execution is paused waiting for user's verbal confirmation."

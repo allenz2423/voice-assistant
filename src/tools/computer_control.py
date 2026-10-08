@@ -1239,6 +1239,7 @@ class ComputerController:
         goal: str = "",
         expected_application: str | None = None,
         cancel_event: threading.Event | None = None,
+        require_scroll_coordinates: bool = False,
     ) -> ComputerControlResult:
         """Execute a model-selected sequence while refusing to reuse old geometry."""
         if not isinstance(actions, list) or not actions:
@@ -1248,6 +1249,41 @@ class ComputerController:
                 f"Sequence has {len(actions)} actions; the current per-call limit is {self.max_sequence_actions}.",
                 status="invalid_input",
             )
+        if require_scroll_coordinates:
+            has_scroll = any(
+                isinstance(step, dict)
+                and str(step.get("action", "")).strip().lower() == "scroll"
+                for step in actions
+            )
+            if has_scroll:
+                if not self.available:
+                    return ComputerControlResult(
+                        f"Computer input is unavailable for the detected {self.backend} session.",
+                        status="unavailable",
+                        dispatched=False,
+                    )
+                try:
+                    self._validate_snapshot(snapshot_id)
+                except ValueError as exc:
+                    return ComputerControlResult(
+                        f"Sequence stopped: {exc}", status="invalid_input", dispatched=False
+                    )
+                except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+                    return ComputerControlResult(
+                        f"Sequence stopped: {exc}", status="failed", dispatched=False
+                    )
+            for index, step in enumerate(actions):
+                if (
+                    isinstance(step, dict)
+                    and str(step.get("action", "")).strip().lower() == "scroll"
+                    and (step.get("x") is None or step.get("y") is None)
+                ):
+                    return ComputerControlResult(
+                        f"Sequence action {index + 1} scroll requires both x and y coordinates "
+                        "from the latest screenshot, placed over the scrollable content.",
+                        status="invalid_input",
+                        dispatched=False,
+                    )
         sequence_text_length = 0
         for index, step in enumerate(actions):
             if not isinstance(step, dict):
@@ -1422,6 +1458,7 @@ class ComputerController:
                 screenshot_delay_seconds=screenshot_delay_seconds,
                 goal=goal,
                 expected_application=expected_application,
+                require_scroll_coordinates=require_scroll_coordinates,
                 **kwargs,
             )
             if latest.dispatched is True:
@@ -1484,6 +1521,7 @@ class ComputerController:
         goal: str = "",
         expected_application: str | None = None,
         readiness_timeout_seconds: float | None = 15.0,
+        require_scroll_coordinates: bool = False,
     ) -> ComputerControlResult:
         if not self.enabled:
             return ComputerControlResult(
@@ -1564,6 +1602,11 @@ class ComputerController:
             if not self.available:
                 raise RuntimeError(f"Computer input is unavailable for the detected {self.backend} session.")
             self._validate_snapshot(snapshot_id)
+            if require_scroll_coordinates and action == "scroll" and (x is None or y is None):
+                raise ValueError(
+                    "Scroll requires both x and y coordinates from the latest screenshot, "
+                    "placed over the scrollable content."
+                )
             if action == "click":
                 internal_ocr_target = False
                 if self.ocr_only and ocr_region_ref.strip():

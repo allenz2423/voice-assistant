@@ -72,6 +72,7 @@ class TriStateConfirmationManager:
         self.watchdog_task = None
 
     async def request_confirmation(self, action_payload: dict, prompt_text: str):
+        self.last_confirmed_action = None
         self.pending_action = action_payload
         await self.arbiter.set_state("AWAITING_CONFIRMATION")
 
@@ -123,6 +124,7 @@ class TriStateConfirmationManager:
         if self.DENY_REGEX.search(text):
             await self._stop_watchdog()
             self.pending_action = None
+            self.last_confirmed_action = None
             await self._cancel_confirmation("Action cancelled.")
 
             # Check if user chained a new command after cancellation (e.g. "Wait, stop that, what time is it in Tokyo?")
@@ -152,6 +154,7 @@ class TriStateConfirmationManager:
         if len(words) >= 3:
             await self._stop_watchdog()
             self.pending_action = None
+            self.last_confirmed_action = None
             print(f"[Confirmation] User interrupted with new command: '{text}'", flush=True)
             await self.arbiter.set_state("IDLE_LISTENING")
             return "NEW_COMMAND", text
@@ -163,6 +166,7 @@ class TriStateConfirmationManager:
 
     async def _cancel_confirmation(self, message: str):
         self.pending_action = None
+        self.last_confirmed_action = None
         print(f"[Adam] Response: {message}", flush=True)
         await self.tts.speak_async(message)
         await self.arbiter.set_state("IDLE_LISTENING")

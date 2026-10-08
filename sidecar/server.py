@@ -185,11 +185,14 @@ class SidecarServer:
         self.active_websockets: set[web.WebSocketResponse] = set()
         self.chat_tasks: set[asyncio.Task] = set()
 
-    async def _deliver_chat(self, ws, user_text):
+    async def _deliver_chat(self, ws, user_text, allowed_tools=None):
         # Keep receiving heartbeats while the daemon owns the running turn.
         # A browser disconnect must not replay or cancel desktop actions.
         try:
-            result = await self.bridge.handle_user_message(user_text)
+            if allowed_tools is None:
+                result = await self.bridge.handle_user_message(user_text)
+            else:
+                result = await self.bridge.handle_user_message(user_text, allowed_tools=allowed_tools)
         except Exception:
             logger.exception("WebUI chat failed")
             result = {"status": "error", "error": "The assistant turn failed."}
@@ -269,7 +272,20 @@ class SidecarServer:
         if not message:
             return web.json_response({"error": "Message text is required"}, status=400)
 
-        result = await self.bridge.handle_user_message(message)
+        allowed_tools = body.get("allowed_tools")
+        if "allowed_tools" in body and (
+            not isinstance(allowed_tools, list)
+            or any(not isinstance(name, str) or not name.strip() for name in allowed_tools)
+            or len(set(allowed_tools)) != len(allowed_tools)
+        ):
+            return web.json_response({
+                "error": "allowed_tools must be a list of unique non-empty tool names"
+            }, status=400)
+
+        if allowed_tools is None:
+            result = await self.bridge.handle_user_message(message)
+        else:
+            result = await self.bridge.handle_user_message(message, allowed_tools=allowed_tools)
         status_code = 200 if result.get("status") in ("completed", "busy") else 500
         return web.json_response(result, status=status_code)
 
@@ -313,11 +329,24 @@ class SidecarServer:
                         if not user_text:
                             await ws.send_json({"type": "error", "error": "Empty message"})
                             continue
+                        allowed_tools = data.get("allowed_tools")
+                        if "allowed_tools" in data and (
+                            not isinstance(allowed_tools, list)
+                            or any(not isinstance(name, str) or not name.strip() for name in allowed_tools)
+                            or len(set(allowed_tools)) != len(allowed_tools)
+                        ):
+                            await ws.send_json({
+                                "type": "error",
+                                "error": "allowed_tools must be a list of unique non-empty tool names",
+                            })
+                            continue
                         if self.chat_tasks:
                             await ws.send_json({"type": "chat_response", "user_message": user_text,
                                                 "result": {"status": "busy", "error": "Adam is already working on a request."}})
                             continue
-                        chat_task = asyncio.create_task(self._deliver_chat(ws, user_text))
+                        chat_task = asyncio.create_task(
+                            self._deliver_chat(ws, user_text, allowed_tools=allowed_tools)
+                        )
                         self.chat_tasks.add(chat_task)
                         chat_task.add_done_callback(self.chat_tasks.discard)
                     else:

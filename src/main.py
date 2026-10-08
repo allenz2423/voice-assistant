@@ -989,8 +989,34 @@ class AdamDaemon:
 
         return on_partial
 
-    async def _execute_confirmed_command(self, cmd: str, summary: str):
+    async def _execute_confirmed_command(
+        self, cmd: str, summary: str, allowed_tools: list[str] | None = None,
+    ):
         cmd = cmd.strip()
+        if allowed_tools is not None:
+            scoped_tool_names = {t.name for t in self.brain.get_tools()}
+            scoped_first_token = re.split(r"[\s(]", cmd, maxsplit=1)[0].strip()
+            confirmed_tool_dispatch = (
+                scoped_first_token in scoped_tool_names
+                and (
+                    "(" in cmd
+                    or re.search(
+                        r'(\w+)=(?:"([^"]*)"|\'([^\']*)\'|(\S+))',
+                        cmd,
+                    ) is not None
+                )
+            )
+            required_tool = (
+                scoped_first_token
+                if confirmed_tool_dispatch
+                else "run_bash_command"
+            )
+            if required_tool not in allowed_tools:
+                await self.tts.speak_async(
+                    "The confirmed action is outside this request's allowed tool scope, so I did not execute it."
+                )
+                return
+
         # Normalization for common power commands
         if cmd in ["sudo reboot", "reboot"]:
             cmd = "systemctl reboot"
@@ -1156,11 +1182,16 @@ class AdamDaemon:
         self,
         command_text: str,
         memory_context: str | None = None,
+        allowed_tools: list[str] | None = None,
     ) -> str | None:
         """Executes user commands through the ReAct agent with active real-time interruption monitoring."""
         action = meeting_command_kind(command_text)
         meeting_session = getattr(self, "meeting_session", None)
-        if action and meeting_session is not None:
+        if (
+            action
+            and meeting_session is not None
+            and (allowed_tools is None or "meeting_mode" in allowed_tools)
+        ):
             try:
                 await self.arbiter.set_state("PROCESSING_REACT")
                 meeting_response = await self._meeting_turn_response(command_text)
@@ -1180,7 +1211,11 @@ class AdamDaemon:
             while current_cmd and self.running:
                 cmd_to_run = current_cmd
                 current_cmd = None
-                if not first_command and meeting_command_kind(cmd_to_run):
+                if (
+                    not first_command
+                    and meeting_command_kind(cmd_to_run)
+                    and (allowed_tools is None or "meeting_mode" in allowed_tools)
+                ):
                     meeting_response = await self._meeting_turn_response(cmd_to_run, cleanup=False)
                     if meeting_response is not None:
                         return meeting_response
@@ -1188,8 +1223,11 @@ class AdamDaemon:
                 trace_id = getattr(self, "_active_capture_trace_id", None)
                 trace_token = set_trace_id(trace_id) if trace_id else None
                 try:
+                    process_kwargs = {"memory_context": current_mem}
+                    if allowed_tools is not None:
+                        process_kwargs["allowed_tools"] = allowed_tools
                     react_task = asyncio.create_task(
-                        self.brain.process_user_utterance(cmd_to_run, memory_context=current_mem)
+                        self.brain.process_user_utterance(cmd_to_run, **process_kwargs)
                     )
                 finally:
                     if trace_token is not None:
@@ -1969,8 +2007,30 @@ class AdamDaemon:
                     if result == "AFFIRM":
                         self.earcon.play("done")
                         action = self.confirmation.last_confirmed_action or self.confirmation.pending_action
+                        action_scope = None
+                        if isinstance(action, dict):
+                            action_scope = action.pop("_allowed_tools", None)
+                        self.confirmation.last_confirmed_action = None
+                        required_action_tool = {
+                            "organize_files": "organize_files",
+                            "batch_transcode": "transcode_video",
+                        }.get(action.get("type")) if isinstance(action, dict) else None
+                        invalid_action_scope = action_scope is not None and (
+                            not isinstance(action_scope, list)
+                            or any(not isinstance(name, str) or not name.strip() for name in action_scope)
+                            or len(set(action_scope)) != len(action_scope)
+                        )
+                        action_out_of_scope = (
+                            action_scope is not None
+                            and required_action_tool is not None
+                            and required_action_tool not in action_scope
+                        )
                         if action:
-                            if action.get("type") == "organize_files":
+                            if invalid_action_scope or action_out_of_scope:
+                                await self.tts.speak_async(
+                                    "I could not safely resume the confirmed action within its original tool scope, so I did not execute it."
+                                )
+                            elif action.get("type") == "organize_files":
                                 plan = action.get("plan", {})
                                 import shutil
                                 moved = 0
@@ -2017,17 +2077,26 @@ class AdamDaemon:
                             elif action.get("command"):
                                 cmd = str(action.get("command", "")).strip()
                                 summary = action.get("summary", "Action completed")
-                                await self._execute_confirmed_command(cmd, summary)
+                                await self._execute_confirmed_command(
+                                    cmd, summary, allowed_tools=action_scope
+                                )
                             else:
                                 summary = action.get("summary", "the requested action")
                                 print(f"[Confirmation] Resuming brain with user affirmation: {summary}")
-                                await self._execute_turn(f"User confirmed: proceed with {summary}")
+                                if action_scope is None:
+                                    await self._execute_turn(f"User confirmed: proceed with {summary}")
+                                else:
+                                    await self._execute_turn(
+                                        f"User confirmed: proceed with {summary}",
+                                        allowed_tools=action_scope,
+                                    )
 
                         if self.arbiter.current_state != SystemState.AWAITING_CONFIRMATION:
                             await self.arbiter.set_state("IDLE_LISTENING")
                             self.stream.flush()
                             self.conversation_deadline = time.time() + self.config.wake.followup_window_seconds
                     elif result == "DENY":
+                        self.confirmation.last_confirmed_action = None
                         await self.arbiter.set_state("IDLE_LISTENING")
                         self.stream.flush()
                         if subsequent_cmd:
@@ -2036,6 +2105,7 @@ class AdamDaemon:
                         else:
                             self.conversation_deadline = 0.0
                     elif result == "NEW_COMMAND" and subsequent_cmd:
+                        self.confirmation.last_confirmed_action = None
                         print(f"[Confirmation] Switching to new command: '{subsequent_cmd}'", flush=True)
                         await self._execute_turn(subsequent_cmd)
 

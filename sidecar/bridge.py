@@ -34,7 +34,9 @@ class RuntimeBridge:
     async def get_history(self) -> list[dict[str, Any]]:
         raise NotImplementedError
 
-    async def handle_user_message(self, text: str) -> dict[str, Any]:
+    async def handle_user_message(
+        self, text: str, allowed_tools: list[str] | None = None,
+    ) -> dict[str, Any]:
         raise NotImplementedError
 
     async def register_listener(self, callback: Callable[[dict[str, Any]], Awaitable[None]]) -> None:
@@ -379,7 +381,9 @@ class DaemonBridge(RuntimeBridge):
         append_local_exchanges_through(len(messages))
         return history
 
-    async def handle_user_message(self, text: str) -> dict[str, Any]:
+    async def handle_user_message(
+        self, text: str, allowed_tools: list[str] | None = None,
+    ) -> dict[str, Any]:
         text = text.strip()
         if not text:
             return {"status": "error", "error": "Message cannot be empty."}
@@ -390,6 +394,30 @@ class DaemonBridge(RuntimeBridge):
         execute_turn = getattr(self.daemon, "_execute_turn", None)
         if not callable(execute_turn):
             return {"status": "error", "error": "Daemon turn execution is unavailable."}
+
+        if allowed_tools is not None:
+            if (
+                not isinstance(allowed_tools, list)
+                or any(not isinstance(name, str) or not name.strip() for name in allowed_tools)
+                or len(set(allowed_tools)) != len(allowed_tools)
+            ):
+                return {
+                    "status": "error",
+                    "error": "allowed_tools must be a list of unique non-empty tool names.",
+                }
+            get_tools = getattr(brain, "get_tools", None)
+            if not callable(get_tools):
+                return {"status": "error", "error": "Tool scope cannot be validated by this brain."}
+            available_names = {
+                str(getattr(tool, "name", "")) for tool in get_tools()
+                if str(getattr(tool, "name", ""))
+            }
+            unknown_tools = [name for name in allowed_tools if name not in available_names]
+            if unknown_tools:
+                return {
+                    "status": "error",
+                    "error": f"Unknown or unavailable tool name(s): {', '.join(unknown_tools)}",
+                }
 
         arbiter = getattr(self.daemon, "arbiter", None)
 
@@ -413,6 +441,14 @@ class DaemonBridge(RuntimeBridge):
             brain_messages_before_turn = list(brain.messages)
             prev_len = len(brain_messages_before_turn)
             silent_mode_action = _explicit_silent_mode_action(text)
+            if allowed_tools is not None and silent_mode_action is not None:
+                required_tool = (
+                    "enable_silent_mode"
+                    if silent_mode_action == "enable"
+                    else "disable_silent_mode"
+                )
+                if required_tool not in allowed_tools:
+                    silent_mode_action = None
             tts = getattr(brain, "tts", None)
             if tts is None:
                 tts = getattr(self.daemon, "tts", None)
@@ -446,7 +482,12 @@ class DaemonBridge(RuntimeBridge):
                         turn_events.append(event)
 
                 unsubscribe_turn_events = subscribe_events(capture_current_brain_turn)
-                turn_response = await execute_turn(text, memory_context=mem_ctx)
+                if allowed_tools is None:
+                    turn_response = await execute_turn(text, memory_context=mem_ctx)
+                else:
+                    turn_response = await execute_turn(
+                        text, memory_context=mem_ctx, allowed_tools=allowed_tools
+                    )
 
                 turn_start = getattr(brain, "_turn_message_start", prev_len)
                 new_messages = brain.messages[turn_start:]
