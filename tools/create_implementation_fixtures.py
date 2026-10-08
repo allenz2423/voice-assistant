@@ -315,9 +315,12 @@ def create_fixtures(output_root: Path, run_id: str | None = None) -> Path:
         "Leave every other character unchanged."
     )
     prompt_mixed = (
-        "Find the supplier with the largest overdue invoice total in the local fixture report. "
-        f'Write exactly one line to "{fixture / "task-output.txt"}", replacing <supplier> and <$amount> '
-        "with the values you found. Then report current CPU core count and memory-use percentage."
+        "The local invoice report is already open in Adam's isolated browser. Find the supplier with the largest "
+        "overdue invoice total. Write exactly this line template to "
+        f'"{fixture / "task-output.txt"}": "Largest overdue supplier: <supplier>; total: <$amount>". '
+        "Replace <supplier> with the supplier name and <$amount> with the formatted total, including exactly one "
+        "dollar sign (for example, $2,175.00). Preserve the punctuation and spacing, and end the file with exactly "
+        "one final newline. Then report current CPU core count and memory-use percentage."
     )
     prompt_work_order = (
         "In the visible browser report at <LOCAL_REPORT_URL>, find the supplier with the largest "
