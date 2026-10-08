@@ -1370,3 +1370,14 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - Added the metadata-only `brain.long_task_progress` event to the existing sidecar `task_progress` path behind best-effort handling. Independent review found no other issue; an ordinary telemetry-failure cancellation edge was fixed and re-reviewed.
 - The service was restarted. Its journal confirmed TTS Silent mode, online status, and the sidecar bound on loopback. `GET /api/status` returned connected, `IDLE_LISTENING`, `meeting_session_active=false`, `active_tool=null`, and UI revision `f0645fc7794c`.
 - One planned live WebSocket/API validation was deferred before any network activity because system Python lacked `aiohttp` (`ModuleNotFoundError`). No WebSocket connection, chat POST, provider call, or retry occurred. This change is not live accepted; no WebSocket event pass is claimed. No tests were run.
+
+## Checkpoint 191 — punctuation-tolerant meeting-off live no-op
+
+- After preflight confirmed the silent daemon was connected, `IDLE_LISTENING`, meeting mode false, and with no active tool, the exact input `MEETING, MODE OFF!!!` was sent to the local daemon sidecar API (`POST /api/chat`) with `allowed_tools=[meeting_mode]`. HTTP **200** returned in **0.012955 s** with `Meeting mode is already off.` and zero tool calls.
+- Post-call status remained idle with meeting mode false and no active tool. No recording started. This was local daemon sidecar API acceptance, not the regular Edge/browser-profile UI. No tests were run.
+
+## Checkpoint 192 — quiet idle resource baseline attempt, Loop 2
+
+- At **2026-10-08 19:21:29 UTC**, preflight on commit `ade1446afbe0542427fa9c67dfdb14b470c338b6` found Adam PID **1154817**; recent journal entries confirmed TTS silent, connected, `IDLE_LISTENING`, meeting mode false, and `active_tool=null`. The service cgroup was `/user.slice/user-1000.slice/user@1000.service/app.slice/adam.service`.
+- The planned **30-second** sampler produced no captured JSON. Interval start/end values and deltas, including system CPU percentage and cgroup CPU, are unavailable; the sampler was not retried. A point snapshot at **2026-10-08 19:22:41.662 UTC** recorded `/proc/stat` counters `[1327980,11581,497002,184783893,5228,219105,158964]` jiffies; `MemTotal` **32,772,236 kB**, `MemAvailable` **22,591,472 kB**, `SwapTotal` **32,772,092 kB**, and `SwapFree` **32,768,408 kB**. Cgroup cumulative CPU was **3,988,306 usec** (**3,285,803 user / 702,503 system**); `memory.current` was **487,849,984 bytes**, `memory.peak` **718,118,912 bytes**. The service cgroup had **1 PID**, with summed RSS/PSS **594,924/573,610 kB**.
+- Post-status remained connected, `IDLE_LISTENING`, meeting mode false, and with no active tool. This is a point snapshot only; the interval baseline is **incomplete**. No errors or files created; no tests, provider, browser, microphone, config, or desktop access occurred.
