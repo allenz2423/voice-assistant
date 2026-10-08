@@ -1015,3 +1015,8 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - We deferred both the Edge UI chat and T1 before provider or fixture activity after finding active GUI trial infrastructure: Gedit had a work-order fixture open, `ydotoold` was active, and fixture servers were listening on ports **8766, 8767, 8768, 41112, and 18765**. The WebUI shares the daemon turn executor and interruption monitor, so another live CPU API sample risked interference; no turn was sent.
 - Edge showed the title **Adam dashboard**, with no accessibility bus or CDP access; screenshot capture had timed out earlier, so no query was sent. No private page content was inspected, no microphone or screenshot was uploaded, and no config was read. No tests were run and no commit was made; other files were left untouched.
+
+## Checkpoint 134 — clarify F1 review rule for CP123 wording
+
+- The F1 run sheet now clarifies at `docs/implementation-evaluation-run-sheet-2026-10-05.md:43` that CP123's unqualified “better for lighter sauces” wording triggers the already-existing `categorical_sauce_comparison` rejection rule. This applies the existing rule to the documented wording; it makes no oracle change and does not rescore earlier results.
+- `git diff --check` passed. No tests or live runs were performed.
