@@ -1052,3 +1052,8 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - Read-only 10 s sample **2026-10-08 13:34:27–13:34:37 UTC** (**09:34:27–09:34:37 EDT**), labeled `fixture_infrastructure_open_daemon_idle_followup`: Adam's user service PID **709499**, process-tree count **1**. RSS was **1,634,740 KiB** at both endpoints; PSS **1,613,220 KiB** at both. Cgroup `memory.current` was **1,165,754,368→1,166,303,232 B**, `memory.peak` **1,271,926,784 B**; CPU usage **35,349,833→35,403,693 usec** (delta **53,860**). System CPU was **0.53%**.
 - `MemAvailable` was **21,747,448→21,804,976 KiB** of **32,772,236 KiB**; swap used **4,124 KiB** of **32,772,092 KiB** (free **32,767,968 KiB**). Power profile was `performance`; no energy measurement was available. Gedit count was **1**; five listener processes were in state **S** at both endpoints.
 - This is contextual stability, not a clean baseline or task sample; infer no cause or trend beyond these values. No TTS, status, or chat query was made; no page, window, or content was inspected. No model, provider, or microphone action occurred. No tests were run.
+
+## Checkpoint 141 — second passive T1 safe-window watch remained occupied
+
+- A second 30-minute passive watch at five-minute intervals found Gedit count **1**, all fixture ports (**8766, 8767, 8768, 41112, 18765**) listening, and WebUI `IDLE_LISTENING` on all six checks. T1 rep 1 remains unused. A T1 API turn would reuse shared Brain context and executor; sleeping Gedit and listeners are not a safe-window signal.
+- No model, provider, UI, or microphone action occurred. No tests were run.
