@@ -1094,3 +1094,20 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - The live-interaction gate remained closed: one Gedit/gnome-text-editor process was present; all five fixture listeners (**8766, 8767, 8768, 41112, 18765**) remained active; and six local sidecar connections were established. Edge metadata reported PID **11283** at **(1443, 361)** with size **78×88**, preventing target-only capture/input proof. No browser capture or input was attempted.
 - `config.yaml` was stat'ed only; owner was `incoming`, mode **0600**. No configuration content was read. A fresh private synthetic B1 fixture was prepared at `/tmp/adam-implementation-fixtures/b1-nextlive-20261008-7f3c91a2d84e`: **56 rows**, oracle result **Juniper Labs**, invoices **INV-0055/INV-0056**, total **$2,175**, report SHA-256 `c66889023d713235f69a6bf22452c5c8c763166c78bc546f92cafbf290b57b36`. No fixture server or browser was started.
 - No tests or model turns occurred. The live gate remains closed pending a verifiable safe window; user `AGENTS.md` and `config.yaml.bak` remain untouched and untracked.
+
+## Checkpoint 149 — live baseline for CPU-cause explanation
+
+- On Desky at **2026-10-08 11:23:07 EDT**, the exact sidecar prompt `Why is my CPU usage so high?` completed through local `/api/chat` in **6.394 s** using `custom/deepseek/deepseek-v4.1-flash`. Two model hops took **2.550 s** and **3.605 s**; usage was **8,206 input / 264 output / 71 reasoning tokens**. HTTP 200; no 429; cost unavailable. TTS was silent; this was sidecar chat only.
+- Adam correctly called `get_system_status` and `list_processes`. It reported **2% CPU**, load **0.29**, **32 logical cores**, and a light process sample, but speculated that the earlier load was likely a short-lived task. That unsupported-cause behavior check **failed**.
+
+## Checkpoint 150 — CPU-cause prompt tightened; old-daemon retries invalidated
+
+- Source prompt fix in `src/llm/brain.py` preserves CPU/memory diagnostics, requires **two short, evidence-only sentences**, and forbids unsupported cause guesses. Change was committed and pushed as **321d027**.
+- Two live retry turns made before the service restart returned HTTP 200 and called both status/process tools, but continued to speculate. Daemon PID **709499** had started at **08:22 EDT** with the prior prompt, so those retries are **stale and invalid as retests of the source change**. Restart was needed to load the updated prompt.
+
+## Checkpoint 151 — restarted daemon passes CPU-cause explanation check
+
+- A safe restart proceeded only after `active_tool=null`, `IDLE_LISTENING`, and zero established connections on port **8765**. New daemon PID **904936** logged TTS Silent and online at **11:26:12 EDT**. The exact same prompt, `Why is my CPU usage so high?`, was sent via local sidecar chat at **11:26:22–11:26:26 EDT**; this was not browser-profile interaction. TTS remained silent with no audible playback.
+- The turn completed in **5.972 s** with two model hops (**1.496 s + 4.296 s**), **8,097 input / 369 output / 249 reasoning tokens**, HTTP 200, no 429; cost unavailable. Adam called the same two tools: `get_system_status` and `list_processes`.
+- The two-sentence answer reported current CPU **2%**, load **0.22**, **32 cores**, and the highest sampled process as assistant Python at **26.6% of one core**; it concluded: `No cause is identified; this snapshot cannot explain an earlier spike.` Classify this as a **concise, evidence-based routing and answer pass**.
+- At the last 15-minute safety poll, Gedit count was **0**, the five old fixture ports remained listening, sidecar WebSocket count was **0**, and Adam was `IDLE_LISTENING`. No B1 browser or server was started; fresh B1 fixture details remain in Checkpoint 148. No tests were run. Browser-profile validation is still outstanding.
