@@ -31,3 +31,25 @@ Updated `src/tools/system_telemetry.py` to exclude its own `ps` sampler and labe
 The live localhost prompt `Why is my CPU usage so high? Please answer briefly.` (tools restricted to `get_system_status` and `list_processes`) returned HTTP 200 in **9.199 s** and used both tools. Exact answer: `CPU is only 2%, load 0.38 across 32 cores; top process is python at 20.7% of one core. Usage isn't high; no cause is identified.` Process output omitted its own `ps` PID; top process was `python`. The `custom` / `deepseek-v4.1-flash` route made two successful requests, with no retries/429 apparent; totals were **8,061 input / 573 output / 399 reasoning tokens**. `brain.turn` was **9,153.3 ms**, TTS **5.8 ms**, and TTS remained Silent. Post-turn status was idle, meeting false, no active tool.
 
 No pytest/full suite was run. Browser-profile acceptance remains unverified because focused display DPMS is false; no screenshot, input, or profile use occurred. Next gate: attempt the deferred Edge-profile UI acceptance when focused-window capture is available; keep it unverified until screenshot, input, and result evidence exists.
+
+## CP197 — focused Edge-profile CPU query
+
+A fresh, stable, focused-window screenshot confirmed the existing Microsoft Edge window was on Adam at loopback `127.0.0.1:8765` with an empty composer. The silent daemon was `IDLE_LISTENING`, and meeting mode was off. The browser profile was used only for this active page; no other tabs or profile contents were inspected or recorded.
+
+Adam received a loopback `POST /api/chat` request with `allowed_tools=[computer_control]`, directing it to use screenshot-grounded `computer_control` and submit exactly `Why is my CPU usage so high? Please answer briefly.` The focused UI visibly showed that exact prompt, followed by the answer: `CPU is 6 percent, load 0.78, top process noctalia at 6.2 percent.` During the outer computer-control turn, several actions were initially reported as visually unchanged; the browser then visibly showed and processed the prompt, so immediate visible change was not established for every action.
+
+After the response, the sidecar returned to idle, meeting mode remained off, `active_tool` was null, and TTS remained Silent. This is acceptance for this focused browser-profile query on this host, not a laptop acceptance claim. No automated tests were run. Screenshot files were mode **0600** in `/tmp` and are not linked or committed.
+
+## CP198 — focused Edge composer submission failed
+
+Before the attempt, a scoped focused Edge screenshot showed Adam at `127.0.0.1:8765`, the earlier CP197 prompt and answer, and an empty composer. The daemon was `IDLE_LISTENING`, meeting mode was off, and no tool was active. A loopback `POST /api/chat` request with `allowed_tools=[computer_control]` asked Adam to submit exactly `System status` through the Edge composer. The model initially reported the composer cleared and the page processing, but no user bubble was visible. The follow-up focused screenshot still showed only the earlier CPU question and answer and an empty composer; no `System status` turn or answer appeared. This was a failed UI submission, not a product pass.
+
+The sidecar returned to `IDLE_LISTENING`, meeting mode remained off, and `active_tool=null`. API history showed OCR was unavailable because optional `computer-ocr` dependencies were not installed. The outer request ended with: `I couldn't confirm this request because the model did not use an available tool after three recovery attempts.` No unrelated tabs or profile data were inspected or recorded. No automated tests were run.
+
+## CP199 — focused Edge system-status UI acceptance
+
+After CP198's model-mediated submission failure, Desky preflight read only the local config booleans `computer_control.enabled=true` and `tts.engine=silent`; no secret values were printed. DP-5 was temporarily enabled and restored to its prior `dpmsStatus=false`. Wayland/Hyprland stable focused-window capture identified the same Edge window as `hyprland:0x55e8d01a2f90`, origin `(1,1)`, size **1278×1438**. The active Adam sidecar page was `127.0.0.1:8765`, with an empty composer.
+
+The repository `ComputerController`, enabled from actual config, captured and inspected the screenshot, clicked the composer at screenshot-grounded `(360, 1335)`, checked a fresh screenshot, typed exactly `System status`, checked the next screenshot, and pressed Enter once with that returned snapshot. A fresh focused crop showed the user bubble `System status` and Adam's reply: `CPU is 6%, memory is 34%, and GPU utilization is 0% on GPU 0 and 39% on GPU 1.`, with the `get_system_status` tool badge. The controller performed only the bounded UI input; Adam generated the answer. This is one live UI sample.
+
+Post-action status was `IDLE_LISTENING`, meeting false, and `active_tool=null`; silent TTS preflight remained true. No other tabs' contents were mentioned or inspected. Temporary screenshots were mode **0600** under `/tmp` and are not committed. No pytest was run; only `git diff --check` was requested.
