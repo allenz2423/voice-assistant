@@ -1364,3 +1364,9 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 - After a preflight confirmed the silent Desky daemon was connected, `IDLE_LISTENING`, `meeting_session_active=false`, and `active_tool=null`, the exact prompt `CPU USAGE!!!` was sent through the local daemon sidecar API (`POST /api/chat`) with `allowed_tools=[get_system_status]`. Adam answered: `CPU utilization was 2 percent during this status sample.` (**8 words**). HTTP status was **200**, curl elapsed **0.167206 s**, and `tool_calls=[get_system_status]`.
 - The journal showed `brain.status_direct_dispatch` at **0.0 ms**, a `get_system_status` call, and no provider `[LLMTiming]` for this operation. Brain turn time was **110.8 ms** and TTS stage time **5.9 ms**. Post-call state remained `IDLE_LISTENING`, meeting mode false, and `active_tool=null`.
 - This is live acceptance through the local daemon sidecar API, not the regular Edge/browser-profile UI. No tests were run.
+
+## Checkpoint 190 — progress-event live validation deferred
+
+- Added the metadata-only `brain.long_task_progress` event to the existing sidecar `task_progress` path behind best-effort handling. Independent review found no other issue; an ordinary telemetry-failure cancellation edge was fixed and re-reviewed.
+- The service was restarted. Its journal confirmed TTS Silent mode, online status, and the sidecar bound on loopback. `GET /api/status` returned connected, `IDLE_LISTENING`, `meeting_session_active=false`, `active_tool=null`, and UI revision `f0645fc7794c`.
+- One planned live WebSocket/API validation was deferred before any network activity because system Python lacked `aiohttp` (`ModuleNotFoundError`). No WebSocket connection, chat POST, provider call, or retry occurred. This change is not live accepted; no WebSocket event pass is claimed. No tests were run.

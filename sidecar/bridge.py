@@ -138,7 +138,7 @@ class DaemonBridge(RuntimeBridge):
                 "turn.started", "llm.request_started", "llm.retrying",
                 "tool.started", "tool.completed",
                 "brain.tool_recovery", "brain.empty_completion_recovery",
-                "brain.capability_recovery",
+                "brain.capability_recovery", "brain.long_task_progress",
             }:
                 loop.call_soon_threadsafe(enqueue, row)
 

@@ -2096,6 +2096,20 @@ class AdamBrain:
                 if task in done:
                     return task.result()
                 if not self._is_interrupted and not getattr(self.tts, "pending_barge_in_text", None):
+                    # Publish a fixed operational heartbeat so the sidecar can
+                    # show this wait is active without receiving request or tool data.
+                    try:
+                        emit_event(
+                            "brain.long_task_progress",
+                            component="brain",
+                            status="running",
+                            attributes={"phase": "waiting"},
+                        )
+                    except Exception as exc:
+                        print(
+                            f"[LLM] Long-task progress event failed ({type(exc).__name__}); continuing to wait.",
+                            flush=True,
+                        )
                     cue = progress_cues[progress_cue_index % len(progress_cues)]
                     progress_cue_index += 1
                     try:

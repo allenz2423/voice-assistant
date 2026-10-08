@@ -524,6 +524,8 @@
       setTaskProgressMessage(`Adam received no usable model response; retrying${count}…`);
     } else if (data.event === "brain.capability_recovery") {
       setTaskProgressMessage(`Adam is re-checking available tools${count}…`);
+    } else if (data.event === "brain.long_task_progress") {
+      setTaskProgressMessage("Adam is still working on the current step…");
     }
   }
 
