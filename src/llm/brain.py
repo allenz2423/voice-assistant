@@ -750,7 +750,7 @@ def _is_dedicated_desktop_navigation_request(user_text: str) -> bool:
     )
     needs_other_tools = re.search(
         r"\b(?:weather|forecast|calendar|reminder|timer|email|message|text\s+message|"
-        r"file|filesystem|download|upload|terminal|shell|bash|command|script|"
+        r"files?|filesystem|download|upload|terminal|shell|bash|command|script|"
         r"web\s+search|internet|website|webpage|url|stock|quote|memory|note|skill|"
         r"system\s+status|process(?:es)?|calculator|calculate|organize|sort)\b",
         other_tool_intent_text,
@@ -988,7 +988,7 @@ def _filter_tools_for_dedicated_desktop_navigation(available_tools: list, user_t
         # interaction. This applies to arbitrary applications, not a particular
         # app or task domain.
         unrelated_domain = re.search(
-            r"\b(?:weather|forecast|calendar|reminder|timer|email|message|file|filesystem|"
+            r"\b(?:weather|forecast|calendar|reminder|timer|email|message|files?|filesystem|"
             r"download|upload|terminal|shell|bash|command|script|web\s+search|internet|"
             r"website|webpage|url|stock|quote|memory|note|skill|system\s+status|"
             r"process(?:es)?|calculator|calculate|organize|sort)\b",
@@ -1581,6 +1581,7 @@ Voice & Execution:
 
 Tool Routing:
 - Dedicated tools first: Use built-in tools for time, weather, reminders, timers, calendar (Noctalia / Remind), notes, files, math, and system status.
+- For filesystem paths and repository contents, use `find_files`, `read_file`, or shell tools; use desktop UI only when the user explicitly asks for it.
 - For factual hardware requests, use `get_system_status` and report only the metric or metrics the user asked for. Keep a single-metric answer to one short sentence; give a brief overview for `system status`, without listing every telemetry field. For a question or concern about why CPU or memory is high, slow, hot, or otherwise abnormal, get host status once. Do not call or report `list_processes` entries for generic high/spike questions: its process `%CPU` is a single-core-equivalent lifetime average, not interval-correlated evidence, and cannot establish a cause. Only report process metrics when the user explicitly asks for process usage; label them "single-core lifetime average", say they are not comparable to host-wide sample CPU, and omit the process numbers if this cannot fit within 25 words. Explain only what the evidence supports. Treat `get_system_status` CPU as host-wide utilization measured over its status-sample interval. For CPU or memory high/spike questions, answer in exactly two sentences and at most 25 words total: sentence 1 gives the requested host-wide metric (CPU over the status-sample interval; include load for CPU); sentence 2 names a cause only if interval-correlated evidence establishes it. If no cause is identified for a question about an earlier spike, sentence 2 must be exactly: "No cause is identified; this snapshot cannot explain an earlier spike." For a current high CPU or memory question with no identified cause, use: "This snapshot does not identify a cause." Omit unrelated status fields and all other explanation. A low current sample cannot explain an earlier spike; never say "likely" or "probably" or list possible causes without interval-correlated evidence. Do not repeat status checks with `run_bash_command` or call `get_system_status` again in the same turn. A separately and explicitly requested shell inspection remains available.
 - For a positive request to start or stop meeting recording that is not one of the exact direct voice controls, call `meeting_mode` with `action="start"` or `action="stop"`, including polite requests phrased as questions. A bare command saying “meeting mode” means start meeting mode. Do not call it for informational questions, hypotheticals, or instructions not to change the current state. The meeting tool owns the spoken confirmation; do not repeat the action or add a second confirmation.
 - Web: Always use `open_in_browser` for URLs and web searches; never manually type URLs into browser address bars via GUI. Use `fetch_webpage` to read specific page content.
@@ -3865,12 +3866,10 @@ class AdamBrain:
                                 include_ocr=args.get("include_ocr"),
                                 screenshot_delay_seconds=delay,
                                 expected_application=expected_application,
-                                # Starting or opening an app gets a bounded
-                                # startup wait. Focusing an existing app waits
-                                # until the compositor actually focuses it.
-                                readiness_timeout_seconds=(
-                                    15.0 if name in {"launch_application", "open_in_browser"} else None
-                                ),
+                                # App startup/open and focus-settle waits are
+                                # bounded so a stalled compositor cannot hang
+                                # the turn indefinitely.
+                                readiness_timeout_seconds=15.0,
                             )
                             self._pending_screenshot = inspected.screenshot
                             tool_output = f"{tool_output}\n{inspected.message}"

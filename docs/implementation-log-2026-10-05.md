@@ -1519,3 +1519,11 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - After restarting the pushed build in Silent mode, a live localhost WebSocket request explicitly asking what was using CPU invoked `get_system_status` and `list_processes`. The response reported a **2%** host-wide status sample and a top single-core lifetime average, explicitly marked as not comparable. Post-turn state was idle, meeting mode false, with no active tool.
 - This confirms explicit process-intent routing. Generic high-CPU questions were checked separately and use only system status. No pytest was run.
+
+## Checkpoint 212 — plural filesystem-task routing and WebUI history cleanup
+
+- A log trace at 18:52 showed a request to read documentation misclassified as dedicated GUI navigation because the matching expression covered singular `file` but not plural `files`. The system prompt now explicitly routes filesystem and repository tasks. A post-focus screenshot wait returned `readiness_timeout=None`, and the daemon remained in `PROCESSING_REACT` until its service restart. Failed action sequences issued no input; only window focus changed.
+- `/api/history` exposed synthetic recovery and fresh-observation prompts. The bridge now filters those from displayed history while retaining them in Brain context.
+- Restart returned silent Adam to `IDLE_LISTENING`. A live localhost `/api/chat` request using a plural docs/files prompt called `find_files` and `read_file`, then returned the requested title and first heading correctly. `/api/history` contained only actual user, final assistant, and tool rows. WebUI GET returned 200; status was idle and TTS Silent.
+- A direct helper check confirmed both exact injected prompt forms are filtered and an ordinary user sentence is preserved.
+- `py_compile` and `git diff --check` passed. No pytest was run.

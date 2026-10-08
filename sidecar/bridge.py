@@ -91,6 +91,36 @@ def _explicit_silent_mode_action(text: str) -> str | None:
     return "enable" if enable_silent else None
 
 
+_FRESH_DESKTOP_OBSERVATION_PROMPT = (
+    "Fresh desktop observation after the preceding action. Treat this as current state, "
+    "compare it with the user's requested outcome, and continue or answer only when the "
+    "requested result is supported by evidence. If the user asks what text or value was "
+    "saved, entered, or selected, read back the exact visible text or value when it is "
+    "legible; do not replace a requested readback with a generic completion claim. Say "
+    "you cannot verify it only when the relevant evidence in this observation is actually "
+    "unreadable or ambiguous."
+)
+
+
+def _is_internal_orchestration_prompt(content: str) -> bool:
+    """Identify the synthetic user-role prompts added by Brain between tool hops."""
+    if content == _FRESH_DESKTOP_OBSERVATION_PROMPT:
+        return True
+    return re.fullmatch(
+        r"Tool recovery [1-3]/3: .+ failed\. "
+        r"Use the failure details in the tool results to correct the approach or arguments\. "
+        r"Continue the original request, preserving successful steps\. For a timed-out or "
+        r"partially dispatched action, inspect its current effects before repeating it\. "
+        r"Do not repeat a write, click, or other action blindly; do not expand authorization "
+        r"or claim completion\. If no permitted recovery exists, explain the blocker\."
+        r"(?: Use a fresh desktop observation before any further input\. Treat successful "
+        r"sequence steps reported in the result as completed and omit them from any new call\. "
+        r"Choose and dispatch only the next action grounded in that fresh observation; if no "
+        r"fresh observation is available, inspect first\.)?",
+        content,
+    ) is not None
+
+
 class DaemonBridge(RuntimeBridge):
     """Bridge connected directly to an active AdamDaemon instance."""
 
@@ -315,6 +345,12 @@ class DaemonBridge(RuntimeBridge):
             if role not in ("user", "assistant"):
                 continue
             content = msg.get("content", "")
+            if (
+                role == "user"
+                and isinstance(content, str)
+                and _is_internal_orchestration_prompt(content)
+            ):
+                continue
             if role == "user" and isinstance(content, str):
                 content = re.sub(r"^\[Current Desktop State\].*?\[Local Time:[^\]]+\]\s*\n", "", content, flags=re.S).strip()
                 context_headers = (
