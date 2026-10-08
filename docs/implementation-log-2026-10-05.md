@@ -1067,3 +1067,8 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - A filtered-prefix-only verification of the current user `adam.service` startup found the latest allowed matching lines: **2026-10-08 08:22:21.914134 EDT** `[TTS] Silent mode` and **08:22:22.742018 EDT** `[Adam] System is online and listening`. Current startup therefore confirms silent mode. The strict filter emitted no other log content.
 - No config was read, and no GUI, provider, or microphone request was made.
+
+## Checkpoint 144 — metadata-only WebUI connection counts
+
+- At approximately **2026-10-08 14:30 UTC** (**10:30 EDT**), a metadata-only TCP count found established local-port counts: **8765=6**, **8766=0**, **8767=0**, **8768=0**, **41112=0**, **18765=0**. Counts only were recorded; no addresses, payloads, or page data were accessed.
+- The local WebUI has connected clients, so no competing daemon chat was sent even though the T1 fixtures are separate. No desktop, provider, or microphone action occurred. No tests were run.
