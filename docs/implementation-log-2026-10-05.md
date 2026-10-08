@@ -1087,3 +1087,10 @@ This keeps the same semantic task and oracle while ensuring the relative week/ye
 
 - All six polls during the fifth 30-minute passive watch found Gedit count **1**, fixture ports **8766, 8767, 8768, 41112, and 18765** listening, WebUI `IDLE_LISTENING`, and **6** established connections on port **8765**. The safe-window gate never passed.
 - No T1, chat, provider, UI, microphone, or log-query action occurred. No tests were run.
+
+## Checkpoint 148 — fresh status audit leaves live interaction gate closed
+
+- At **2026-10-08 15:16 UTC (11:16 EDT)**, a read-only audit found the user service active and the local sidecar connected. Its reported state was `IDLE_LISTENING`, model `deepseek-v4.1-flash`, daemon mode, and **75 tools**. Today's filtered journal confirmed silent TTS and online startup.
+- The live-interaction gate remained closed: one Gedit/gnome-text-editor process was present; all five fixture listeners (**8766, 8767, 8768, 41112, 18765**) remained active; and six local sidecar connections were established. Edge metadata reported PID **11283** at **(1443, 361)** with size **78×88**, preventing target-only capture/input proof. No browser capture or input was attempted.
+- `config.yaml` was stat'ed only; owner was `incoming`, mode **0600**. No configuration content was read. A fresh private synthetic B1 fixture was prepared at `/tmp/adam-implementation-fixtures/b1-nextlive-20261008-7f3c91a2d84e`: **56 rows**, oracle result **Juniper Labs**, invoices **INV-0055/INV-0056**, total **$2,175**, report SHA-256 `c66889023d713235f69a6bf22452c5c8c763166c78bc546f92cafbf290b57b36`. No fixture server or browser was started.
+- No tests or model turns occurred. The live gate remains closed pending a verifiable safe window; user `AGENTS.md` and `config.yaml.bak` remain untouched and untracked.
