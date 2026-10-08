@@ -88,3 +88,10 @@ Ctrl+L briefly exposed an address-bar suggestions popup; no suggestion was click
 ## CP205 — CP203 headless-release configuration clarification
 
 A sanitized active-service configuration check printed only `browser_navigation.enabled=true` and `browser_navigation.headless=false`. The automatic read-only BrowserNavigator release path requires `headless=true`, so CP203's retained processes are consistent with visible mode. This does not justify an unload or code change; no other configuration fields were printed.
+
+
+## CP206 — focused Edge CPU complaint query on Desky
+
+One live focused Edge UI sample used Adam's existing sidecar page in the same window, `hyprland:0x55e8d048a150` (PID **1219402**), at **(1,721)** with size **1278×718**. Exact prompt: `Why is my CPU usage so high? Keep it brief.` Visible answer: `CPU is only 6% now (load 0.55); top process is noctalia at 6.2%. This snapshot does not identify a cause.` No cause is inferred from this snapshot. Visible tool badges were `get_system_status` twice and `list_processes` once. UI timestamps were **4:30:43 PM** for the prompt and **4:30:50 PM** for the answer, about **7 seconds**. Local proof is `/tmp/adam-edge-cpu-complaint-attempt1/step-05.png`, mode **0600**.
+
+Pre/post API status was `IDLE_LISTENING`, meeting mode false, and `active_tool=null`; TTS was Silent. DP-5 began off, was enabled and verified on for capture, then restored and verified off. No `/api/chat` prompt was used; no other tab was inspected or switched. No pytest was run.
