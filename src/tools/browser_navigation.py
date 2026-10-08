@@ -93,6 +93,7 @@ class BrowserNavigator:
                 "args": ["--no-first-run", "--no-default-browser-check"],
             }
             if engine == "chromium":
+                options["chromium_sandbox"] = True
                 name = self.browser_name
                 if "edge" in name or "msedge" in name:
                     options["channel"] = "msedge"
